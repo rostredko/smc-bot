@@ -1,0 +1,8 @@
+{
+  "exchange": "binance",
+  "symbol": "BTC/USDT",
+  "timeframe": "1h",
+  "lookback": 200,
+  "apiKey": "YOUR_API_KEY",
+  "secret": "YOUR_SECRET"
+}
