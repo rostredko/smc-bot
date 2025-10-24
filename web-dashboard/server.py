@@ -30,9 +30,10 @@ from strategies.simple_test_strategy import SimpleTestStrategy
 original_stdout = sys.stdout
 original_stderr = sys.stderr
 
-# Configuration
-DATA_DIR = "../data_cache"
-RESULTS_DIR = "../results"
+# Configuration - Use absolute paths for cross-platform compatibility
+BASE_DIR = Path(__file__).parent.parent.absolute()
+DATA_DIR = str(BASE_DIR / "data_cache")
+RESULTS_DIR = str(BASE_DIR / "results")
 
 # Ensure directories exist
 os.makedirs(DATA_DIR, exist_ok=True)
@@ -153,7 +154,7 @@ async def broadcast_from_queue():
 def load_available_strategies():
     """Load available strategies from strategies directory."""
     strategies = []
-    strategies_dir = Path("../strategies")
+    strategies_dir = BASE_DIR / "strategies"
     
     if strategies_dir.exists():
         for file in strategies_dir.glob("*.py"):
@@ -292,7 +293,7 @@ async def get_strategies():
 @app.get("/config")
 async def get_config():
     """Get current configuration in flat format for frontend."""
-    config_path = Path("../config/config.json")
+    config_path = BASE_DIR / "config" / "config.json"
     if config_path.exists():
         with open(config_path, 'r') as f:
             config = json.load(f)
@@ -317,7 +318,7 @@ async def get_config():
 @app.post("/config")
 async def update_config(config: Dict[str, Any]):
     """Update configuration."""
-    config_path = Path("../config/config.json")
+    config_path = BASE_DIR / "config" / "config.json"
     
     # Load existing config to preserve structure
     existing_config = {}
