@@ -278,6 +278,60 @@ The dashboard shows strategy output in real-time as it executes:
 
 ---
 
+#### Restart Server
+
+To cleanly restart both backend and frontend:
+
+**🐧 Linux / macOS (Unix-like)**
+
+```bash
+# Option 1: Manual restart
+pkill -f "python.*server.py" || true
+pkill -f "node" || true
+sleep 2
+
+cd web-dashboard
+npm run build
+python server.py
+
+# Open: http://localhost:8000
+```
+
+**Option 2: Automated restart script**
+
+```bash
+cd web-dashboard
+python restart.py
+
+# Opens: http://localhost:8000
+```
+
+**🪟 Windows (PowerShell or CMD)**
+
+```batch
+REM Option 1: Manual restart
+taskkill /F /IM python.exe 2>nul
+taskkill /F /IM node.exe 2>nul
+timeout /t 2
+
+cd web-dashboard
+npm run build
+python server.py
+
+REM Open: http://localhost:8000
+```
+
+**Option 2: Automated restart script**
+
+```batch
+cd web-dashboard
+python restart.py
+
+REM Opens: http://localhost:8000
+```
+
+---
+
 ### 3. Live Trading
 
 Paper trading (sandbox) or real money trading on Binance.
