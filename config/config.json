@@ -1,0 +1,54 @@
+{
+  "name": "SMC Spot Trading Strategy",
+  "description": "SMC strategy optimized for spot crypto trading with long-only positions",
+  "account": {
+    "initial_capital": 10000,
+    "risk_per_trade": 0.5,
+    "max_drawdown": 15.0,
+    "max_positions": 1,
+    "mode": "spot",
+    "allow_short": true
+  },
+  "trading": {
+    "symbol": "BTC/USDT",
+    "timeframes": ["4h", "15m"],
+    "exchange": "binance",
+    "mode": "spot",
+    "slippage": 0.0001,
+    "maker_fee": 0.0001,
+    "taker_fee": 0.0004,
+    "min_qty": 0.00001,
+    "step_size": 0.00001,
+    "min_notional": 10.0,
+    "tick_size": 0.01
+  },
+  "period": {
+    "start_date": "2024-01-01",
+    "end_date": "2024-12-31"
+  },
+  "strategy": {
+    "name": "smc_strategy"
+  },
+  "risk_management": {
+    "min_risk_reward": 1.8,
+    "trailing_stop_distance": 0.02,
+    "max_drawdown_pct": 15,
+    "daily_loss_limit_pct": 3,
+    "max_consecutive_losses": 5,
+    "adaptive_risk_enabled": true
+  },
+  "logging": {
+    "level": "INFO",
+    "export_logs": true,
+    "log_file": "smc_spot_logs.json",
+    "detailed_signals": true,
+    "detailed_trades": true,
+    "market_analysis": true
+  },
+  "output": {
+    "save_results": true,
+    "results_file": "smc_spot_results.json",
+    "export_trades": true,
+    "trades_file": "smc_spot_trades.json"
+  }
+}

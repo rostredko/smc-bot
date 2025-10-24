@@ -1,9 +1,0 @@
-app:
-  telegram:
-    token: ${TELEGRAM_BOT_TOKEN}
-    allowedUserIds: ${ALLOWED_USER_IDS:-}
-
-  runner:
-    workingDir: "../backend"
-    scripts:
-      - ["../backend/.venv/bin/python3", "-u", "live_paper_trading.py"]

@@ -1,0 +1,214 @@
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+  min-height: 100vh;
+}
+
+code {
+  font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New',
+    monospace;
+}
+
+#root {
+  min-height: 100vh;
+  background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+}
+
+/* Console output styling */
+.console-output {
+  font-family: 'Courier New', Courier, monospace;
+  background-color: #0b0b0b;
+  color: #00ff00;
+  line-height: 1.5;
+  padding: 16px;
+  border-radius: 8px;
+  border: 2px solid #1a1a1a;
+  box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.5), 0 4px 12px rgba(0, 0, 0, 0.15);
+  overflow-y: auto;
+  overflow-x: hidden;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 13px;
+  letter-spacing: 0.5px;
+}
+
+.console-output::-webkit-scrollbar {
+  width: 8px;
+}
+
+.console-output::-webkit-scrollbar-track {
+  background: #0b0b0b;
+  border-radius: 4px;
+}
+
+.console-output::-webkit-scrollbar-thumb {
+  background: #00ff00;
+  border-radius: 4px;
+  opacity: 0.3;
+}
+
+.console-output::-webkit-scrollbar-thumb:hover {
+  opacity: 0.6;
+}
+
+/* Status indicators */
+.status-connected {
+  color: #4caf50;
+  font-weight: 600;
+}
+
+.status-disconnected {
+  color: #f44336;
+  font-weight: 600;
+}
+
+/* Console lines */
+.console-line {
+  margin: 2px 0;
+  padding: 2px 0;
+  word-break: break-word;
+}
+
+.console-line.error {
+  color: #ff6b6b;
+}
+
+.console-line.warning {
+  color: #ffa500;
+}
+
+.console-line.success {
+  color: #4caf50;
+}
+
+.console-line.info {
+  color: #00bfff;
+}
+
+.console-line.signal {
+  color: #ff00ff;
+  font-weight: bold;
+}
+
+/* Cards enhancement */
+.MuiCard-root {
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08) !important;
+  border-radius: 12px !important;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.MuiCard-root:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.12) !important;
+}
+
+/* Paper components */
+.MuiPaper-root {
+  border-radius: 8px !important;
+}
+
+/* Buttons */
+.MuiButton-root {
+  border-radius: 6px !important;
+  text-transform: none;
+  font-weight: 500;
+  padding: 8px 16px;
+  transition: all 0.3s ease;
+}
+
+.MuiButton-contained {
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15) !important;
+}
+
+.MuiButton-contained:hover {
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.2) !important;
+  transform: translateY(-2px);
+}
+
+/* TextField */
+.MuiTextField-root {
+  width: 100%;
+}
+
+.MuiOutlinedInput-root {
+  border-radius: 6px;
+}
+
+/* Progress bar */
+.MuiLinearProgress-root {
+  border-radius: 3px;
+  height: 6px;
+}
+
+/* Chip */
+.MuiChip-root {
+  font-weight: 500;
+  border-radius: 20px;
+}
+
+/* Accordion */
+.MuiAccordion-root {
+  border-radius: 8px !important;
+  box-shadow: none !important;
+  border: 1px solid #e0e0e0;
+  margin-bottom: 12px;
+}
+
+.MuiAccordion-root::before {
+  display: none !important;
+}
+
+/* Table */
+.MuiTableCell-root {
+  padding: 12px 16px;
+  border-color: #e0e0e0;
+}
+
+.MuiTableHead-root .MuiTableCell-root {
+  font-weight: 600;
+  background-color: #f5f5f5;
+}
+
+/* Scrollbar styling for entire page */
+::-webkit-scrollbar {
+  width: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #ccc;
+  border-radius: 5px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #999;
+}
+
+/* Responsive container */
+@media (max-width: 1200px) {
+  body {
+    font-size: 15px;
+  }
+  
+  .console-output {
+    font-size: 12px;
+  }
+}
+
+@media (max-width: 768px) {
+  .console-output {
+    height: 300px !important;
+  }
+}

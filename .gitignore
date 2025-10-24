@@ -11,6 +11,7 @@ __pycache__/
 *.coverage
 *.pytest_cache/
 .venv/
+venv/
 .env
 .env.*
 
@@ -31,10 +32,15 @@ pnpm-debug.log*
 .vscode/
 *.iml
 
-# --- Data / secrets ---
-config.json
-*.csv
-*.json
+# --- Data & Results ---
+data_cache/*.csv
+results/*.json
+results/*.log
+
+# --- Local config overrides (keep template!) ---
+config/*.local.json
+!config/config.json
+!config/live_trading_config.json
 
 # --- Misc ---
 *.bak
