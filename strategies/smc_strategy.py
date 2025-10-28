@@ -587,7 +587,8 @@ class SMCStrategy(StrategyBase):
                         if fvg.zone_id == fvg_id:
                             fvg.used = True
             else:
-                print(f"LONG Signal filtered out by enhanced filters")
+                # Detailed reasons are printed inside _enhanced_signal_filter
+                pass
 
         return signals
 
@@ -883,7 +884,7 @@ class SMCStrategy(StrategyBase):
         return None
 
     def _enhanced_signal_filter(self, signal: Dict, low_df: pd.DataFrame, high_df: pd.DataFrame) -> bool:
-        """Улучшенная фильтрация сигналов с исправленными фильтрами LONG.
+        """Фильтрация сигналов с выводом причин отклонения в консоль.
 
         Args:
             signal: Signal data dictionary
@@ -893,39 +894,42 @@ class SMCStrategy(StrategyBase):
         Returns:
             True if signal passed all filters
         """
-        current_price = low_df["close"].iloc[-1]
+        reasons: List[str] = []
 
-        # 1. Ослабленный RSI фильтр для LONG
+        # 1) RSI filter
         rsi = self._calculate_rsi(low_df)
-        if signal["direction"] == "LONG" and rsi > 75:  # Was 65, now 75
-            return False
-        if signal["direction"] == "SHORT" and rsi < 25:  # Was 55, now 25
-            return False
+        if signal["direction"] == "LONG" and rsi > 75:
+            reasons.append(f"RSI too high ({rsi:.1f} > 75)")
+        if signal["direction"] == "SHORT" and rsi < 25:
+            reasons.append(f"RSI too low ({rsi:.1f} < 25)")
 
-        # 2. Усиленная проверка тренда
+        # 2) Trend alignment (HTF/LTF)
         if not self._is_strong_trend_aligned(signal["direction"], high_df, low_df):
-            return False
+            reasons.append("Trend misaligned (HTF/LTF)")
 
-        # 3. Требовать объемную конфирмацию
+        # 3) Volume confirmation
         if not self._has_strong_volume_confirmation(low_df):
-            return False
+            reasons.append("No strong volume confirmation")
 
-        # 4. Фильтр времени (избегать азиатской сессии)
+        # 4) Time filter
         if not self._is_good_trading_time():
-            return False
+            reasons.append("Unfavorable trading session")
 
-        # 5. Фильтр волатильности
+        # 5) Volatility window
         if not self._is_optimal_volatility(low_df, high_df):
-            return False
+            reasons.append("Volatility outside optimal range")
 
-        # 6. Фильтр качества сигнала
-        if signal["confidence"] < 0.4:  # Increased from 0.3 to 0.4
-            return False
+        # 6) Minimum confidence
+        if signal.get("confidence", 0) < 0.4:
+            reasons.append(f"Low confidence ({signal.get('confidence', 0):.2f} < 0.40)")
 
-        # 7. Фильтр тренда на младшем ТФ
+        # 7) Lower timeframe micro-trend
         if not self._is_aligned_with_lower_tf_trend(signal["direction"], low_df):
-            return False
+            reasons.append("Lower TF trend misaligned")
 
+        if reasons:
+            print(f"{signal['direction']} Signal filtered out by enhanced filters (" + ", ".join(reasons) + ")")
+            return False
         return True
 
     def _is_strong_trend_aligned(self, direction: str, high_df: pd.DataFrame, low_df: pd.DataFrame) -> bool:
