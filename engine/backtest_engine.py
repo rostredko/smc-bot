@@ -86,7 +86,9 @@ class BacktestEngine:
             if strategy_class is None:
                 raise AttributeError(f"No strategy class found in {strategy_name}")
 
-            self.strategy = strategy_class()
+            # Get strategy config from engine config
+            strategy_config = self.config.get('strategy_config', {})
+            self.strategy = strategy_class(strategy_config)
             self.logger.strategy = self.strategy  # Link strategy to logger for detailed logging
             self.logger.log("INFO", f"Loaded strategy: {strategy_name}")
         except Exception as e:

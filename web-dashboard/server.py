@@ -197,6 +197,7 @@ def get_strategy_config_schema(strategy_name: str):
             "atr_percentile_min": {"type": "number", "default": 30},
             "atr_percentile_max": {"type": "number", "default": 70},
             "sl_atr_multiplier": {"type": "number", "default": 2.0},
+            "min_signal_confidence": {"type": "number", "default": 0.4},
             # Technical
             "ema_filter_period": {"type": "number", "default": 50},
             "rsi_period": {"type": "number", "default": 14},

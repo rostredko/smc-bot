@@ -81,7 +81,6 @@ class SMCStrategy(StrategyBase):
             "taker_fee": 0.0004,
             "slippage_bp": 2,
             
-            # Дополнительные параметры для работы стратегии (не в новом конфиге, но нужны для функционала)
             "min_zone_strength": 0.9,
             "max_zones": 5,
             "confluence_required": True,
@@ -129,10 +128,12 @@ class SMCStrategy(StrategyBase):
             "dynamic_risk_management": True,
             "neutral_bias_allowed": True,
             "use_support_resistance_sl": True,
+            "min_signal_confidence": 0.4,  # Minimum confidence threshold for signal filtering
         }
 
         super().__init__(config)
-        self.config = {**default_config, **self.config}
+        # Merge with defaults, but user-provided config takes priority
+        self.config = {**default_config, **(config or {})}
 
         # Strategy-specific state
         self.market_bias = None
@@ -884,9 +885,7 @@ class SMCStrategy(StrategyBase):
         return None
 
     def _enhanced_signal_filter(self, signal: Dict, low_df: pd.DataFrame, high_df: pd.DataFrame) -> bool:
-        """Фильтрация сигналов с выводом причин отклонения в консоль.
-
-        Args:
+        """Args:
             signal: Signal data dictionary
             low_df: Low timeframe data (15m)
             high_df: High timeframe data (4h)
@@ -920,8 +919,9 @@ class SMCStrategy(StrategyBase):
             reasons.append("Volatility outside optimal range")
 
         # 6) Minimum confidence
-        if signal.get("confidence", 0) < 0.4:
-            reasons.append(f"Low confidence ({signal.get('confidence', 0):.2f} < 0.40)")
+        min_confidence = self.config.get("min_signal_confidence", 0.4)
+        if signal.get("confidence", 0) < min_confidence:
+            reasons.append(f"Low confidence ({signal.get('confidence', 0):.2f} < {min_confidence:.2f})")
 
         # 7) Lower timeframe micro-trend
         if not self._is_aligned_with_lower_tf_trend(signal["direction"], low_df):
@@ -1436,6 +1436,14 @@ class SMCStrategy(StrategyBase):
                     "atr_period": {"type": "number", "value": self.config["atr_period"]},
                     "atr_percentile_min": {"type": "number", "value": self.config["atr_percentile_min"]},
                     "atr_percentile_max": {"type": "number", "value": self.config["atr_percentile_max"]},
+                    "min_signal_confidence": {
+                        "type": "number",
+                        "value": self.config["min_signal_confidence"],
+                        "min": 0.1,
+                        "max": 1.0,
+                        "step": 0.05,
+                        "description": "Minimum confidence threshold for signals",
+                    },
                     "require_structure_confirmation": {"type": "boolean", "value": self.config["require_structure_confirmation"]},
                 },
                 "exchange": {

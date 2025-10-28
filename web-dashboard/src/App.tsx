@@ -184,7 +184,7 @@ export default function App() {
     { title: "Core Settings", keys: ["mode", "allow_short"] },
     { title: "Timeframes", keys: ["high_timeframe", "low_timeframe"] },
     { title: "Risk Management", keys: ["risk_per_trade_pct", "max_concurrent_positions", "min_required_rr", "max_stop_distance_pct"] },
-    { title: "Volatility Filters", keys: ["volatility_filter_enabled", "atr_period", "atr_percentile_min", "atr_percentile_max", "sl_atr_multiplier"] },
+    { title: "Volatility Filters", keys: ["volatility_filter_enabled", "atr_period", "atr_percentile_min", "atr_percentile_max", "sl_atr_multiplier", "min_signal_confidence"] },
     { title: "Technical Entry Filters", keys: ["ema_filter_period", "rsi_period", "min_rsi_long", "max_rsi_long", "volume_threshold"] },
     { title: "Partial Take Profits", keys: ["use_partial_tp", "tp1_r", "tp1_pct", "tp2_r", "tp2_pct", "runner_pct"] },
     { title: "Exit Management", keys: ["trailing_stop_enabled", "trail_start", "trail_step", "breakeven_move_enabled"] },
