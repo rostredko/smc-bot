@@ -740,25 +740,3 @@ python main.py live                        REM Real money ⚠️
 5. **No External Dependencies in Core** - Easy to understand and maintain
 
 ---
-
-## Next Steps
-
-1. Run a backtest: `python main.py backtest`
-2. Check results: Open `results/backtest_TIMESTAMP.json`
-3. Try web dashboard: `cd web-dashboard && npm run build && python server.py`
-4. Create your strategy: Implement in `strategies/my_strategy.py`
-5. Run tests: `pytest tests/ -v`
-6. Test live (sandbox): `python main.py live --sandbox`
-
----
-
-## Disclaimer
-
-This software is for educational and research purposes only. Trading cryptocurrencies involves substantial risk of loss. Always do your own research and consider your risk tolerance before trading. Live trading warning: Never trade with real money until thoroughly tested in sandbox mode.
-
----
-
-**Last Updated**: October 24, 2025  
-**Status**: ✅ Production Ready  
-**Python**: 3.8+  
-**Tests**: 88 passed

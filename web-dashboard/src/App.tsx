@@ -179,6 +179,58 @@ export default function App() {
   const consoleEndRef = useRef<HTMLDivElement>(null);
   const websocketRef = useRef<WebSocket | null>(null);
 
+  // Sections mapping for strategy parameters (order matters)
+  const strategySections: Array<{ title: string; keys: string[] }> = [
+    { title: "Core Settings", keys: ["mode", "allow_short"] },
+    { title: "Timeframes", keys: ["high_timeframe", "low_timeframe"] },
+    { title: "Risk Management", keys: ["risk_per_trade_pct", "max_concurrent_positions", "min_required_rr", "max_stop_distance_pct"] },
+    { title: "Volatility Filters", keys: ["volatility_filter_enabled", "atr_period", "atr_percentile_min", "atr_percentile_max", "sl_atr_multiplier"] },
+    { title: "Technical Entry Filters", keys: ["ema_filter_period", "rsi_period", "min_rsi_long", "max_rsi_long", "volume_threshold"] },
+    { title: "Partial Take Profits", keys: ["use_partial_tp", "tp1_r", "tp1_pct", "tp2_r", "tp2_pct", "runner_pct"] },
+    { title: "Exit Management", keys: ["trailing_stop_enabled", "trail_start", "trail_step", "breakeven_move_enabled"] },
+    { title: "Market Structure", keys: ["require_structure_confirmation", "support_level_lookback_bars"] },
+    { title: "Cooldown & Psychology", keys: ["cooldown_after_loss_bars", "reduce_risk_after_loss", "risk_reduction_after_loss"] },
+    { title: "Exchange Settings", keys: ["min_notional", "taker_fee", "slippage_bp"] },
+  ];
+
+  // Helper to render a single strategy field by key
+  const renderStrategyField = (key: string) => {
+    const strategy = strategies.find(s => s.name === selectedStrategy);
+    const schema = strategy?.config_schema?.[key] || {};
+    const value = (strategyConfig as any)[key];
+    const label = key.replace(/_/g, " ").replace(/\b\w/g, (l: string) => l.toUpperCase());
+    const isBoolean = schema?.type === "boolean" || typeof value === "boolean" || value === "true" || value === "false";
+
+    return (
+      <Grid item xs={12} md={6} key={key}>
+        {isBoolean ? (
+          <FormControlLabel
+            control={
+              <Switch
+                checked={value !== undefined ? Boolean(value === true || value === "true") : Boolean(schema?.default)}
+                onChange={e => handleStrategyConfigChange(key, e.target.checked)}
+                disabled={isConfigDisabled}
+              />
+            }
+            label={label}
+          />
+        ) : (
+          <TextField
+            label={label}
+            type={schema?.type === "number" ? "number" : "text"}
+            value={value !== undefined ? value : (schema?.default || "")}
+            onChange={e => {
+              const newValue = schema?.type === "number" ? parseFloat(e.target.value) : e.target.value;
+              handleStrategyConfigChange(key, newValue);
+            }}
+            disabled={isConfigDisabled}
+            fullWidth
+          />
+        )}
+      </Grid>
+    );
+  };
+
   // Auto-scroll console to bottom
   const scrollToBottom = () => {
     setTimeout(() => {
@@ -661,54 +713,24 @@ export default function App() {
               </Accordion>
 
               {Object.keys(strategyConfig).length > 0 && (
-                <Accordion>
-                  <AccordionSummary expandIcon={<ExpandMore />}>
-                    <Typography variant="h6">Strategy Settings</Typography>
-                  </AccordionSummary>
-                  <AccordionDetails>
-                    <Grid container spacing={2}>
-                      {Object.entries(strategyConfig).map(([key, value]) => {
-                        const strategy = strategies.find(s => s.name === selectedStrategy);
-                        const schema = strategy?.config_schema?.[key];
-                        
-                        const isBoolean = schema?.type === "boolean" || 
-                                        (typeof value === "boolean") ||
-                                        (value === "true" || value === "false");
-                        
-                        return (
-                          <Grid item xs={12} md={6} key={key}>
-                            {isBoolean ? (
-                              <FormControlLabel
-                                control={
-                                  <Switch
-                                    checked={value !== undefined ? Boolean(value === true || value === "true") : Boolean(schema?.default)}
-                                    onChange={e => handleStrategyConfigChange(key, e.target.checked)}
-                                    disabled={isConfigDisabled}
-                                  />
-                                }
-                                label={key.replace(/_/g, " ").replace(/\b\w/g, l => l.toUpperCase())}
-                              />
-                            ) : (
-                              <TextField
-                                label={key.replace(/_/g, " ").replace(/\b\w/g, l => l.toUpperCase())}
-                                type={schema?.type === "number" ? "number" : "text"}
-                                value={value !== undefined ? value : (schema?.default || "")}
-                                onChange={e => {
-                                  const newValue = schema?.type === "number" 
-                                    ? parseFloat(e.target.value) 
-                                    : e.target.value;
-                                  handleStrategyConfigChange(key, newValue);
-                                }}
-                                disabled={isConfigDisabled}
-                                fullWidth
-                              />
-                            )}
+                <>
+                  {strategySections.map(section => {
+                    const keysInSection = section.keys.filter(k => strategyConfig.hasOwnProperty(k));
+                    if (keysInSection.length === 0) return null;
+                    return (
+                      <Accordion key={section.title}>
+                        <AccordionSummary expandIcon={<ExpandMore />}>
+                          <Typography variant="h6">{section.title}</Typography>
+                        </AccordionSummary>
+                        <AccordionDetails>
+                          <Grid container spacing={2}>
+                            {keysInSection.map(key => renderStrategyField(key))}
                           </Grid>
-                        );
-                      })}
-                    </Grid>
-                  </AccordionDetails>
-                </Accordion>
+                        </AccordionDetails>
+                      </Accordion>
+                    );
+                  })}
+                </>
               )}
             </CardContent>
           </Card>

@@ -25,122 +25,110 @@ class SMCStrategy(StrategyBase):
             config: Strategy configuration
         """
         default_config = {
-            # Core spot trading settings
+            # Core Settings
             "mode": "spot",
-            "allow_short": True,  # Allow short selling on spot market
-
+            "allow_short": False,  # No shorting in spot
+            
             # Timeframes
             "high_timeframe": "4h",
             "low_timeframe": "15m",
-
-            # Risk management - Enhanced
-            "risk_per_trade_pct": 0.5,
-            "max_concurrent_positions": 2,  # Increased from 1 to 2
-            "rr_target_primary": 2.0,
-
-            # Dynamic risk management
-            "dynamic_risk_management": True,
-            "risk_reduction_after_loss": 0.7,  # Reduce risk by 30% after loss
-            "use_support_resistance_sl": True,
+            
+            # Risk Management
+            "risk_per_trade_pct": 0.3,
+            "max_concurrent_positions": 3,
+            "min_required_rr": 2.0,
+            "max_stop_distance_pct": 0.04,  # Max 4% SL
+            
+            # Volatility Filters
+            "volatility_filter_enabled": True,
+            "atr_period": 14,
+            "atr_percentile_min": 30,
+            "atr_percentile_max": 70,
             "sl_atr_multiplier": 2.0,
-
-            # Volatility filter
-            "min_atr_percentile": 40,
-            "max_atr_percentile": 85,
-
-            # Partial take profits
+            
+            # Technical Entry Filters
+            "ema_filter_period": 50,
+            "rsi_period": 14,
+            "min_rsi_long": 35,
+            "max_rsi_long": 70,  # For mean reversion exits
+            "volume_threshold": 1.3,
+            
+            # Partial Take Profits
             "use_partial_tp": True,
             "tp1_r": 1.0,
             "tp1_pct": 0.5,
-            "tp2_r": 2.0,
+            "tp2_r": 2.0, 
             "tp2_pct": 0.3,
             "runner_pct": 0.2,
-            "runner_trail_at": 2.0,
-
-            # Stop loss settings
-            "min_atr_stop_mult": 1.8,
-            "min_sl_atr_multiplier_15m": 1.8,
-            "min_sl_atr_multiplier_4h": 2.2,
-
-            # Market bias
-            "neutral_bias_allowed": True,
-
-            # Cooldown settings
-            "cooldown_after_loss_bars": 8,
+            
+            # Exit Management
+            "trailing_stop_enabled": True,
+            "trail_start": 1.5,
+            "trail_step": 0.3,
+            "breakeven_move_enabled": True,
+            
+            # Market Structure
+            "require_structure_confirmation": True,
+            "support_level_lookback_bars": 20,
+            
+            # Cooldown & Psychology
+            "cooldown_after_loss_bars": 10,
             "reduce_risk_after_loss": True,
-
-            # Technical analysis - Enhanced
-            "min_zone_strength": 0.9,  # Increased for stronger zones
-            "volume_threshold": 1.5,  # Lowered for better balance
+            "risk_reduction_after_loss": 0.6,
+            
+            # Exchange Settings
+            "min_notional": 10.0,
+            "taker_fee": 0.0004,
+            "slippage_bp": 2,
+            
+            # Дополнительные параметры для работы стратегии (не в новом конфиге, но нужны для функционала)
+            "min_zone_strength": 0.9,
             "max_zones": 5,
             "confluence_required": True,
-            "atr_period": 14,
-            "ema_filter_period": 50,
-            "rsi_period": 14,
-            "atr_multiplier": 1.2,
-            "min_rsi_long": 30,  # Lowered for better LONG signals balance
-            "max_rsi_short": 70,  # Increased for better SHORT signals balance
-            "min_confluence_factors": 3,  # Increased for higher quality signals
-
-            # Mandatory SMC elements
+            "max_rsi_short": 70,
+            "min_confluence_factors": 3,
             "require_mandatory_smc": True,
             "mandatory_smc_factors": ["OB", "FVG", "Liquidity"],
             "min_mandatory_factors": 1,
             "min_additional_factors": 2,
-
-            # Filters
             "premium_discount_filter": True,
             "fibonacci_levels": [0.618, 0.786],
-            "volatility_filter_enabled": True,
             "trend_filter_enabled": True,
-            "atr_percentile_min": 30,
-            "atr_percentile_max": 70,
-
-            # Exit management
             "ladder_exit_enabled": True,
-            "trailing_stop_enabled": True,
-            "breakeven_move_enabled": True,
             "use_adaptive_sl": True,
             "use_trailing_stop": True,
-            "trail_start": 1.5,
-            "trail_step": 0.5,
-
-            # Dynamic RR ratio
-            "min_required_rr": 1.8,
             "adaptive_rr_enabled": True,
-
-            # Exchange constraints
             "min_qty": 0.00001,
             "step_size": 0.00001,
-            "min_notional": 10.0,
             "tick_size": 0.01,
             "maker_fee": 0.0001,
-            "taker_fee": 0.0004,
-            "slippage_bp": 1,
-
-            # Hardcoded values converted to config (NEW)
-            "max_stop_distance_pct": 0.035,  # Max 3.5% stop loss distance
-            "support_level_lookback_bars": 20,  # Bars to look back for support/resistance
-            "recent_data_lookback_bars": 20,  # Bars for recent structure analysis
-            "swing_point_lookback_bars": 3,  # Bars for swing points in structure
-            "structure_analysis_lookback": 20,  # Bars for market structure analysis
-            "volume_lookback_bars": 20,  # Bars for volume rolling average
-            "liquidity_sweep_lookback": 10,  # Bars for liquidity sweep detection
-            "fibonacci_retracement_lookback": 50,  # Bars for Fibonacci levels
-            "price_action_lookback": 3,  # Bars for price action patterns
-            "bullish_engulfing_body_ratio": 0.7,  # Body size ratio for bullish engulfing
-            "bearish_engulfing_body_ratio": 0.5,  # Body size ratio for bearish patterns
-            "shooting_star_upper_shadow_ratio": 2.0,  # Upper shadow ratio for shooting star
-            "shooting_star_lower_shadow_ratio": 0.5,  # Lower shadow ratio for shooting star
-            "liquidity_level_tolerance_pct": 0.005,  # Price diff tolerance for liquidity levels
-            "neutral_rsi": 50.0,  # Neutral RSI value
-            "volatility_percentile_lookback": 100,  # Bars for volatility percentile calculation
-            "volatility_percentile_calc_period": 50,  # Min data needed for volatility calc
+            "recent_data_lookback_bars": 20,
+            "swing_point_lookback_bars": 3,
+            "structure_analysis_lookback": 20,
+            "volume_lookback_bars": 20,
+            "liquidity_sweep_lookback": 10,
+            "fibonacci_retracement_lookback": 50,
+            "price_action_lookback": 3,
+            "bullish_engulfing_body_ratio": 0.7,
+            "bearish_engulfing_body_ratio": 0.5,
+            "shooting_star_upper_shadow_ratio": 2.0,
+            "shooting_star_lower_shadow_ratio": 0.5,
+            "liquidity_level_tolerance_pct": 0.005,
+            "neutral_rsi": 50.0,
+            "volatility_percentile_lookback": 100,
+            "volatility_percentile_calc_period": 50,
             "macd_fast_period": 12,
             "macd_slow_period": 26,
             "macd_signal_period": 9,
             "atr_percentile_lookback": 14,
-            "order_block_strength_threshold": 0.9,  # OB strength for LONG entries
+            "order_block_strength_threshold": 0.9,
+            "rr_target_primary": 2.0,
+            "atr_multiplier": 1.2,
+            "min_sl_atr_multiplier_15m": 1.8,
+            "min_sl_atr_multiplier_4h": 2.2,
+            "dynamic_risk_management": True,
+            "neutral_bias_allowed": True,
+            "use_support_resistance_sl": True,
         }
 
         super().__init__(config)
@@ -241,12 +229,9 @@ class SMCStrategy(StrategyBase):
         atr_15m = self._calculate_atr(low_df)
         atr_4h = self._calculate_atr(high_df)
 
-        # Calculate minimum distances
-        min_sl_15m = atr_15m * self.config["min_sl_atr_multiplier_15m"]
-        min_sl_4h = atr_4h * self.config["min_sl_atr_multiplier_4h"] / 4  # sqrt(16) for 4h->15m
-
-        # Use the maximum of both to ensure adequate distance
-        min_distance = max(min_sl_15m, min_sl_4h)
+        # Minimum SL distance uses a single ATR multiplier from config
+        sl_mult = self.config.get("sl_atr_multiplier", 2.0)
+        min_distance = max(atr_15m * sl_mult, (atr_4h * sl_mult) / 4)
 
         return min_distance
 
@@ -265,7 +250,8 @@ class SMCStrategy(StrategyBase):
         # Base ATR stop
         atr_15m = self._calculate_atr(low_df)
         atr_4h = self._calculate_atr(high_df)
-        atr_stop = max(atr_15m * self.config["min_sl_atr_multiplier_15m"], atr_4h * self.config["min_sl_atr_multiplier_4h"])
+        sl_mult = self.config.get("sl_atr_multiplier", 2.0)
+        atr_stop = max(atr_15m * sl_mult, atr_4h * sl_mult)
 
         if direction == "LONG":
             # Find nearest support level
@@ -498,12 +484,13 @@ class SMCStrategy(StrategyBase):
         if self.market_bias == "BULLISH":
             signals.extend(self._look_for_long_entries(low_df, high_df, current_price))
         # Look for SHORT entries in BEARISH bias
-        elif self.market_bias == "BEARISH":
+        elif self.market_bias == "BEARISH" and self.config.get("allow_short", False):
             signals.extend(self._look_for_short_entries(low_df, high_df, current_price))
-        # In NEUTRAL bias, look for both directions
+        # In NEUTRAL bias, allow longs and optionally shorts based on allow_short
         elif self.market_bias == "NEUTRAL" and self.config.get("neutral_bias_allowed", False):
             signals.extend(self._look_for_long_entries(low_df, high_df, current_price))
-            signals.extend(self._look_for_short_entries(low_df, high_df, current_price))
+            if self.config.get("allow_short", False):
+                signals.extend(self._look_for_short_entries(low_df, high_df, current_price))
 
         return signals
 
@@ -606,6 +593,8 @@ class SMCStrategy(StrategyBase):
 
     def _look_for_short_entries(self, low_df: pd.DataFrame, high_df: pd.DataFrame, current_price: float) -> List[Dict[str, Any]]:
         """Enhanced short entry for spot trading (sell BTC, buy back cheaper)."""
+        if not self.config.get("allow_short", False):
+            return []
         signals = []
 
         # Volatility-based position sizing
@@ -1173,23 +1162,17 @@ class SMCStrategy(StrategyBase):
         max_position_size = max_position_value / current_price
         position_size = min(position_size, max_position_size)
 
-        # Partial take profit levels
+        # Partial take profit levels based on provided R-multiples
         risk_distance = stop_distance
-
-        # TP1: 1R (50% of position)
-        tp1 = current_price + risk_distance
-
-        # TP2: 2R (30% of position)
-        tp2 = current_price + (risk_distance * 2)
-
-        # Runner: 20% with trailing stop
-        runner_target = current_price + (risk_distance * self.config["rr_target_primary"])
+        tp1 = current_price + (risk_distance * self.config.get("tp1_r", 1.0))
+        tp2 = current_price + (risk_distance * self.config.get("tp2_r", 2.0))
+        runner_target = None  # runner managed by trailing stop
 
         return {
             "direction": "LONG",
             "entry_price": float(current_price),
             "stop_loss": float(stop_loss),
-            "take_profit": float(runner_target),  # Main target for compatibility
+            "take_profit": float(tp2),
             "position_size": float(position_size),
             "reason": f"SMC Spot Long - {', '.join(confluence_factors)}",
             "confidence": float(len(confluence_factors) / 9.0),
@@ -1197,15 +1180,14 @@ class SMCStrategy(StrategyBase):
             "atr": float(atr),
             "risk_distance": float(risk_distance),
             "take_profit_levels": [
-                {"price": float(tp1), "percentage": 0.5, "reason": "TP1 - 1R"},
-                {"price": float(tp2), "percentage": 0.3, "reason": "TP2 - 2R"},
-                {"price": float(runner_target), "percentage": 0.2, "reason": "Runner - Trailing"},
+                {"price": float(tp1), "percentage": float(self.config.get("tp1_pct", 0.5)), "reason": "TP1"},
+                {"price": float(tp2), "percentage": float(self.config.get("tp2_pct", 0.3)), "reason": "TP2"},
+                # runner_pct handled by engine with trailing stop
             ],
-            "ladder_exit_enabled": self.config["ladder_exit_enabled"],
             "trailing_stop_enabled": self.config["trailing_stop_enabled"],
             "breakeven_move_enabled": self.config["breakeven_move_enabled"],
-            "move_to_be_at": float(tp1),  # Move to breakeven after TP1
-            "trail_after": float(tp2),  # Start trailing after TP2
+            "move_to_be_at": float(tp1),
+            "trail_after": float(tp2),
         }
 
     def _create_short_signal(
@@ -1217,7 +1199,7 @@ class SMCStrategy(StrategyBase):
 
         # Smart stop placement (ATR-based with minimum distance)
         if atr > 0:
-            atr_stop_distance = atr * self.config["atr_multiplier"]
+            atr_stop_distance = atr * self.config.get("sl_atr_multiplier", 2.0)
             stop_distance = max(atr_stop_distance, min_stop_distance)
         else:
             # Fallback: use recent swing high with minimum distance
@@ -1237,21 +1219,14 @@ class SMCStrategy(StrategyBase):
 
         # Partial take profit levels
         risk_distance = stop_distance
-
-        # TP1: 1R (50% of position)
-        tp1 = current_price - risk_distance
-
-        # TP2: 2R (30% of position)
-        tp2 = current_price - (risk_distance * 2)
-
-        # Runner: 20% with trailing stop
-        runner_target = current_price - (risk_distance * self.config["rr_target_primary"])
+        tp1 = current_price - (risk_distance * self.config.get("tp1_r", 1.0))
+        tp2 = current_price - (risk_distance * self.config.get("tp2_r", 2.0))
 
         return {
             "direction": "SHORT",
             "entry_price": float(current_price),
             "stop_loss": float(stop_loss),
-            "take_profit": float(runner_target),  # Main target for compatibility
+            "take_profit": float(tp2),
             "position_size": float(position_size),
             "reason": f"SMC Spot Short - {', '.join(confluence_factors)}",
             "confidence": float(len(confluence_factors) / 9.0),
@@ -1259,11 +1234,9 @@ class SMCStrategy(StrategyBase):
             "atr": float(atr),
             "risk_distance": float(risk_distance),
             "take_profit_levels": [
-                {"price": float(tp1), "percentage": 0.5, "reason": "TP1 - 1R"},
-                {"price": float(tp2), "percentage": 0.3, "reason": "TP2 - 2R"},
-                {"price": float(runner_target), "percentage": 0.2, "reason": "Runner - Trailing"},
+                {"price": float(tp1), "percentage": float(self.config.get("tp1_pct", 0.5)), "reason": "TP1"},
+                {"price": float(tp2), "percentage": float(self.config.get("tp2_pct", 0.3)), "reason": "TP2"},
             ],
-            "ladder_exit_enabled": self.config["ladder_exit_enabled"],
             "trailing_stop_enabled": self.config["trailing_stop_enabled"],
             "breakeven_move_enabled": self.config["breakeven_move_enabled"],
             "move_to_be_at": float(tp1),  # Move to breakeven after TP1
@@ -1300,21 +1273,11 @@ class SMCStrategy(StrategyBase):
             "name": "SMC Spot Strategy",
             "description": "Smart Money Concepts strategy optimized for spot crypto trading",
             "mode": "spot",
-            "allow_short": True,
+            "allow_short": self.config.get("allow_short", False),
             "parameters": {
                 "timeframes": {
-                    "high_timeframe": {
-                        "type": "select",
-                        "value": self.config["high_timeframe"],
-                        "options": ["1h", "4h", "1d"],
-                        "description": "High timeframe for trend analysis",
-                    },
-                    "low_timeframe": {
-                        "type": "select",
-                        "value": self.config["low_timeframe"],
-                        "options": ["5m", "15m", "30m"],
-                        "description": "Low timeframe for entry signals",
-                    },
+                    "high_timeframe": {"type": "string", "value": self.config["high_timeframe"]},
+                    "low_timeframe": {"type": "string", "value": self.config["low_timeframe"]},
                 },
                 "risk_management": {
                     "risk_per_trade_pct": {
@@ -1333,13 +1296,21 @@ class SMCStrategy(StrategyBase):
                         "step": 1,
                         "description": "Maximum concurrent positions",
                     },
-                    "rr_target_primary": {
+                    "min_required_rr": {
                         "type": "number",
-                        "value": self.config["rr_target_primary"],
+                        "value": self.config["min_required_rr"],
                         "min": 1.0,
                         "max": 5.0,
                         "step": 0.1,
-                        "description": "Primary risk-reward target",
+                        "description": "Minimum acceptable risk-reward",
+                    },
+                    "max_stop_distance_pct": {
+                        "type": "number",
+                        "value": self.config["max_stop_distance_pct"],
+                        "min": 0.01,
+                        "max": 0.10,
+                        "step": 0.01,
+                        "description": "Max 4% stop loss distance",
                     },
                 },
                 "partial_take_profits": {
@@ -1386,14 +1357,6 @@ class SMCStrategy(StrategyBase):
                     },
                 },
                 "stop_loss": {
-                    "min_atr_stop_mult": {
-                        "type": "number",
-                        "value": self.config["min_atr_stop_mult"],
-                        "min": 0.5,
-                        "max": 3.0,
-                        "step": 0.1,
-                        "description": "Minimum ATR multiplier for stop loss",
-                    },
                     "breakeven_move_enabled": {
                         "type": "boolean",
                         "value": self.config["breakeven_move_enabled"],
@@ -1403,6 +1366,30 @@ class SMCStrategy(StrategyBase):
                         "type": "boolean",
                         "value": self.config["trailing_stop_enabled"],
                         "description": "Enable trailing stop for runner",
+                    },
+                    "sl_atr_multiplier": {
+                        "type": "number",
+                        "value": self.config["sl_atr_multiplier"],
+                        "min": 0.5,
+                        "max": 5.0,
+                        "step": 0.1,
+                        "description": "ATR multiplier for SL",
+                    },
+                    "trail_start": {
+                        "type": "number",
+                        "value": self.config["trail_start"],
+                        "min": 0.5,
+                        "max": 3.0,
+                        "step": 0.1,
+                        "description": "Start trailing after R multiple",
+                    },
+                    "trail_step": {
+                        "type": "number",
+                        "value": self.config["trail_step"],
+                        "min": 0.1,
+                        "max": 1.0,
+                        "step": 0.1,
+                        "description": "Trailing step in R",
                     },
                 },
                 "market_bias": {
@@ -1419,118 +1406,38 @@ class SMCStrategy(StrategyBase):
                         "step": 4,
                         "description": "Cooldown period after stop loss (15m bars)",
                     },
-                },
-                "technical_analysis": {
-                    "min_zone_strength": {
+                    "reduce_risk_after_loss": {
+                        "type": "boolean",
+                        "value": self.config["reduce_risk_after_loss"],
+                        "description": "Reduce risk after a loss",
+                    },
+                    "risk_reduction_after_loss": {
                         "type": "number",
-                        "value": self.config["min_zone_strength"],
+                        "value": self.config["risk_reduction_after_loss"],
                         "min": 0.1,
                         "max": 1.0,
                         "step": 0.1,
-                        "description": "Minimum order block strength",
+                        "description": "Risk multiplier after a loss",
                     },
-                    "volume_threshold": {
-                        "type": "number",
-                        "value": self.config["volume_threshold"],
-                        "min": 1.0,
-                        "max": 5.0,
-                        "step": 0.1,
-                        "description": "Volume confirmation threshold",
-                    },
-                    "min_confluence_factors": {
-                        "type": "number",
-                        "value": self.config["min_confluence_factors"],
-                        "min": 1,
-                        "max": 9,
-                        "step": 1,
-                        "description": "Minimum confluence factors required",
-                    },
-                    "min_rsi_long": {
-                        "type": "number",
-                        "value": self.config["min_rsi_long"],
-                        "min": 20,
-                        "max": 60,
-                        "step": 5,
-                        "description": "Minimum RSI for long entries",
-                    },
+                },
+                "technical_entry_filters": {
+                    "ema_filter_period": {"type": "number", "value": self.config["ema_filter_period"]},
+                    "rsi_period": {"type": "number", "value": self.config["rsi_period"]},
+                    "min_rsi_long": {"type": "number", "value": self.config["min_rsi_long"]},
+                    "max_rsi_long": {"type": "number", "value": self.config["max_rsi_long"]},
+                    "volume_threshold": {"type": "number", "value": self.config["volume_threshold"]},
                 },
                 "filters": {
-                    "premium_discount_filter": {
-                        "type": "boolean",
-                        "value": self.config["premium_discount_filter"],
-                        "description": "Filter by premium/discount zones",
-                    },
-                    "volatility_filter_enabled": {
-                        "type": "boolean",
-                        "value": self.config["volatility_filter_enabled"],
-                        "description": "Enable volatility filtering",
-                    },
-                    "atr_percentile_min": {
-                        "type": "number",
-                        "value": self.config["atr_percentile_min"],
-                        "min": 10,
-                        "max": 50,
-                        "step": 5,
-                        "description": "Minimum ATR percentile",
-                    },
-                    "atr_percentile_max": {
-                        "type": "number",
-                        "value": self.config["atr_percentile_max"],
-                        "min": 50,
-                        "max": 90,
-                        "step": 5,
-                        "description": "Maximum ATR percentile",
-                    },
+                    "volatility_filter_enabled": {"type": "boolean", "value": self.config["volatility_filter_enabled"]},
+                    "atr_period": {"type": "number", "value": self.config["atr_period"]},
+                    "atr_percentile_min": {"type": "number", "value": self.config["atr_percentile_min"]},
+                    "atr_percentile_max": {"type": "number", "value": self.config["atr_percentile_max"]},
+                    "require_structure_confirmation": {"type": "boolean", "value": self.config["require_structure_confirmation"]},
                 },
-                "exchange_constraints": {
-                    "min_qty": {
-                        "type": "number",
-                        "value": self.config["min_qty"],
-                        "min": 0.000001,
-                        "max": 0.001,
-                        "step": 0.000001,
-                        "description": "Minimum order quantity",
-                    },
-                    "step_size": {
-                        "type": "number",
-                        "value": self.config["step_size"],
-                        "min": 0.000001,
-                        "max": 0.001,
-                        "step": 0.000001,
-                        "description": "Order quantity step size",
-                    },
-                    "min_notional": {
-                        "type": "number",
-                        "value": self.config["min_notional"],
-                        "min": 1.0,
-                        "max": 100.0,
-                        "step": 1.0,
-                        "description": "Minimum order value",
-                    },
-                    "maker_fee": {
-                        "type": "number",
-                        "value": self.config["maker_fee"],
-                        "min": 0.0001,
-                        "max": 0.01,
-                        "step": 0.0001,
-                        "description": "Maker fee percentage",
-                    },
-                    "taker_fee": {
-                        "type": "number",
-                        "value": self.config["taker_fee"],
-                        "min": 0.0001,
-                        "max": 0.01,
-                        "step": 0.0001,
-                        "description": "Taker fee percentage",
-                    },
-                    "slippage_bp": {
-                        "type": "number",
-                        "value": self.config["slippage_bp"],
-                        "min": 0,
-                        "max": 10,
-                        "step": 1,
-                        "description": "Slippage in basis points",
-                    },
+                "exchange": {
+                    "min_notional": {"type": "number", "value": self.config["min_notional"]},
+                    "taker_fee": {"type": "number", "value": self.config["taker_fee"]},
+                    "slippage_bp": {"type": "number", "value": self.config["slippage_bp"]},
                 },
             },
         }
@@ -1549,7 +1456,7 @@ class SMCStrategy(StrategyBase):
                 "signals_generated": self.signals_generated,
                 "signals_executed": self.signals_executed,
                 "premium_discount_zones": self.premium_discount_zones,
-                "allow_short": True,
+                "allow_short": self.config.get("allow_short", False),
                 "max_concurrent_positions": self.config.get("max_concurrent_positions", 1),
             }
         )

@@ -180,68 +180,52 @@ def get_strategy_config_schema(strategy_name: str):
     # Return hardcoded schemas for known strategies without importing
     default_schemas = {
         "smc_strategy": {
-            # === Timeframes ===
+            # Core
+            "mode": {"type": "string", "default": "spot"},
+            "allow_short": {"type": "boolean", "default": False},
+            # Timeframes
             "high_timeframe": {"type": "string", "default": "4h"},
             "low_timeframe": {"type": "string", "default": "15m"},
-            
-            # === Risk Management (Core) ===
-            "risk_per_trade_pct": {"type": "number", "default": 0.5},
-            "min_required_rr": {"type": "number", "default": 1.8},
-            "rr_target_primary": {"type": "number", "default": 2.0},
-            "max_concurrent_positions": {"type": "number", "default": 2},
-            
-            # === Technical Analysis ===
-            "min_zone_strength": {"type": "number", "default": 0.9},
-            "volume_threshold": {"type": "number", "default": 1.5},
-            "max_zones": {"type": "number", "default": 5},
-            "min_confluence_factors": {"type": "number", "default": 3},
-            
-            # === Filters ===
-            "confluence_required": {"type": "boolean", "default": True},
-            "trend_filter_enabled": {"type": "boolean", "default": True},
+            # Risk
+            "risk_per_trade_pct": {"type": "number", "default": 0.3},
+            "max_concurrent_positions": {"type": "number", "default": 3},
+            "min_required_rr": {"type": "number", "default": 2.0},
+            "max_stop_distance_pct": {"type": "number", "default": 0.04},
+            # Volatility
             "volatility_filter_enabled": {"type": "boolean", "default": True},
-            "premium_discount_filter": {"type": "boolean", "default": True},
-            
-            # === RSI Settings ===
-            "rsi_period": {"type": "number", "default": 14},
-            "min_rsi_long": {"type": "number", "default": 30},
-            "max_rsi_short": {"type": "number", "default": 70},
-            
-            # === ATR Settings ===
             "atr_period": {"type": "number", "default": 14},
+            "atr_percentile_min": {"type": "number", "default": 30},
+            "atr_percentile_max": {"type": "number", "default": 70},
             "sl_atr_multiplier": {"type": "number", "default": 2.0},
-            "min_sl_atr_multiplier_15m": {"type": "number", "default": 1.8},
-            "min_sl_atr_multiplier_4h": {"type": "number", "default": 2.2},
-            "atr_multiplier": {"type": "number", "default": 1.2},
-            "max_stop_distance_pct": {"type": "number", "default": 0.035},
-            
-            # === Exit Management ===
-            "ladder_exit_enabled": {"type": "boolean", "default": True},
-            "trailing_stop_enabled": {"type": "boolean", "default": True},
-            "breakeven_move_enabled": {"type": "boolean", "default": True},
-            "use_adaptive_sl": {"type": "boolean", "default": True},
-            "use_trailing_stop": {"type": "boolean", "default": True},
-            "trail_start": {"type": "number", "default": 1.5},
-            "trail_step": {"type": "number", "default": 0.5},
-            
-            # === Partial Take Profits ===
+            # Technical
+            "ema_filter_period": {"type": "number", "default": 50},
+            "rsi_period": {"type": "number", "default": 14},
+            "min_rsi_long": {"type": "number", "default": 35},
+            "max_rsi_long": {"type": "number", "default": 70},
+            "volume_threshold": {"type": "number", "default": 1.3},
+            # Partial TPs
             "use_partial_tp": {"type": "boolean", "default": True},
             "tp1_r": {"type": "number", "default": 1.0},
             "tp1_pct": {"type": "number", "default": 0.5},
             "tp2_r": {"type": "number", "default": 2.0},
             "tp2_pct": {"type": "number", "default": 0.3},
             "runner_pct": {"type": "number", "default": 0.2},
-            
-            # === Dynamic Risk Management ===
-            "dynamic_risk_management": {"type": "boolean", "default": True},
-            "risk_reduction_after_loss": {"type": "number", "default": 0.7},
-            "adaptive_rr_enabled": {"type": "boolean", "default": True},
-            
-            # === Cooldown ===
-            "cooldown_after_loss_bars": {"type": "number", "default": 8},
-            
-            # === EMA Filter ===
-            "ema_filter_period": {"type": "number", "default": 50},
+            # Exit Management
+            "trailing_stop_enabled": {"type": "boolean", "default": True},
+            "trail_start": {"type": "number", "default": 1.5},
+            "trail_step": {"type": "number", "default": 0.3},
+            "breakeven_move_enabled": {"type": "boolean", "default": True},
+            # Market Structure
+            "require_structure_confirmation": {"type": "boolean", "default": True},
+            "support_level_lookback_bars": {"type": "number", "default": 20},
+            # Cooldown & Psychology
+            "cooldown_after_loss_bars": {"type": "number", "default": 10},
+            "reduce_risk_after_loss": {"type": "boolean", "default": True},
+            "risk_reduction_after_loss": {"type": "number", "default": 0.6},
+            # Exchange
+            "min_notional": {"type": "number", "default": 10.0},
+            "taker_fee": {"type": "number", "default": 0.0004},
+            "slippage_bp": {"type": "number", "default": 2},
         },
         "simple_test_strategy": {
             "threshold": {"type": "number", "default": 0.5},
