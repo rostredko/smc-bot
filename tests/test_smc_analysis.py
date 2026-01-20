@@ -14,7 +14,7 @@ from unittest.mock import Mock, patch, MagicMock
 # Add project root to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from engine.smc_analysis import OrderBlockDetector, FairValueGapDetector, LiquidityZoneMapper
+from strategies.smc_analysis import OrderBlockDetector, FairValueGapDetector, LiquidityZoneMapper
 
 
 class TestOrderBlockDetector:

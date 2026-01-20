@@ -61,19 +61,6 @@ class TestBaseStrategyInitialization:
         # Should have some defaults
         assert hasattr(strategy, 'config')
         assert isinstance(strategy.config, dict)
-    
-    def test_strategy_has_analyzers(self):
-        """Test that strategy has SMC analysis components."""
-        class ConcreteStrategy(StrategyBase):
-            def generate_signals(self, market_data):
-                return []
-        
-        strategy = ConcreteStrategy()
-        
-        assert hasattr(strategy, 'structure_analyzer')
-        assert hasattr(strategy, 'order_block_detector')
-        assert hasattr(strategy, 'fvg_detector')
-        assert hasattr(strategy, 'liquidity_mapper')
 
 
 class TestSignalGeneration:
@@ -326,19 +313,6 @@ class TestStrategyInheritance:
         strategy = CustomStrategy(custom_config)
         
         assert strategy.config['test_param'] == 'test_value'
-    
-    def test_subclass_inherits_analyzers(self):
-        """Test that subclasses inherit SMC analyzers."""
-        class CustomStrategy(StrategyBase):
-            def generate_signals(self, market_data):
-                return []
-        
-        strategy = CustomStrategy()
-        
-        assert hasattr(strategy, 'structure_analyzer')
-        assert hasattr(strategy, 'order_block_detector')
-        assert hasattr(strategy, 'fvg_detector')
-        assert hasattr(strategy, 'liquidity_mapper')
 
 
 class TestStrategyEdgeCases:

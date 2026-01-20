@@ -16,8 +16,8 @@ from unittest.mock import Mock, patch, MagicMock
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from engine.backtest_engine import BacktestEngine
-from engine.risk_manager import SpotRiskManager
-from engine.position import Position
+from engine.risk_manager import RiskManager
+from engine.position import Position, TradeSimulator
 from engine.logger import Logger
 from engine.metrics import PerformanceReporter
 from strategies.simple_test_strategy import SimpleTestStrategy
@@ -66,11 +66,11 @@ class TestRiskManager:
     
     def test_drawdown_limit(self):
         """Test drawdown limit enforcement."""
-        rm = SpotRiskManager(10000, 2.0, 10.0, 3)
+        rm = RiskManager(10000, 1.0, 2.0, 10.0, 3)
         
         # Simulate 15% drawdown (exceeds 10% limit)
-        rm.cash_usdt = 8500  # Simulate loss
-        rm.asset_qty = 0  # No assets
+        rm.balance = 8500  # Simulate loss
+        rm.used_margin = 0  # No assets
         can_open, reason = rm.can_open_position(50000, 49000)
         assert can_open == False
 

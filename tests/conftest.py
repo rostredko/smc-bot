@@ -121,9 +121,10 @@ def trending_ohlcv_data():
 @pytest.fixture
 def risk_manager():
     """Create a RiskManager instance for testing."""
-    from engine.risk_manager import SpotRiskManager
-    return SpotRiskManager(
+    from engine.risk_manager import RiskManager
+    return RiskManager(
         initial_capital=10000,
+        leverage=1.0,
         risk_per_trade=2.0,
         max_drawdown=15.0,
         max_positions=3

@@ -254,68 +254,17 @@ Position sizing calculator for spot trading.
 
 ---
 
-### 8. smc_analysis.py
 
-#### Data Classes:
-- `SwingPoint` - Represents swing high/low point (index, price, timestamp, type)
-- `OrderBlock` - Order block zone (start_index, end_index, high, low, type, strength, timestamp, zone_id, used)
-- `FairValueGap` - FVG/imbalance (start_index, end_index, high, low, type, filled, timestamp, zone_id, used)
-- `LiquidityZone` - Liquidity zone (price, type, strength, timestamp, swept)
 
-#### Class: MarketStructureAnalyzer
-Analyzes market structure for BOS and CHOCH.
+### STRATEGIES MODULE (`strategies/`)
 
-**__init__(self, lookback_period: int = 20)**
+Contains trading strategies and analysis logic.
 
-**Methods:**
-- `identify_trend(df) -> str` - Identifies trend ('Bullish', 'Bearish', 'Sideways')
-- `find_swing_points(df) -> List[SwingPoint]` - Finds swing highs and lows
-- `detect_structure_breaks(df) -> Dict[str, bool]` - Detects Break of Structure events
-- `detect_choch(df) -> Dict[str, bool]` - Detects Change of Character events
-- `get_market_bias(df) -> str` - Determines market bias ('Bullish', 'Bearish', 'Neutral')
-
-#### Class: OrderBlockDetector
-Detects order blocks (supply/demand zones).
-
-**__init__(self, min_strength: float = 0.6)**
-
-**Methods:**
-- `find_order_blocks(df) -> List[OrderBlock]` - Finds order blocks in price data
-- `_is_strong_bullish_move(df, index) -> bool` - Checks for strong bullish move
-- `_is_strong_bearish_move(df, index) -> bool` - Checks for strong bearish move
-- `_create_demand_block(df, index) -> Optional[OrderBlock]` - Creates demand order block
-- `_create_supply_block(df, index) -> Optional[OrderBlock]` - Creates supply order block
-- `_calculate_volume_strength(df, index) -> float` - Calculates volume strength
-- `_calculate_price_strength(df, index, block_type) -> float` - Calculates price action strength
-- `find_premium_discount_zones(df) -> Dict[str, Dict]` - Finds premium/discount zones
-- `is_price_in_zone(price, zone) -> bool` - Checks if price is in zone
-
-#### Class: FairValueGapDetector
-Detects Fair Value Gaps (FVGs).
-
-**__init__(self, min_gap_size: float = 0.001)**
-
-**Methods:**
-- `scan_for_gaps(df) -> List[FairValueGap]` - Scans for FVGs in price data
-- `_detect_bullish_gap(df, index) -> Optional[FairValueGap]` - Detects bullish FVG
-- `_detect_bearish_gap(df, index) -> Optional[FairValueGap]` - Detects bearish FVG
-- `check_gap_fill(df, gap) -> bool` - Checks if FVG has been filled
-- `get_active_gaps(df) -> List[FairValueGap]` - Gets all unfilled FVGs
-
-#### Class: LiquidityZoneMapper
-Maps liquidity zones and detects liquidity sweeps.
-
-**__init__(self, sweep_threshold: float = 0.002)**
-
-**Methods:**
-- `identify_liquidity_sweeps(df) -> List[LiquidityZone]` - Identifies liquidity sweeps
-- `find_liquidity_levels(df, lookback=50) -> List[LiquidityZone]` - Finds potential liquidity levels
-
----
-
-## STRATEGIES MODULE
-
-### 1. base_strategy.py
+- **`base_strategy.py`**: Abstract base class defining the strategy interface.
+- **`price_action_strategy.py`**: **(PRIMARY)** Production-ready strategy based on Trend Following, EMA, and RSI logic.
+- **`smc_strategy.py`**: Legacy strategy implementing Smart Money Concepts.
+- **`smc_analysis.py`**: Library of SMC analysis components (Market Structure, Order Blocks, FVGs).
+- **`simple_test_strategy.py`**: Minimal strategy for engine testing.
 
 #### Class: StrategyBase (ABC)
 Abstract base class for trading strategies.
@@ -414,6 +363,65 @@ Smart Money Concepts based trading strategy.
 - `get_strategy_info() -> Dict[str, Any]` - Gets strategy info with market bias, zones, performance
 - `manage_open_positions(current_price, current_time)` - Manages open positions with trailing stops
 - `_manage_long_position(position, current_price, current_time)` - Manages long position with trailing stop
+
+---
+
+### 4. smc_analysis.py
+
+#### Data Classes:
+- `SwingPoint` - Represents swing high/low point (index, price, timestamp, type)
+- `OrderBlock` - Order block zone (start_index, end_index, high, low, type, strength, timestamp, zone_id, used)
+- `FairValueGap` - FVG/imbalance (start_index, end_index, high, low, type, filled, timestamp, zone_id, used)
+- `LiquidityZone` - Liquidity zone (price, type, strength, timestamp, swept)
+
+#### Class: MarketStructureAnalyzer
+Analyzes market structure for BOS and CHOCH.
+
+**__init__(self, lookback_period: int = 20)**
+
+**Methods:**
+- `identify_trend(df) -> str` - Identifies trend ('Bullish', 'Bearish', 'Sideways')
+- `find_swing_points(df) -> List[SwingPoint]` - Finds swing highs and lows
+- `detect_structure_breaks(df) -> Dict[str, bool]` - Detects Break of Structure events
+- `detect_choch(df) -> Dict[str, bool]` - Detects Change of Character events
+- `get_market_bias(df) -> str` - Determines market bias ('Bullish', 'Bearish', 'Neutral')
+
+#### Class: OrderBlockDetector
+Detects order blocks (supply/demand zones).
+
+**__init__(self, min_strength: float = 0.6)**
+
+**Methods:**
+- `find_order_blocks(df) -> List[OrderBlock]` - Finds order blocks in price data
+- `_is_strong_bullish_move(df, index) -> bool` - Checks for strong bullish move
+- `_is_strong_bearish_move(df, index) -> bool` - Checks for strong bearish move
+- `_create_demand_block(df, index) -> Optional[OrderBlock]` - Creates demand order block
+- `_create_supply_block(df, index) -> Optional[OrderBlock]` - Creates supply order block
+- `_calculate_volume_strength(df, index) -> float` - Calculates volume strength
+- `_calculate_price_strength(df, index, block_type) -> float` - Calculates price action strength
+- `find_premium_discount_zones(df) -> Dict[str, Dict]` - Finds premium/discount zones
+- `is_price_in_zone(price, zone) -> bool` - Checks if price is in zone
+
+#### Class: FairValueGapDetector
+Detects Fair Value Gaps (FVGs).
+
+**__init__(self, min_gap_size: float = 0.001)**
+
+**Methods:**
+- `scan_for_gaps(df) -> List[FairValueGap]` - Scans for FVGs in price data
+- `_detect_bullish_gap(df, index) -> Optional[FairValueGap]` - Detects bullish FVG
+- `_detect_bearish_gap(df, index) -> Optional[FairValueGap]` - Detects bearish FVG
+- `check_gap_fill(df, gap) -> bool` - Checks if FVG has been filled
+- `get_active_gaps(df) -> List[FairValueGap]` - Gets all unfilled FVGs
+
+#### Class: LiquidityZoneMapper
+Maps liquidity zones and detects liquidity sweeps.
+
+**__init__(self, sweep_threshold: float = 0.002)**
+
+**Methods:**
+- `identify_liquidity_sweeps(df) -> List[LiquidityZone]` - Identifies liquidity sweeps
+- `find_liquidity_levels(df, lookback=50) -> List[LiquidityZone]` - Finds potential liquidity levels
 
 ---
 

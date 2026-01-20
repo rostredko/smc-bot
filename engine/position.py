@@ -1,6 +1,6 @@
 """
-Position/Trade object representing an open spot trading position.
-Handles BTC quantity, partial exits, break-even moves, and trailing stops.
+Position/Trade object representing an open trading position (Futures/Spot).
+Handles size, partial exits, break-even moves, and trailing stops.
 """
 
 from typing import Dict, List, Optional, Tuple
@@ -29,12 +29,12 @@ class Position:
         breakeven_move_enabled: bool = True,
     ):
         """
-        Initialize a spot position.
+        Initialize a position.
 
         Args:
             id: Unique position identifier
-            entry_price: Price at which BTC was bought
-            size: BTC quantity
+            entry_price: Price at which position was opened
+            size: Position size (asset units)
             stop_loss: Stop loss price
             take_profit: Take profit price (optional)
             entry_time: Timestamp when position was opened
@@ -96,19 +96,19 @@ class Position:
 
     def get_unrealized_pnl(self, current_price: Optional[float] = None) -> float:
         """
-        Calculate unrealized PnL for the spot position.
+        Calculate unrealized PnL for the position.
 
         Args:
-            current_price: Current BTC price (uses entry_price if None)
+            current_price: Current market price (uses entry_price if None)
 
         Returns:
-            Unrealized PnL in USDT
+            Unrealized PnL in Quote Currency (e.g. USDT)
         """
         if current_price is None:
             current_price = self.entry_price
 
-        # For spot LONG position: (current_price - entry_price) * size
-        # For spot SHORT position: (entry_price - current_price) * size
+        # For LONG position: (current_price - entry_price) * size
+        # For SHORT position: (entry_price - current_price) * size
         if self.direction == "LONG":
             pnl = (current_price - self.entry_price) * self.size
         else:  # SHORT
@@ -183,11 +183,11 @@ class Position:
 
     def partial_exit(self, exit_size: float, exit_price: float, reason: str = ""):
         """
-        Execute a partial exit from the spot position.
+        Execute a partial exit from the position.
 
         Args:
-            exit_size: BTC quantity to sell
-            exit_price: Price at which to sell
+            exit_size: Quantity to close
+            exit_price: Price at which to close
             reason: Reason for the exit
         """
         if exit_size >= self.size:
@@ -223,7 +223,7 @@ class Position:
 
     def close_position(self, exit_price: float, reason: str = ""):
         """
-        Close the entire spot position.
+        Close the entire position.
 
         Args:
             exit_price: Price at which to close
@@ -262,7 +262,7 @@ class Position:
         Update trailing stop based on price movement.
 
         Args:
-            current_price: Current BTC price
+            current_price: Current market price
             trailing_distance: Distance to trail behind price (as percentage)
         """
         if not self.trailing_active:
@@ -400,30 +400,30 @@ class Position:
         return 1.0
 
     def __str__(self) -> str:
-        """String representation of the spot position."""
+        """String representation of the position."""
         status = "CLOSED" if self.is_closed else "OPEN"
         return f"Position {self.id}: {self.direction} {self.size} BTC @ {self.entry_price} " f"[{status}] PnL: {self.realized_pnl:.2f} USDT"
 
     def __repr__(self) -> str:
-        """Detailed representation of the spot position."""
+        """Detailed representation of the position."""
         return (
             f"Position(id={self.id}, size={self.size}, entry_price={self.entry_price}, "
             f"realized_pnl={self.realized_pnl}, is_closed={self.is_closed})"
         )
 
 
-class SpotTradeSimulator:
+class TradeSimulator:
     """
-    Simulates spot trade execution and manages position lifecycle.
-    Acts as the "exchange" in the backtest environment for spot trading.
+    Simulates trade execution and manages position lifecycle.
+    Acts as the "exchange" in the backtest environment.
     """
 
     def __init__(self):
-        """Initialize the spot trade simulator."""
+        """Initialize the trade simulator."""
         self.positions: List[Position] = []
         self.next_position_id = 1
-        self.cash_usdt = 10000  # Starting USDT balance
-        self.asset_qty = 0.0  # BTC quantity held
+        self.balance = 10000  # Starting USDT balance
+        self.asset_qty = 0.0  # BTC quantity held (mostly for spot, but can track net exposure)
 
     def create_position(
         self,
@@ -438,11 +438,11 @@ class SpotTradeSimulator:
         take_profit_levels: Optional[List[Dict]] = None,
     ) -> Position:
         """
-        Create a new spot position.
+        Create a new position.
 
         Args:
             entry_price: Entry price
-            size: BTC quantity
+            size: Asset quantity
             stop_loss: Stop loss price
             take_profit: Take profit price
             reason: Reason for the trade
@@ -474,9 +474,9 @@ class SpotTradeSimulator:
         entry_fee = entry_price * size * 0.0004  # 0.04% taker fee
         position.entry_fee = entry_fee
 
-        # Update balances
-        self.cash_usdt -= entry_price * size + entry_fee
-        self.asset_qty += size
+        # Update balances (Futures: Pay fee only, margin is handled by RiskManager)
+        self.balance -= entry_fee
+        # self.asset_qty += size # Not tracking net exposure in balance here for now, kept simpler
 
         self.positions.append(position)
         self.next_position_id += 1
@@ -488,7 +488,7 @@ class SpotTradeSimulator:
         Update all positions with current market conditions and handle ladder exits.
 
         Args:
-            current_price: Current BTC price
+            current_price: Current market price
             current_time: Current timestamp
         """
         for position in self.positions:
@@ -526,10 +526,9 @@ class SpotTradeSimulator:
         # Calculate exit fee
         exit_fee = exit_price * exit_size * 0.0004
 
-        # Update balances
-        self.cash_usdt += exit_price * exit_size - exit_fee
-        self.asset_qty -= exit_size
-
+        # Update balances (Futures: Add PnL, subtract fee)
+        self.balance += pnl - exit_fee
+        
         # Update position
         position.partial_exit(exit_size, exit_price, reason)
 
@@ -547,9 +546,8 @@ class SpotTradeSimulator:
         # Calculate exit fee
         exit_fee = exit_price * position.size * 0.0004
 
-        # Update balances
-        self.cash_usdt += exit_price * position.size - exit_fee
-        self.asset_qty -= position.size
+        # Update balances (Futures: Add PnL, subtract fee)
+        self.balance += pnl - exit_fee
 
         # Close position
         position.close_position(exit_price, reason)
@@ -577,8 +575,9 @@ class SpotTradeSimulator:
         return total
 
     def get_total_equity(self, current_price: float) -> float:
-        """Get total equity (cash + asset value)."""
-        return self.cash_usdt + (self.asset_qty * current_price)
+        """Get total equity (Balance + Unrealized PnL)."""
+        unrealized_pnl = self.get_total_unrealized_pnl(current_price)
+        return self.balance + unrealized_pnl
 
     def get_total_unrealized_pnl(self, current_price: float) -> float:
         """Get total unrealized PnL across all open positions."""
@@ -590,8 +589,7 @@ class SpotTradeSimulator:
     def get_account_summary(self, current_price: float) -> Dict:
         """Get account summary."""
         return {
-            "cash_usdt": self.cash_usdt,
-            "asset_qty": self.asset_qty,
+            "balance": self.balance,
             "total_equity": self.get_total_equity(current_price),
             "unrealized_pnl": self.get_total_unrealized_pnl(current_price),
             "open_positions": len(self.get_open_positions()),
@@ -612,8 +610,8 @@ if __name__ == "__main__":
     position.partial_exit(0.05, 51000, "TP1 hit")
     print(f"After partial exit: {position}")
 
-    # Test SpotTradeSimulator
-    simulator = SpotTradeSimulator()
+    # Test TradeSimulator
+    simulator = TradeSimulator()
     pos = simulator.create_position(50000, 0.1, 48000, reason="Simulator test")
     print(f"Created position: {pos}")
     print(f"Account summary: {simulator.get_account_summary(50000)}")

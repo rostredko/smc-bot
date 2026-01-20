@@ -2,7 +2,7 @@
 
 A production-ready Python backtesting framework for Smart Money Concepts (SMC) spot crypto trading strategies with Binance integration, comprehensive risk management, web dashboard, and automated testing.
 
-**Status**: ✅ Production Ready | **Tests**: 88 passed | **Coverage**: 95%+ critical components
+**Status**: ✅ Production Ready | **Tests**: 86 passed | **Coverage**: 95%+ critical components
 
 ---
 
@@ -524,41 +524,10 @@ Then update `config/config.json`:
 
 ## Development
 
-### Project Structure
+### 📁 Project Structure
 
 ```
 smc-bot/
-├── engine/                      # Core system 🔒
-│   ├── backtest_engine.py      # Main orchestrator
-│   ├── risk_manager.py         # Risk management
-│   ├── position.py             # Trade objects
-│   ├── logger.py               # Logging
-│   ├── metrics.py              # Performance metrics
-│   ├── data_loader.py          # Binance data
-│   ├── smc_analysis.py         # SMC tools
-│   └── live_trading.py         # Live trading
-│
-├── strategies/                  # Custom strategies ✏️
-│   ├── base_strategy.py        # Abstract base
-│   ├── smc_strategy.py         # SMC implementation
-│   └── simple_test_strategy.py # Test strategy
-│
-├── config/                      # Configuration ✏️
-│   ├── config.json             # Main config
-│   └── live_trading_config.json
-│
-├── web-dashboard/              # Web UI
-│   ├── server.py               # FastAPI backend
-│   ├── src/App.tsx             # React frontend
-│   └── dist/                   # Built app
-│
-├── tests/                       # Test suite
-├── data_cache/                 # Cached market data
-├── results/                    # Backtest results
-├── main.py                     # CLI entry point
-└── README.md                   # This file
-```
-
 ### Core Philosophy
 
 ```

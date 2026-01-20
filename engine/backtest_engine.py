@@ -10,8 +10,8 @@ from typing import Any, Dict, List
 import pandas as pd
 
 from .data_loader import DataLoader
-from .risk_manager import SpotRiskManager
-from .position import Position, SpotTradeSimulator
+from .risk_manager import RiskManager
+from .position import Position, TradeSimulator
 from .logger import Logger
 from .metrics import PerformanceReporter
 
@@ -46,13 +46,15 @@ class BacktestEngine:
 
         # Initialize components
         self.data_loader = DataLoader(config.get("exchange", "binance"))
-        self.risk_manager = SpotRiskManager(
+        self.risk_manager = RiskManager(
             initial_capital=self.initial_capital,
+            leverage=config.get("leverage", 1.0),
             risk_per_trade=config.get("risk_per_trade", 0.5),
             max_drawdown=config.get("max_drawdown", 15.0),
-            max_positions=config.get("max_positions", 1),
+            max_positions=config.get("max_positions", 3),
+            max_consecutive_losses=config.get("max_consecutive_losses", 50), # Default high for backtests
         )
-        self.trade_simulator = SpotTradeSimulator()
+        # self.trade_simulator = TradeSimulator() # Unused in current implementation, relying on internal logic
         self.logger = Logger(config.get("log_level", "INFO"))
         self.reporter = PerformanceReporter(self.initial_capital)
 
@@ -76,9 +78,23 @@ class BacktestEngine:
             # Import strategy module
             strategy_module = __import__(f"strategies.{strategy_name}", fromlist=["Strategy"])
 
-            # Try to find the strategy class (could be 'Strategy', 'SMCStrategy', etc.)
+            # Try to find the strategy class
             strategy_class = None
-            for class_name in ["Strategy", "SMCStrategy", "SimpleTestStrategy", "SimplifiedSMCStrategy", f"{strategy_name.title()}Strategy"]:
+            
+            # Convert snake_case to PascalCase for the strategy name
+            # e.g. price_action_strategy -> PriceActionStrategy
+            pascal_name = "".join(x.title() for x in strategy_name.split("_"))
+            
+            candidate_names = [
+                "Strategy", 
+                "SMCStrategy", 
+                "SimpleTestStrategy", 
+                "SimplifiedSMCStrategy",
+                pascal_name,
+                f"{pascal_name}Strategy"  # In case someone named it PriceActionStrategyStrategy ?? unlikely but possible if file is price_action
+            ]
+            
+            for class_name in candidate_names:
                 if hasattr(strategy_module, class_name):
                     strategy_class = getattr(strategy_module, class_name)
                     break
@@ -267,6 +283,11 @@ class BacktestEngine:
 
         self.open_positions.append(position)
 
+        # Calculate and deduct entry fee
+        entry_fee = entry_price * position_size * 0.0004  # 0.04% taker fee
+        position.entry_fee = entry_fee
+        self.current_capital -= entry_fee
+
         # Log trade opening
         self.logger.log_trade_open(position, self.current_capital, self.initial_capital)
 
@@ -278,13 +299,17 @@ class BacktestEngine:
             self.strategy.signals_executed += 1
 
     def _setup_laddered_exits(self, position: Position):
-        """Set up laddered take-profit levels for a spot position."""
+        """Set up laddered take-profit levels for a position."""
         risk_distance = abs(position.entry_price - position.stop_loss)
 
-        # Spot trading is long-only
-        tp1_price = position.entry_price + risk_distance  # 1:1 R:R
-        tp2_price = position.entry_price + (2 * risk_distance)  # 1:2 R:R
-        tp3_price = position.entry_price + (2.5 * risk_distance)  # 1:2.5 R:R (runner)
+        if position.direction == "LONG":
+            tp1_price = position.entry_price + risk_distance  # 1:1 R:R
+            tp2_price = position.entry_price + (2 * risk_distance)  # 1:2 R:R
+            tp3_price = position.entry_price + (2.5 * risk_distance)  # 1:2.5 R:R (runner)
+        else:  # SHORT
+            tp1_price = position.entry_price - risk_distance
+            tp2_price = position.entry_price - (2 * risk_distance)
+            tp3_price = position.entry_price - (2.5 * risk_distance)
 
         position.take_profit_levels = [
             {"price": tp1_price, "percentage": 0.5, "reason": "TP1 - 1R"},
@@ -518,6 +543,9 @@ class BacktestEngine:
 
         # Calculate metrics
         metrics = self.reporter.compute_metrics(self.closed_trades, self.equity_curve)
+
+        # Add configuration used for this backtest
+        metrics["configuration"] = self.config
 
         # Print summary
         self.logger.print_summary(metrics)

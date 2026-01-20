@@ -9,6 +9,7 @@ from typing import Dict, List, Optional, Any
 from datetime import datetime
 
 from strategies.base_strategy import StrategyBase
+from strategies.smc_analysis import MarketStructureAnalyzer, OrderBlockDetector, FairValueGapDetector, LiquidityZoneMapper
 
 
 class SMCStrategy(StrategyBase):
@@ -132,6 +133,12 @@ class SMCStrategy(StrategyBase):
         }
 
         super().__init__(config)
+        
+        # Initialize SMC analyzers (previously in base class)
+        self.structure_analyzer = MarketStructureAnalyzer()
+        self.order_block_detector = OrderBlockDetector()
+        self.fvg_detector = FairValueGapDetector()
+        self.liquidity_mapper = LiquidityZoneMapper()
         # Merge with defaults, but user-provided config takes priority
         self.config = {**default_config, **(config or {})}
 

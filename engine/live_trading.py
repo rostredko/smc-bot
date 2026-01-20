@@ -29,6 +29,7 @@ class LiveTradingConfig:
     leverage: float = 10.0
 
     # Strategy settings
+    strategy_name: str = "smc_strategy"
     strategy_config: Dict[str, Any] = None
 
     # Execution settings
@@ -40,20 +41,12 @@ class LiveTradingConfig:
         if self.timeframes is None:
             self.timeframes = ["4h", "15m"]
         if self.strategy_config is None:
-            self.strategy_config = {
-                "high_timeframe": "4h",
-                "low_timeframe": "15m",
-                "min_zone_strength": 0.6,
-                "volume_threshold": 1.2,
-                "max_zones": 5,
-                "confluence_required": True,
-                "risk_reward_ratio": 3.0,
-            }
+            self.strategy_config = {}  # Empty default
 
 
 class LiveTradingEngine:
     """
-    Live trading engine that executes trades in real-time using SMC strategy.
+    Live trading engine that executes trades in real-time using a loaded strategy.
     """
 
     def __init__(self, config: LiveTradingConfig):
@@ -78,7 +71,22 @@ class LiveTradingEngine:
             leverage=config.leverage,
         )
 
-        self.strategy = SMCStrategy(config.strategy_config)
+        # Dynamic Strategy Loading
+        try:
+            strategy_module = __import__(f"strategies.{config.strategy_name}", fromlist=["Strategy"])
+            strategy_class = None
+            for class_name in ["Strategy", "SMCStrategy", "SimpleTestStrategy", config.strategy_name.title() + "Strategy", "PriceActionStrategy"]:
+                if hasattr(strategy_module, class_name):
+                    strategy_class = getattr(strategy_module, class_name)
+                    break
+            
+            if strategy_class is None:
+                 raise ValueError(f"Could not find strategy class in {config.strategy_name}")
+                 
+            self.strategy = strategy_class(config.strategy_config)
+        except Exception as e:
+            self.logger.error(f"Failed to load strategy {config.strategy_name}: {e}")
+            raise
 
         # Trading state
         self.is_running = False
@@ -369,6 +377,7 @@ if __name__ == "__main__":
         initial_capital=1000.0,
         risk_per_trade=2.0,
         poll_interval=60,
+        strategy_name="smc_strategy"
     )
 
     # Create and start trading engine

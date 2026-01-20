@@ -54,7 +54,7 @@ def create_default_config() -> Dict[str, Any]:
         # Logging
         "log_level": "INFO",
         "export_logs": True,
-        "log_file": "backtest_logs.json",
+        "log_file": "results/backtest_logs.json",
     }
 
 
@@ -76,7 +76,11 @@ def load_config_from_json(config_file: str) -> Dict[str, Any]:
         # Support both flat and nested structures
 
         # Check strategy first
-        strategy_name = json_config.get("strategy", {}).get("name", json_config.get("strategy", ""))
+        strategy_conf = json_config.get("strategy", {})
+        if isinstance(strategy_conf, str):
+            strategy_name = strategy_conf
+        else:
+            strategy_name = strategy_conf.get("name", "")
         if not strategy_name or strategy_name.strip() == "":
             print("❌ No strategy specified in configuration file")
             print("💡 Please specify a strategy in config.json:")
@@ -101,7 +105,7 @@ def load_config_from_json(config_file: str) -> Dict[str, Any]:
             "end_date": json_config.get("period", {}).get("end_date", json_config.get("end_date", "2023-12-31")),
             # Strategy settings
             "strategy": strategy_name,
-            "strategy_config": json_config.get("strategy", {}).get("config", json_config.get("strategy_config", {})),
+            "strategy_config": (json_config.get("strategy", {}) if isinstance(json_config.get("strategy"), dict) else {}).get("config", json_config.get("strategy_config", {})),
             # Risk management (try nested first, then flat)
             "min_risk_reward": json_config.get("risk_management", {}).get("min_risk_reward", json_config.get("min_risk_reward", 3.0)),
             "trailing_stop_distance": json_config.get("risk_management", {}).get(
@@ -110,15 +114,15 @@ def load_config_from_json(config_file: str) -> Dict[str, Any]:
             # Logging settings (try nested first, then flat)
             "log_level": json_config.get("logging", {}).get("level", json_config.get("log_level", "INFO")),
             "export_logs": json_config.get("logging", {}).get("export_logs", json_config.get("export_logs", True)),
-            "log_file": json_config.get("logging", {}).get("log_file", json_config.get("log_file", "backtest_logs.json")),
+            "log_file": json_config.get("logging", {}).get("log_file", json_config.get("log_file", "results/backtest_logs.json")),
             "detailed_signals": json_config.get("logging", {}).get("detailed_signals", True),
             "detailed_trades": json_config.get("logging", {}).get("detailed_trades", True),
             "market_analysis": json_config.get("logging", {}).get("market_analysis", True),
             # Output settings
             "save_results": json_config.get("output", {}).get("save_results", True),
-            "results_file": json_config.get("output", {}).get("results_file", "backtest_results.json"),
+            "results_file": json_config.get("output", {}).get("results_file", "results/backtest_results.json"),
             "export_trades": json_config.get("output", {}).get("export_trades", True),
-            "trades_file": json_config.get("output", {}).get("trades_file", "trades_history.json"),
+            "trades_file": json_config.get("output", {}).get("trades_file", "results/trades_history.json"),
         }
 
         return config
@@ -283,12 +287,12 @@ def run_backtest(config_file: str = "config/config.json"):
             "logging": {
                 "level": "INFO",
                 "export_logs": True,
-                "log_file": "backtest_logs.json",
+                "log_file": "results/backtest_logs.json",
                 "detailed_signals": True,
                 "detailed_trades": True,
                 "market_analysis": True,
             },
-            "output": {"save_results": True, "results_file": "backtest_results.json", "export_trades": True, "trades_file": "trades_history.json"},
+            "output": {"save_results": True, "results_file": "results/backtest_results.json", "export_trades": True, "trades_file": "results/trades_history.json"},
         }
 
         with open(config_file, "w") as f:
@@ -322,7 +326,7 @@ def run_backtest(config_file: str = "config/config.json"):
     return engine, metrics
 
 
-def run_live_trading():
+def run_live_trading(config_file_path: str = "config/live_config.json"):
     """Run live trading mode."""
     try:
         from engine.live_trading import LiveTradingEngine, LiveTradingConfig, create_live_trading_config_from_file
@@ -331,7 +335,7 @@ def run_live_trading():
         print("=" * 50)
 
         # Load configuration
-        config_file = Path("config/live_trading_config.json")
+        config_file = Path(config_file_path)
         if not config_file.exists():
             print(f"Configuration file not found: {config_file}")
             print("Creating default configuration...")
@@ -458,7 +462,7 @@ Examples:
 
     parser.add_argument("command", choices=["backtest", "live", "test", "help"], help="Command to execute")
 
-    parser.add_argument("config_file", nargs="?", default="config/config.json", help="Configuration file path (for backtest command)")
+    parser.add_argument("config_file", nargs="?", default=None, help="Configuration file path")
 
     parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose output")
 
@@ -468,12 +472,14 @@ Examples:
     if args.command == "backtest":
         print("🚀 SMC Trading Engine - Backtest")
         print("=" * 50)
-        run_backtest(args.config_file)
+        config_path = args.config_file or "config/backtest_config.json"
+        run_backtest(config_path)
 
     elif args.command == "live":
         print("🚀 SMC Trading Engine - Live Trading")
         print("=" * 50)
-        run_live_trading()
+        config_path = args.config_file or "config/live_config.json"
+        run_live_trading(config_path)
 
     elif args.command == "test":
         print("🚀 SMC Trading Engine - Tests")
@@ -500,8 +506,9 @@ if __name__ == "__main__":
         print()
         print("Examples:")
         print("  python main.py backtest")
-        print("  python main.py backtest config/config.json")
+        print("  python main.py backtest config/backtest_config.json")
         print("  python main.py live")
+        print("  python main.py live config/live_config.json")
         print("  python main.py test")
         print("  python main.py help")
     else:

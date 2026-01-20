@@ -8,35 +8,40 @@ from datetime import datetime, timedelta
 from .position import Position
 
 
-class SpotRiskManager:
+class RiskManager:
     """
-    Risk Manager optimized for spot crypto trading.
-    Handles cash-based position sizing and risk management.
+    Risk Manager for Futures Trading.
+    Handles margin-based position sizing, leverage, and risk management.
     """
 
     def __init__(
         self,
         initial_capital: float,
+        leverage: float = 1.0,
         risk_per_trade: float = 0.5,
         max_drawdown: float = 15.0,
-        max_positions: int = 1,
+        max_positions: int = 3,
         max_consecutive_losses: int = 5,
         daily_loss_limit: float = 3.0,
     ):
         """
-        Initialize spot risk manager.
+        Initialize risk manager.
 
         Args:
             initial_capital: Starting USDT balance
+            leverage: Trading leverage (1.0 for Spot/No leverage)
             risk_per_trade: Risk percentage per trade (e.g., 0.5 for 0.5%)
             max_drawdown: Maximum allowed drawdown percentage
-            max_positions: Maximum simultaneous positions (1 for spot)
+            max_positions: Maximum simultaneous positions
             max_consecutive_losses: Max consecutive losses before cooldown
             daily_loss_limit: Daily loss limit percentage
         """
         self.initial_capital = initial_capital
-        self.cash_usdt = initial_capital
-        self.asset_qty = 0.0  # BTC quantity held
+        self.balance = initial_capital  # Total account balance (Margin + Free)
+        self.leverage = leverage
+        self.available_margin = initial_capital
+        self.used_margin = 0.0
+        
         self.peak_equity = initial_capital
         self.risk_per_trade = risk_per_trade
         self.max_drawdown = max_drawdown
@@ -74,14 +79,15 @@ class SpotRiskManager:
         self.slippage_bp = 1  # 0.01%
 
     def get_equity(self, current_price: float) -> float:
-        """Calculate total equity (cash + asset value)."""
-        return self.cash_usdt + (self.asset_qty * current_price)
+        """Calculate total equity (Balance + Unrealized PnL)."""
+        unrealized_pnl = sum(p.get_unrealized_pnl(current_price) for p in self.open_positions)
+        return self.balance + unrealized_pnl
 
     def can_open_position(
         self, entry_price: float, stop_loss: float, current_bar_time: datetime = None, current_price: float = None
     ) -> tuple[bool, str]:
         """
-        Check if a LONG position can be opened (spot trading only).
+        Check if a position can be opened.
 
         Args:
             entry_price: Entry price for the position
@@ -91,9 +97,12 @@ class SpotRiskManager:
         Returns:
             Tuple of (can_open, reason)
         """
+        # Determine direction based on prices
+        direction = "LONG" if entry_price > stop_loss else "SHORT"
+
         # Check cooldown after stop loss
-        if current_bar_time and self.last_stop_times.get("LONG"):
-            time_since_stop = current_bar_time - self.last_stop_times["LONG"]
+        if current_bar_time and self.last_stop_times.get(direction):
+            time_since_stop = current_bar_time - self.last_stop_times[direction]
             cooldown_duration = timedelta(minutes=15 * self.cooldown_bars)  # 15m bars
             if time_since_stop < cooldown_duration:
                 return False, "COOLDOWN_ACTIVE"
@@ -140,42 +149,51 @@ class SpotRiskManager:
         if len(self.open_positions) >= self.max_positions:
             return False, f"Maximum positions ({self.max_positions}) reached"
 
-        # Check if we have enough cash
-        position_value = self.calculate_position_size(entry_price, stop_loss) * entry_price
-        if position_value > self.cash_usdt * 0.95:  # Leave 5% buffer
-            return False, "INSUFFICIENT_CASH"
+        # Check if we have enough margin
+        position_size = self.calculate_position_size(entry_price, stop_loss)
+        required_margin = (position_size * entry_price) / self.leverage
+        
+        if required_margin > self.available_margin:
+            return False, "INSUFFICIENT_MARGIN"
 
         return True, "OK"
 
     def calculate_position_size(self, entry_price: float, stop_loss: float) -> float:
         """
-        Calculate position size for spot trading.
+        Calculate position size based on risk and available margin.
 
         Args:
             entry_price: Entry price
             stop_loss: Stop loss price
 
         Returns:
-            Position size in BTC
+            Position size in asset units
         """
         # Calculate risk amount
-        risk_amount = self.cash_usdt * (self.risk_per_trade / 100) * self.risk_reduction_factor
-
-        # Calculate risk distance
-        risk_distance = max(entry_price - stop_loss, entry_price * 0.01)  # Min 1% stop
-
-        if risk_distance <= 0:
-            return 0
-
-        # Calculate position size from risk
-        qty_from_risk = risk_amount / risk_distance
-
-        # Calculate position size from available cash (leave 5% buffer for fees)
-        qty_from_cash = (self.cash_usdt * 0.95) / entry_price
-
-        # Use the smaller of the two
-        qty = min(qty_from_risk, qty_from_cash)
-
+        capital_to_risk = self.balance * (self.risk_per_trade / 100)
+        
+        # Apply risk reduction if needed
+        if self.soft_halt:
+            capital_to_risk *= self.risk_reduction_factor
+            
+        risk_distance = abs(entry_price - stop_loss)
+        
+        if risk_distance == 0:
+            return 0.0
+            
+        # Calculate max position size based on risk
+        qty_from_risk = capital_to_risk / risk_distance
+        
+        # Calculate max position size based on available margin and leverage
+        # Position Value = Qty * Entry Price
+        # Margin Required = Position Value / Leverage
+        # Max Position Value = Available Margin * Leverage
+        max_position_value = self.available_margin * self.leverage
+        qty_from_margin = max_position_value / entry_price
+        
+        # Take the smaller of the two
+        qty = min(qty_from_risk, qty_from_margin)
+        
         # Round to step size
         qty = self._floor_to_step(qty, self.step_size)
 
@@ -202,7 +220,7 @@ class SpotRiskManager:
             position_direction: Direction of the closed position ('LONG')
             exit_time: Time when position was closed
         """
-        self.cash_usdt += pnl
+        self.balance += pnl
 
         # Update peak equity - use current cash + asset value
         # Note: This method doesn't have current_price, so we'll update peak in the main loop
@@ -232,17 +250,17 @@ class SpotRiskManager:
     def add_position(self, position: Position):
         """Add a new position to tracking."""
         self.open_positions.append(position)
-        # Update balances
-        self.cash_usdt -= position.size * position.entry_price
-        self.asset_qty += position.size
+        # Calculate margin required
+        margin_required = (position.size * position.entry_price) / self.leverage
+        self.used_margin += margin_required
 
     def remove_position(self, position: Position):
         """Remove a position from tracking."""
         if position in self.open_positions:
             self.open_positions.remove(position)
-            # Update balances
-            self.cash_usdt += position.size * position.exit_price
-            self.asset_qty -= position.size
+            # Release margin
+            margin_released = (position.size * position.entry_price) / self.leverage
+            self.used_margin = max(0, self.used_margin - margin_released)
 
     def get_risk_metrics(self, current_price: float = 50000) -> Dict:
         """Get risk metrics."""
@@ -330,13 +348,14 @@ class SpotRiskManager:
 
 class PositionSizer:
     """
-    Position sizing calculator for spot trading.
-    Calculates optimal position size based on risk and available cash.
+    Position sizing calculator for futures trading.
+    Calculates optimal position size based on risk, margin, and leverage.
     """
 
     def __init__(
         self,
-        cash_usdt: float,
+        account_balance: float,
+        leverage: float = 1.0,
         min_qty: float = 0.00001,
         step_size: float = 0.00001,
         min_notional: float = 10.0,
@@ -346,10 +365,11 @@ class PositionSizer:
         slippage_bp: int = 1,
     ):
         """
-        Initialize spot position sizer.
+        Initialize position sizer.
 
         Args:
-            cash_usdt: Available USDT balance
+            account_balance: Total account balance
+            leverage: Trading leverage
             min_qty: Minimum order quantity
             step_size: Order quantity step size
             min_notional: Minimum order value
@@ -358,7 +378,8 @@ class PositionSizer:
             taker_fee: Taker fee percentage
             slippage_bp: Slippage in basis points
         """
-        self.cash_usdt = cash_usdt
+        self.balance = account_balance
+        self.leverage = leverage
         self.min_qty = min_qty
         self.step_size = step_size
         self.min_notional = min_notional
@@ -369,7 +390,7 @@ class PositionSizer:
 
     def calculate_size(self, entry_price: float, stop_loss: float, risk_per_trade_pct: float = 0.5) -> Dict:
         """
-        Calculate position size for spot trading.
+        Calculate position size.
 
         Args:
             entry_price: Entry price
@@ -380,22 +401,24 @@ class PositionSizer:
             Dictionary with position sizing details
         """
         # Calculate risk amount
-        risk_amount = self.cash_usdt * (risk_per_trade_pct / 100)
+        risk_amount = self.balance * (risk_per_trade_pct / 100)
 
         # Calculate risk distance
-        risk_distance = max(entry_price - stop_loss, entry_price * 0.01)
+        risk_distance = abs(entry_price - stop_loss)
 
-        if risk_distance <= 0:
+        if risk_distance == 0:
             return {"qty": 0, "min_notional_met": False, "reason": "Invalid risk distance"}
 
         # Calculate position size from risk
         qty_from_risk = risk_amount / risk_distance
 
-        # Calculate position size from available cash (leave 5% buffer for fees)
-        qty_from_cash = (self.cash_usdt * 0.95) / entry_price
+        # Calculate position size from available margin and leverage
+        available_margin = self.balance  # Assuming full balance available for simplicity in this helper
+        max_position_value = available_margin * self.leverage
+        qty_from_margin = max_position_value / entry_price
 
         # Use the smaller of the two
-        qty = min(qty_from_risk, qty_from_cash)
+        qty = min(qty_from_risk, qty_from_margin)
 
         # Round to step size
         qty = self._floor_to_step(qty, self.step_size)
@@ -417,7 +440,10 @@ class PositionSizer:
         total_fees = entry_fee + exit_fee
 
         # Calculate target price for 1:2 R:R
-        target_price = entry_price + (2 * risk_distance)
+        if entry_price > stop_loss:  # Long
+            target_price = entry_price + (2 * risk_distance)
+        else:  # Short
+            target_price = entry_price - (2 * risk_distance)
 
         return {
             "qty": qty,
@@ -450,22 +476,23 @@ class PositionSizer:
 
 # Example usage
 if __name__ == "__main__":
-    # Test SpotRiskManager
-    risk_manager = SpotRiskManager(initial_capital=10000, risk_per_trade=0.5, max_drawdown=15.0, max_positions=1)
+    # Test RiskManager
+    risk_manager = RiskManager(initial_capital=10000, leverage=5.0, risk_per_trade=0.5, max_drawdown=15.0, max_positions=1)
 
-    print(f"Spot Risk Manager initialized:")
-    print(f"  Cash USDT: {risk_manager.cash_usdt}")
-    print(f"  Asset Qty: {risk_manager.asset_qty}")
+    print(f"Risk Manager initialized:")
+    print(f"  Balance: {risk_manager.balance}")
+    print(f"  Leverage: {risk_manager.leverage}x")
+    print(f"  Available Margin: {risk_manager.available_margin}")
     print(f"  Risk per trade: {risk_manager.risk_per_trade}%")
 
     # Test position sizing
-    position_size = risk_manager.calculate_position_size(50000, 48000)
-    print(f"  Position size for 50000/48000: {position_size:.6f} BTC")
-
+    position_size = risk_manager.calculate_position_size(50000, 49500)  # Long 50k, SL 49.5k (1% risk dist)
+    print(f"  Position size for 50000/49500 (Risk $50): {position_size:.6f} BTC")
+    
     # Test PositionSizer
-    sizer = PositionSizer(cash_usdt=10000)
-    sizing_result = sizer.calculate_size(50000, 48000, 0.5)
-    print(f"\nSpot Position Sizer result:")
+    sizer = PositionSizer(account_balance=10000, leverage=10.0)
+    sizing_result = sizer.calculate_size(50000, 49500, 0.5)
+    print(f"\nPosition Sizer result:")
     print(f"  Quantity: {sizing_result['qty']:.6f} BTC")
     print(f"  Order value: ${sizing_result['order_value']:.2f}")
     print(f"  Total fees: ${sizing_result['total_fees']:.2f}")

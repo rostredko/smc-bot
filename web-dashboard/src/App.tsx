@@ -145,7 +145,7 @@ interface BacktestResults {
   avg_loss: number;
   signals_generated: number;
   initial_capital: number;
-  equity_curve: Array<{date: string, equity: number}>;
+  equity_curve: Array<{ date: string, equity: number }>;
   trades: Array<any>;
 }
 
@@ -183,9 +183,9 @@ export default function App() {
   const strategySections: Array<{ title: string; keys: string[] }> = [
     { title: "Core Settings", keys: ["mode", "allow_short"] },
     { title: "Timeframes", keys: ["high_timeframe", "low_timeframe"] },
-    { title: "Risk Management", keys: ["risk_per_trade_pct", "max_concurrent_positions", "min_required_rr", "max_stop_distance_pct"] },
     { title: "Volatility Filters", keys: ["volatility_filter_enabled", "atr_period", "atr_percentile_min", "atr_percentile_max", "sl_atr_multiplier", "min_signal_confidence"] },
-    { title: "Technical Entry Filters", keys: ["ema_filter_period", "rsi_period", "min_rsi_long", "max_rsi_long", "volume_threshold"] },
+    { title: "Technical Entry Filters", keys: ["use_rsi_filter", "rsi_period", "rsi_overbought", "rsi_oversold", "use_trend_filter", "trend_ema_period"] },
+    { title: "Pattern Settings", keys: ["min_range_factor", "min_wick_to_range", "max_body_to_range", "risk_reward_ratio", "sl_buffer_atr"] },
     { title: "Partial Take Profits", keys: ["use_partial_tp", "tp1_r", "tp1_pct", "tp2_r", "tp2_pct", "runner_pct"] },
     { title: "Exit Management", keys: ["trailing_stop_enabled", "trail_start", "trail_step", "breakeven_move_enabled"] },
     { title: "Market Structure", keys: ["require_structure_confirmation", "support_level_lookback_bars"] },
@@ -201,6 +201,20 @@ export default function App() {
     const label = key.replace(/_/g, " ").replace(/\b\w/g, (l: string) => l.toUpperCase());
     const isBoolean = schema?.type === "boolean" || typeof value === "boolean" || value === "true" || value === "false";
 
+    // Dependency Logic
+    let isDisabled = isConfigDisabled;
+    if (!isDisabled) {
+      if (["rsi_period", "rsi_overbought", "rsi_oversold"].includes(key)) {
+        const useRsi = (strategyConfig as any)["use_rsi_filter"];
+        // Check if explicitly false (handle undefined as true/default if needed, but safe to assume it follows config)
+        if (useRsi === false) isDisabled = true;
+      }
+      if (key === "trend_ema_period") {
+        const useTrend = (strategyConfig as any)["use_trend_filter"];
+        if (useTrend === false) isDisabled = true;
+      }
+    }
+
     return (
       <Grid item xs={12} md={6} key={key}>
         {isBoolean ? (
@@ -209,7 +223,7 @@ export default function App() {
               <Switch
                 checked={value !== undefined ? Boolean(value === true || value === "true") : Boolean(schema?.default)}
                 onChange={e => handleStrategyConfigChange(key, e.target.checked)}
-                disabled={isConfigDisabled}
+                disabled={isDisabled}
               />
             }
             label={label}
@@ -223,7 +237,7 @@ export default function App() {
               const newValue = schema?.type === "number" ? parseFloat(e.target.value) : e.target.value;
               handleStrategyConfigChange(key, newValue);
             }}
-            disabled={isConfigDisabled}
+            disabled={isDisabled}
             fullWidth
           />
         )}
@@ -249,43 +263,43 @@ export default function App() {
       await loadConfig();
     };
     loadData();
-    
+
     // Connect to WebSocket for console output
     const connectWebSocket = () => {
       try {
         const ws = new WebSocket(`ws://localhost:8000/ws`);
-        
+
         ws.onopen = () => {
           console.log('✅ WebSocket connected');
           setWebsocketConnected(true);
         };
-        
+
         ws.onmessage = (event) => {
           if (event.data && event.data.trim()) {
             setConsoleOutput(prev => [...prev, event.data]);
           }
         };
-        
+
         ws.onerror = (error) => {
           console.error('❌ WebSocket error:', error);
           setWebsocketConnected(false);
         };
-        
+
         ws.onclose = () => {
           console.log('🔄 WebSocket disconnected, reconnecting in 3s...');
           setWebsocketConnected(false);
           setTimeout(() => connectWebSocket(), 3000);
         };
-        
+
         websocketRef.current = ws;
       } catch (error) {
         console.error('❌ Failed to connect WebSocket:', error);
         setWebsocketConnected(false);
       }
     };
-    
+
     connectWebSocket();
-    
+
     return () => {
       if (websocketRef.current) {
         websocketRef.current.close();
@@ -319,7 +333,7 @@ export default function App() {
       const response = await fetch(`${API_BASE}/config`);
       const data = await response.json();
       console.log("Loaded config:", data);
-      
+
       setConfig(prev => ({ ...prev, ...data }));
       setSelectedStrategy("");
       setStrategyConfig({});
@@ -334,7 +348,7 @@ export default function App() {
       setIsConfigDisabled(true);
       setConsoleOutput([]); // Clear console output
       setResults(null); // Clear old results
-      
+
       const requestBody = {
         config: {
           ...config,
@@ -409,14 +423,14 @@ export default function App() {
     console.log("📍 [1] handleStrategyChange called with:", strategyName);
     setSelectedStrategy(strategyName);
     setConfig(prev => ({ ...prev, strategy: strategyName }));
-    
+
     console.log("📍 [2] Config updated, now processing strategy config...");
-    
+
     if (strategyName && strategyName.trim() !== "") {
       console.log("📍 [3] Finding strategy in list...");
       const strategy = strategies.find(s => s.name === strategyName);
       console.log("📍 [4] Strategy found:", strategy?.name);
-      
+
       if (strategy) {
         console.log("📍 [5] Extracting defaults from schema...");
         const defaults: Record<string, any> = {};
@@ -473,13 +487,13 @@ export default function App() {
     if (!results) return [];
     const winning = results.winning_trades || 0;
     const losing = results.losing_trades || 0;
-    
+
     if (winning === 0 && losing === 0) {
       return [
         { name: "No Trades", value: 1, color: "#9e9e9e" }
       ];
     }
-    
+
     return [
       { name: "Winning Trades", value: winning, color: "#4caf50" },
       { name: "Losing Trades", value: losing, color: "#f44336" }
@@ -491,7 +505,7 @@ export default function App() {
       <Typography variant="h3" component="h1" gutterBottom align="center">
         SMC Trading Engine Dashboard
       </Typography>
-      
+
       {/* WebSocket Connection Status */}
       <Box sx={{ mb: 2, display: 'flex', justifyContent: 'center' }}>
         <Chip
@@ -572,10 +586,10 @@ export default function App() {
                 <Box sx={{ mt: 2 }}>
                   <Alert severity="info">
                     {backtestStatus.message}
-                    <LinearProgress 
-                      variant="determinate" 
-                      value={backtestStatus.progress} 
-                      sx={{ mt: 1 }} 
+                    <LinearProgress
+                      variant="determinate"
+                      value={backtestStatus.progress}
+                      sx={{ mt: 1 }}
                     />
                   </Alert>
                 </Box>
@@ -631,6 +645,16 @@ export default function App() {
                         type="number"
                         value={config.leverage}
                         onChange={e => handleConfigChange("leverage", parseFloat(e.target.value))}
+                        disabled={isConfigDisabled}
+                        fullWidth
+                      />
+                    </Grid>
+                    <Grid item xs={12} md={3}>
+                      <TextField
+                        label="Max Positions"
+                        type="number"
+                        value={config.max_positions}
+                        onChange={e => handleConfigChange("max_positions", parseFloat(e.target.value))}
                         disabled={isConfigDisabled}
                         fullWidth
                       />
@@ -739,8 +763,8 @@ export default function App() {
         {/* Live Output - moved before Results */}
         <Grid item xs={12}>
           <Card>
-            <CardHeader 
-              title="Live Output" 
+            <CardHeader
+              title="Live Output"
               action={
                 <Typography variant="body2" color={websocketConnected ? "success.main" : "error.main"}>
                   {websocketConnected ? "🟢 Live" : "🔴 Offline"}
@@ -786,42 +810,42 @@ export default function App() {
           <>
             {/* Performance Metrics */}
             <Grid item xs={12}>
-          <Card>
-            <CardHeader title="Performance Metrics" />
-            <CardContent>
-              <Grid container spacing={2}>
+              <Card>
+                <CardHeader title="Performance Metrics" />
+                <CardContent>
+                  <Grid container spacing={2}>
                     <Grid item xs={6} md={2}>
-                  <Paper sx={{ p: 2, textAlign: 'center' }}>
+                      <Paper sx={{ p: 2, textAlign: 'center' }}>
                         <Typography variant="h6" color={results.total_pnl >= 0 ? "success.main" : "error.main"}>
                           ${results.total_pnl?.toFixed(1)}
-                    </Typography>
+                        </Typography>
                         <Typography variant="body2">Total PnL</Typography>
-                  </Paper>
-                </Grid>
+                      </Paper>
+                    </Grid>
                     <Grid item xs={6} md={2}>
-                  <Paper sx={{ p: 2, textAlign: 'center' }}>
-                    <Typography variant="h6" color="primary.main">
+                      <Paper sx={{ p: 2, textAlign: 'center' }}>
+                        <Typography variant="h6" color="primary.main">
                           {(results.win_rate * 100)?.toFixed(1)}%
-                    </Typography>
-                    <Typography variant="body2">Win Rate</Typography>
-                  </Paper>
-                </Grid>
+                        </Typography>
+                        <Typography variant="body2">Win Rate</Typography>
+                      </Paper>
+                    </Grid>
                     <Grid item xs={6} md={2}>
-                  <Paper sx={{ p: 2, textAlign: 'center' }}>
-                    <Typography variant="h6" color="warning.main">
+                      <Paper sx={{ p: 2, textAlign: 'center' }}>
+                        <Typography variant="h6" color="warning.main">
                           {results.profit_factor?.toFixed(1)}
-                    </Typography>
-                    <Typography variant="body2">Profit Factor</Typography>
-                  </Paper>
-                </Grid>
+                        </Typography>
+                        <Typography variant="body2">Profit Factor</Typography>
+                      </Paper>
+                    </Grid>
                     <Grid item xs={6} md={2}>
-                  <Paper sx={{ p: 2, textAlign: 'center' }}>
-                    <Typography variant="h6" color="error.main">
+                      <Paper sx={{ p: 2, textAlign: 'center' }}>
+                        <Typography variant="h6" color="error.main">
                           {results.max_drawdown?.toFixed(1)}%
-                    </Typography>
-                    <Typography variant="body2">Max Drawdown</Typography>
-                  </Paper>
-                </Grid>
+                        </Typography>
+                        <Typography variant="body2">Max Drawdown</Typography>
+                      </Paper>
+                    </Grid>
                     <Grid item xs={6} md={2}>
                       <Paper sx={{ p: 2, textAlign: 'center' }}>
                         <Typography variant="h6" color="info.main">
@@ -844,33 +868,33 @@ export default function App() {
                           {results.signals_generated || 0}
                         </Typography>
                         <Typography variant="body2">Signals Generated</Typography>
-                  </Paper>
-                </Grid>
-              </Grid>
-            </CardContent>
-          </Card>
-        </Grid>
+                      </Paper>
+                    </Grid>
+                  </Grid>
+                </CardContent>
+              </Card>
+            </Grid>
 
             {/* Charts */}
-        <Grid item xs={12} md={6}>
-          <Card>
-            <CardHeader title="Equity Curve" />
-            <CardContent>
-              <ResponsiveContainer width="100%" height={300}>
+            <Grid item xs={12} md={6}>
+              <Card>
+                <CardHeader title="Equity Curve" />
+                <CardContent>
+                  <ResponsiveContainer width="100%" height={300}>
                     <LineChart data={equityData}>
-                  <CartesianGrid strokeDasharray="3 3" />
+                      <CartesianGrid strokeDasharray="3 3" />
                       <XAxis dataKey="date" />
-                  <YAxis />
-                  <Tooltip content={<CustomTooltip />} />
-                  <Legend />
-                  <Line type="monotone" dataKey="equity" stroke="#8884d8" strokeWidth={2} />
-                </LineChart>
-              </ResponsiveContainer>
-            </CardContent>
-          </Card>
-        </Grid>
+                      <YAxis />
+                      <Tooltip content={<CustomTooltip />} />
+                      <Legend />
+                      <Line type="monotone" dataKey="equity" stroke="#8884d8" strokeWidth={2} />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </CardContent>
+              </Card>
+            </Grid>
 
-        <Grid item xs={12} md={6}>
+            <Grid item xs={12} md={6}>
               <Card>
                 <CardHeader title="Trade Distribution" />
                 <CardContent>
@@ -899,21 +923,21 @@ export default function App() {
 
             {/* Trade Analysis */}
             <Grid item xs={12}>
-          <Card>
-            <CardHeader title="Trade Analysis" />
-            <CardContent>
-              <ResponsiveContainer width="100%" height={300}>
-                <BarChart data={tradeData}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="trade" />
-                  <YAxis />
-                  <Tooltip content={<CustomTooltip />} />
-                  <Bar dataKey="pnl" fill="#8884d8" />
-                </BarChart>
-              </ResponsiveContainer>
-            </CardContent>
-          </Card>
-        </Grid>
+              <Card>
+                <CardHeader title="Trade Analysis" />
+                <CardContent>
+                  <ResponsiveContainer width="100%" height={300}>
+                    <BarChart data={tradeData}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="trade" />
+                      <YAxis />
+                      <Tooltip content={<CustomTooltip />} />
+                      <Bar dataKey="pnl" fill="#8884d8" />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </CardContent>
+              </Card>
+            </Grid>
 
             {/* Detailed Results Table */}
             <Grid item xs={12}>

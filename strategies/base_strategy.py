@@ -7,9 +7,6 @@ import pandas as pd
 from typing import Dict, List, Optional, Any
 from abc import ABC, abstractmethod
 
-from engine.smc_analysis import MarketStructureAnalyzer, OrderBlockDetector, FairValueGapDetector, LiquidityZoneMapper
-
-
 class StrategyBase(ABC):
     """
     Abstract base class for trading strategies.
@@ -30,12 +27,6 @@ class StrategyBase(ABC):
         self.current_bias = None
         self.active_zones = []
         self.last_signal_time = None
-
-        # Initialize SMC analyzers
-        self.structure_analyzer = MarketStructureAnalyzer()
-        self.order_block_detector = OrderBlockDetector()
-        self.fvg_detector = FairValueGapDetector()
-        self.liquidity_mapper = LiquidityZoneMapper()
 
     @abstractmethod
     def generate_signals(self, market_data: Dict[str, pd.DataFrame]) -> List[Dict[str, Any]]:

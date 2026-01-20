@@ -1,0 +1,66 @@
+{
+  "name": "Price Action Strategy Config",
+  "description": "Configuration for Price Action Strategy (Conservative Growth)",
+  "account": {
+    "initial_capital": 10000,
+    "risk_per_trade": 0.75,
+    "max_drawdown": 30.0,
+    "max_positions": 5,
+    "mode": "futures",
+    "leverage": 10.0,
+    "allow_short": true
+  },
+  "trading": {
+    "symbol": "BTC/USDT",
+    "timeframes": [
+      "4h",
+      "15m"
+    ],
+    "exchange": "binance",
+    "mode": "futures",
+    "slippage": 0.0001,
+    "maker_fee": 0.0001,
+    "taker_fee": 0.0004,
+    "min_qty": 0.00001,
+    "step_size": 0.00001,
+    "min_notional": 10.0,
+    "tick_size": 0.01
+  },
+  "period": {
+    "start_date": "2024-01-01",
+    "end_date": "2024-12-31"
+  },
+  "strategy": {
+    "name": "price_action_strategy",
+    "config": {
+      "primary_timeframe": "4h",
+      "min_range_factor": 0.8,
+      "use_trend_filter": true,
+      "trend_ema_period": 50,
+      "risk_reward_ratio": 2.5,
+      "sl_buffer_atr": 0.5,
+      "use_rsi_filter": true,
+      "rsi_period": 14,
+      "rsi_overbought": 70,
+      "rsi_oversold": 30
+    }
+  },
+  "risk_management": {
+    "min_risk_reward": 1.5,
+    "trailing_stop_distance": 0.02,
+    "max_drawdown_pct": 30,
+    "daily_loss_limit_pct": 3,
+    "max_consecutive_losses": 50,
+    "adaptive_risk_enabled": true
+  },
+  "logging": {
+    "level": "INFO",
+    "detailed_signals": true,
+    "detailed_trades": true,
+    "market_analysis": true
+  },
+  "output": {
+    "save_results": true,
+    "export_trades": true
+  }
+}

@@ -234,6 +234,22 @@ def get_strategy_config_schema(strategy_name: str):
             "ema_period": {"type": "number", "default": 20},
             "rsi_period": {"type": "number", "default": 14},
             "rsi_threshold": {"type": "number", "default": 30}
+        },
+        "price_action_strategy": {
+            "primary_timeframe": {"type": "string", "default": "4h"},
+            "min_range_factor": {"type": "number", "default": 0.8},
+            "use_trend_filter": {"type": "boolean", "default": True},
+            "trend_ema_period": {"type": "number", "default": 50},
+            
+            "use_rsi_filter": {"type": "boolean", "default": True},
+            "rsi_period": {"type": "number", "default": 14},
+            "rsi_overbought": {"type": "number", "default": 70},
+            "rsi_oversold": {"type": "number", "default": 30},
+
+            "risk_reward_ratio": {"type": "number", "default": 2.5},
+            "sl_buffer_atr": {"type": "number", "default": 0.5},
+            "min_wick_to_range": {"type": "number", "default": 0.6},
+            "max_body_to_range": {"type": "number", "default": 0.3}
         }
     }
     
@@ -278,7 +294,7 @@ async def get_strategies():
 @app.get("/config")
 async def get_config():
     """Get current configuration in flat format for frontend."""
-    config_path = BASE_DIR / "config" / "config.json"
+    config_path = BASE_DIR / "config" / "backtest_config.json"
     if config_path.exists():
         with open(config_path, 'r') as f:
             config = json.load(f)
@@ -303,7 +319,7 @@ async def get_config():
 @app.post("/config")
 async def update_config(config: Dict[str, Any]):
     """Update configuration."""
-    config_path = BASE_DIR / "config" / "config.json"
+    config_path = BASE_DIR / "config" / "backtest_config.json"
     
     # Load existing config to preserve structure
     existing_config = {}
@@ -521,14 +537,14 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
             'dynamic_position_sizing': config.get('dynamic_position_sizing', True),
             'log_level': 'INFO',
             'export_logs': True,
-            'log_file': 'backtest_logs.json',
+            'log_file': 'results/backtest_logs.json',
             'detailed_signals': True,
             'detailed_trades': True,
             'market_analysis': True,
             'save_results': True,
-            'results_file': 'backtest_results.json',
+            'results_file': 'results/backtest_results.json',
             'export_trades': True,
-            'trades_file': 'trades_history.json'
+            'trades_file': 'results/trades_history.json'
         }
         
         # Log configuration details
