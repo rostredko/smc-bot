@@ -51,7 +51,17 @@ class PriceActionStrategy(StrategyBase):
         
         # Risk Management
         self.risk_reward_ratio = self.config.get('risk_reward_ratio', 2.5)
-        self.sl_buffer_atr = self.config.get('sl_buffer_atr', 0.5)  # Back to 0.5 for breathing room
+        self.sl_buffer_atr = self.config.get('sl_buffer_atr', 0.5)
+
+        # ADX Filter
+        self.use_adx_filter = self.config.get('use_adx_filter', False)
+        self.adx_period = self.config.get('adx_period', 14)
+        self.adx_period = self.config.get('adx_period', 14)
+        self.adx_threshold = self.config.get('adx_threshold', 25)
+
+        # RSI Momentum Filter (New)
+        self.use_rsi_momentum = self.config.get('use_rsi_momentum', False)
+        self.rsi_momentum_threshold = self.config.get('rsi_momentum_threshold', 50)
 
     def generate_signals(self, market_data: Dict[str, pd.DataFrame]) -> List[Dict[str, Any]]:
         """
@@ -86,6 +96,9 @@ class PriceActionStrategy(StrategyBase):
         # 3. Add RSI Filter
         if self.use_rsi_filter:
             df = self._add_rsi(df, self.rsi_period)
+
+        # 4. Add ADX Filter (Calculate ADX even if filter is off, useful for debugging/future)
+        df = self._add_adx(df, self.adx_period)
 
         # 4. Detect Patterns
         df = self._detect_pin_bar(df)
@@ -128,8 +141,15 @@ class PriceActionStrategy(StrategyBase):
             if self.use_trend_filter and row['close'] < row['trend_ema']:
                 is_bullish = False
             
-            # RSI Filter (Don't buy if overbought)
             if self.use_rsi_filter and row['rsi'] > self.rsi_overbought:
+                is_bullish = False
+
+            # RSI Momentum Filter (Must be above 50 to confirm trend)
+            if self.use_rsi_momentum and row['rsi'] < self.rsi_momentum_threshold:
+                is_bullish = False
+
+            # ADX Filter (Trend Strength)
+            if self.use_adx_filter and 'adx' in row and row['adx'] < self.adx_threshold:
                 is_bullish = False
 
         if is_bullish:
@@ -171,8 +191,15 @@ class PriceActionStrategy(StrategyBase):
             if self.use_trend_filter and row['close'] > row['trend_ema']:
                 is_bearish = False
             
-            # RSI Filter (Don't sell if oversold)
             if self.use_rsi_filter and row['rsi'] < self.rsi_oversold:
+                is_bearish = False
+
+            # RSI Momentum Filter (Must be below 50 to confirm trend)
+            if self.use_rsi_momentum and row['rsi'] > (100 - self.rsi_momentum_threshold):
+                is_bearish = False
+
+            # ADX Filter (Trend Strength)
+            if self.use_adx_filter and 'adx' in row and row['adx'] < self.adx_threshold:
                 is_bearish = False
 
         if is_bearish:
@@ -364,5 +391,58 @@ class PriceActionStrategy(StrategyBase):
         cond_frac_bear = frac_close <= 0.4
         
         df["bearish_outside_bar"] = cond_outside_range & cond_big & cond_expand & cond_dir_bear & cond_frac_bear
+        
+        return df
+
+    def _add_adx(self, df: pd.DataFrame, period: int = 14) -> pd.DataFrame:
+        """
+        Calculate ADX (Average Directional Index).
+        
+        Args:
+            df: DataFrame with high, low, close
+            period: Period for ADX calculation
+            
+        Returns:
+            DataFrame with 'adx' column added
+        """
+        if len(df) < period * 2:
+            return df
+            
+        # 1. Calculate TR (True Range)
+        df['tr1'] = df['high'] - df['low']
+        df['tr2'] = abs(df['high'] - df['close'].shift(1))
+        df['tr3'] = abs(df['low'] - df['close'].shift(1))
+        df['tr'] = df[['tr1', 'tr2', 'tr3']].max(axis=1)
+        
+        # 2. Calculate DM (Directional Movement)
+        df['up_move'] = df['high'] - df['high'].shift(1)
+        df['down_move'] = df['low'].shift(1) - df['low']
+        
+        df['plus_dm'] = np.where((df['up_move'] > df['down_move']) & (df['up_move'] > 0), df['up_move'], 0)
+        df['minus_dm'] = np.where((df['down_move'] > df['up_move']) & (df['down_move'] > 0), df['down_move'], 0)
+        
+        # 3. Smooth TR and DM (Wilder's Smoothing)
+        # First value is SMA, subsequent are (prev * (n-1) + current) / n
+        # Pandas ewm(alpha=1/n, adjust=False) is equivalent to Wilder's Smoothing
+        
+        df['tr_smooth'] = df['tr'].ewm(alpha=1/period, adjust=False).mean()
+        df['plus_dm_smooth'] = df['plus_dm'].ewm(alpha=1/period, adjust=False).mean()
+        df['minus_dm_smooth'] = df['minus_dm'].ewm(alpha=1/period, adjust=False).mean()
+        
+        # 4. Calculate DI
+        df['plus_di'] = 100 * (df['plus_dm_smooth'] / df['tr_smooth'])
+        df['minus_di'] = 100 * (df['minus_dm_smooth'] / df['tr_smooth'])
+        
+        # 5. Calculate DX
+        df['dx'] = 100 * abs(df['plus_di'] - df['minus_di']) / (df['plus_di'] + df['minus_di'])
+        
+        # 6. Calculate ADX (Smoothed DX)
+        df['adx'] = df['dx'].ewm(alpha=1/period, adjust=False).mean()
+        
+        # Cleanup temporary columns
+        cols_to_drop = ['tr1', 'tr2', 'tr3', 'tr', 'up_move', 'down_move', 
+                        'plus_dm', 'minus_dm', 'tr_smooth', 'plus_dm_smooth', 
+                        'minus_dm_smooth', 'plus_di', 'minus_di', 'dx']
+        df.drop(columns=cols_to_drop, inplace=True, errors='ignore')
         
         return df

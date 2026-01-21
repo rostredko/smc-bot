@@ -23,6 +23,7 @@ class RiskManager:
         max_positions: int = 3,
         max_consecutive_losses: int = 5,
         daily_loss_limit: float = 3.0,
+        dynamic_position_sizing: bool = True,
     ):
         """
         Initialize risk manager.
@@ -35,6 +36,7 @@ class RiskManager:
             max_positions: Maximum simultaneous positions
             max_consecutive_losses: Max consecutive losses before cooldown
             daily_loss_limit: Daily loss limit percentage
+            dynamic_position_sizing: Whether to use compounded balance for sizing
         """
         self.initial_capital = initial_capital
         self.balance = initial_capital  # Total account balance (Margin + Free)
@@ -48,6 +50,7 @@ class RiskManager:
         self.max_positions = max_positions
         self.max_consecutive_losses = max_consecutive_losses
         self.daily_loss_limit = daily_loss_limit
+        self.dynamic_position_sizing = dynamic_position_sizing
 
         # Track positions and risk metrics
         self.open_positions: List[Position] = []
@@ -170,7 +173,8 @@ class RiskManager:
             Position size in asset units
         """
         # Calculate risk amount
-        capital_to_risk = self.balance * (self.risk_per_trade / 100)
+        capital_base = self.balance if self.dynamic_position_sizing else self.initial_capital
+        capital_to_risk = capital_base * (self.risk_per_trade / 100)
         
         # Apply risk reduction if needed
         if self.soft_halt:

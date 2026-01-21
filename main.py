@@ -111,6 +111,9 @@ def load_config_from_json(config_file: str) -> Dict[str, Any]:
             "trailing_stop_distance": json_config.get("risk_management", {}).get(
                 "trailing_stop_distance", json_config.get("trailing_stop_distance", 0.02)
             ),
+            "breakeven_trigger_r": json_config.get("risk_management", {}).get(
+                "breakeven_trigger_r", json_config.get("breakeven_trigger_r", 1.0)
+            ),
             # Logging settings (try nested first, then flat)
             "log_level": json_config.get("logging", {}).get("level", json_config.get("log_level", "INFO")),
             "export_logs": json_config.get("logging", {}).get("export_logs", json_config.get("export_logs", True)),

@@ -1,0 +1,31 @@
+{
+    "initial_capital": 10000.0,
+    "risk_per_trade": 1.0,
+    "max_drawdown": 30.0,
+    "max_positions": 5,
+    "leverage": 10.0,
+    "symbol": "BTC/USDT",
+    "timeframes": [
+        "4h",
+        "15m"
+    ],
+    "start_date": "2025-01-01",
+    "end_date": "2025-12-31",
+    "strategy": "price_action_strategy",
+    "strategy_config": {
+        "primary_timeframe": "4h",
+        "min_range_factor": 1.5,
+        "use_trend_filter": true,
+        "trend_ema_period": 200,
+        "risk_reward_ratio": 2.2
+    },
+    "min_risk_reward": 2.0,
+    "trailing_stop_distance": 0.05,
+    "max_total_risk_percent": 15.0,
+    "dynamic_position_sizing": true,
+    "log_level": "INFO",
+    "export_logs": true,
+    "log_file": "results/debug_logs.json",
+    "save_results": true,
+    "results_file": "results/debug_results.json"
+}

@@ -53,6 +53,7 @@ class BacktestEngine:
             max_drawdown=config.get("max_drawdown", 15.0),
             max_positions=config.get("max_positions", 3),
             max_consecutive_losses=config.get("max_consecutive_losses", 50), # Default high for backtests
+            dynamic_position_sizing=config.get("dynamic_position_sizing", True)
         )
         # self.trade_simulator = TradeSimulator() # Unused in current implementation, relying on internal logic
         self.logger = Logger(config.get("log_level", "INFO"))
@@ -265,6 +266,10 @@ class BacktestEngine:
             self.logger.log_signal_rejection(signal, "Position size", rejection_details, current_time)
             return
 
+        # Determine if trailing stop should be enabled based on config
+        # trailing_dist = self.config.get("trailing_stop_distance", 0)
+        # is_trailing_enabled = trailing_dist > 0
+
         # Create position
         position = Position(
             id=len(self.open_positions) + len(self.closed_trades) + 1,
@@ -290,6 +295,9 @@ class BacktestEngine:
 
         # Log trade opening
         self.logger.log_trade_open(position, self.current_capital, self.initial_capital)
+        
+        # Debug log for position creation
+        # self.logger.log("INFO", f"Position {position.id} created. Trailing Enabled: {is_trailing_enabled}, TP: {take_profit}")
 
         # Update risk manager
         self.risk_manager.add_position(position)
@@ -297,6 +305,13 @@ class BacktestEngine:
         # Update strategy executed signals counter
         if hasattr(self.strategy, "signals_executed"):
             self.strategy.signals_executed += 1
+
+        # BUG FIX: Enable trailing stop active immediately if configured and using single TP
+        # (Laddered exits handle activation internally, but single TP was missing it)
+        # BUG FIX & FEATURE: Enable trailing stop active immediately if configured and using single TP
+        if take_profit is not None and position.trailing_stop_enabled:
+             position.trailing_active = True
+             # self.logger.log("INFO", "Trailing stop activated (Immediate)")
 
     def _setup_laddered_exits(self, position: Position):
         """Set up laddered take-profit levels for a position."""
@@ -353,44 +368,80 @@ class BacktestEngine:
             return current_price >= position.stop_loss
 
     def _check_take_profits(self, position: Position, current_price: float, current_time: pd.Timestamp) -> bool:
-        """Check and execute take profit levels. Returns True if position is fully closed."""
-        if not hasattr(position, "take_profit_levels") or not position.take_profit_levels:
-            return False
+        """
+        Check and execute take profit levels. 
+        Supports both laddered exits (take_profit_levels) and simple single take_profit.
+        Returns True if position is fully closed.
+        """
+        
+        # 1. Handle Laddered Exits
+        if hasattr(position, "take_profit_levels") and position.take_profit_levels:
+            for tp_level in position.take_profit_levels:
+                tp_price = tp_level["price"]
+                tp_percentage = tp_level["percentage"]
 
-        for tp_level in position.take_profit_levels:
-            tp_price = tp_level["price"]
-            tp_percentage = tp_level["percentage"]
+                if position.tp_hit.get(tp_price, False):
+                    continue  # Already hit this TP
 
-            if position.tp_hit.get(tp_price, False):
-                continue  # Already hit this TP
+                # Check TP based on direction
+                tp_hit = False
+                if position.direction == "LONG" and current_price >= tp_price:
+                    tp_hit = True
+                elif position.direction == "SHORT" and current_price <= tp_price:
+                    tp_hit = True
 
-            # Check TP based on direction
-            tp_hit = False
-            if position.direction == "LONG" and current_price >= tp_price:
-                tp_hit = True
-            elif position.direction == "SHORT" and current_price <= tp_price:
-                tp_hit = True
+                if tp_hit:
+                    # Execute partial exit
+                    # If this is the last TP or closes the rest, logic might differ, 
+                    # but simple percentage of initial size is standard for ladder
+                    exit_size = position.size * tp_percentage 
+                    # Note: Need to be careful if exit_size > current remaining size due to rounding or logic
+                    
+                    self._partial_exit(position, exit_size, tp_price, current_time, tp_level.get("reason", f"TP hit at {tp_price}"))
 
-            if tp_hit:
-                # Execute partial exit
-                exit_size = position.size * tp_percentage
-                self._partial_exit(position, exit_size, tp_price, current_time, tp_level.get("reason", f"TP hit at {tp_price}"))
+                    # Move stop to breakeven after TP1
+                    if tp_percentage == 0.5 and not position.breakeven_moved:
+                        position.stop_loss = position.entry_price
+                        position.breakeven_moved = True
+                        self.logger.log("INFO", f"Stop moved to breakeven: {position.entry_price}")
 
-                # Move stop to breakeven after TP1
-                if tp_percentage == 0.5 and not position.breakeven_moved:
-                    position.stop_loss = position.entry_price
-                    position.breakeven_moved = True
-                    self.logger.log("INFO", f"Stop moved to breakeven: {position.entry_price}")
+                    # Activate trailing stop after TP2
+                    if tp_percentage == 0.3 and not position.trailing_active:
+                        position.trailing_active = True
+                        self.logger.log("INFO", "Trailing stop activated")
 
-                # Activate trailing stop after TP2
-                if tp_percentage == 0.3 and not position.trailing_active:
-                    position.trailing_active = True
-                    self.logger.log("INFO", "Trailing stop activated")
+                    position.tp_hit[tp_price] = True
+                    break
+            return position.size <= 0
 
-                position.tp_hit[tp_price] = True
-                break
+        # 2. Handle Simple Take Profit (Single Level)
+        elif position.take_profit is not None:
+             # Check Breakeven Condition (Standard: 1R, Configurable: breakeven_trigger_r)
+             trigger_r = self.config.get("breakeven_trigger_r", 1.0)
+             risk_distance = abs(position.entry_price - position.stop_loss)
+             
+             if not position.breakeven_moved:
+                 if position.direction == "LONG":
+                     if current_price >= position.entry_price + (risk_distance * trigger_r):
+                         position.move_stop_to_breakeven()
+                         self.logger.log("INFO", f"Stop moved to breakeven: {position.entry_price} (Price hit +{trigger_r}R)")
+                 else:  # SHORT
+                     if current_price <= position.entry_price - (risk_distance * trigger_r):
+                         position.move_stop_to_breakeven()
+                         self.logger.log("INFO", f"Stop moved to breakeven: {position.entry_price} (Price hit +{trigger_r}R)")
 
-        return position.size <= 0
+             # Check Take Profit
+             tp_hit = False
+             if position.direction == "LONG" and current_price >= position.take_profit:
+                 tp_hit = True
+             elif position.direction == "SHORT" and current_price <= position.take_profit:
+                 tp_hit = True
+            
+             if tp_hit:
+                 self._close_position(position, current_price, current_time, "TAKE PROFIT")
+                 return True
+
+        return False
 
     def _partial_exit(self, position: Position, exit_size: float, exit_price: float, current_time: pd.Timestamp, reason: str):
         """Execute a partial position exit."""
@@ -416,12 +467,14 @@ class BacktestEngine:
 
     def _update_trailing_stop(self, position: Position, current_price: float):
         """Update trailing stop based on price movement."""
+        trailing_dist_pct = self.config.get("trailing_stop_distance", 0.02)
+        
         if position.direction == "LONG":
             # For LONG positions: move stop up as price goes up
             if current_price > position.trailing_high:
                 position.trailing_high = current_price
                 # Move stop to some distance below the high
-                atr_distance = current_price * 0.02  # 2% trailing distance
+                atr_distance = current_price * trailing_dist_pct
                 new_stop = current_price - atr_distance
                 if new_stop > position.stop_loss:
                     position.stop_loss = new_stop
@@ -430,7 +483,7 @@ class BacktestEngine:
             if current_price < position.trailing_low:
                 position.trailing_low = current_price
                 # Move stop to some distance above the low
-                atr_distance = current_price * 0.02  # 2% trailing distance
+                atr_distance = current_price * trailing_dist_pct
                 new_stop = current_price + atr_distance
                 if new_stop < position.stop_loss:
                     position.stop_loss = new_stop

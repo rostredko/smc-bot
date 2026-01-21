@@ -76,6 +76,7 @@ class BacktestConfig(BaseModel):
     strategy_config: Dict[str, Any] = {}
     min_risk_reward: float = 2.0
     trailing_stop_distance: float = 0.02
+    breakeven_trigger_r: float = 1.0
     max_total_risk_percent: float = 15.0
     dynamic_position_sizing: bool = True
 
@@ -245,6 +246,13 @@ def get_strategy_config_schema(strategy_name: str):
             "rsi_period": {"type": "number", "default": 14},
             "rsi_overbought": {"type": "number", "default": 70},
             "rsi_oversold": {"type": "number", "default": 30},
+
+            "use_rsi_momentum": {"type": "boolean", "default": False},
+            "rsi_momentum_threshold": {"type": "number", "default": 50},
+
+            "use_adx_filter": {"type": "boolean", "default": False},
+            "adx_period": {"type": "number", "default": 14},
+            "adx_threshold": {"type": "number", "default": 25},
 
             "risk_reward_ratio": {"type": "number", "default": 2.5},
             "sl_buffer_atr": {"type": "number", "default": 0.5},
@@ -533,6 +541,7 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
             'strategy_config': config.get('strategy_config', {}),
             'min_risk_reward': config.get('min_risk_reward', 2.0),
             'trailing_stop_distance': config.get('trailing_stop_distance', 0.02),
+            'breakeven_trigger_r': config.get('breakeven_trigger_r', 1.0),
             'max_total_risk_percent': config.get('max_total_risk_percent', 15.0),
             'dynamic_position_sizing': config.get('dynamic_position_sizing', True),
             'log_level': 'INFO',
@@ -562,6 +571,7 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
         await broadcast_message(f"[{run_id}] Leverage: {engine_config['leverage']}x\n")
         await broadcast_message(f"[{run_id}] Min Risk/Reward: {engine_config['min_risk_reward']}\n")
         await broadcast_message(f"[{run_id}] Trailing Stop Distance: {engine_config['trailing_stop_distance']}\n")
+        await broadcast_message(f"[{run_id}] Breakeven Trigger (R): {engine_config['breakeven_trigger_r']}\n")
         await broadcast_message(f"[{run_id}] Max Total Risk: {engine_config['max_total_risk_percent']}%\n")
         await broadcast_message(f"[{run_id}] Dynamic Position Sizing: {engine_config['dynamic_position_sizing']}\n")
         if engine_config['strategy_config']:

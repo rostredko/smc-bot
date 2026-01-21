@@ -27,7 +27,8 @@ import {
   TableContainer,
   TableHead,
   TableRow,
-  Chip
+  Chip,
+  Tooltip as MuiTooltip
 } from "@mui/material";
 import {
   PlayArrow,
@@ -54,6 +55,44 @@ import {
 } from "recharts";
 
 const API_BASE = "http://localhost:8000";
+
+const TOOLTIP_HINTS: Record<string, string> = {
+  // Account
+  initial_capital: "Starting account balance in USD",
+  risk_per_trade: "Percentage of capital risked per single trade (e.g. 1.0 = 1%)",
+  max_drawdown: "Maximum allowed decline in account equity before stopping",
+  leverage: "Multiplier for position size (technical use only, risk is controlled by % per trade)",
+  max_positions: "Maximum number of simultaneous open trades",
+
+  // General
+  symbol: "Trading pair to backtest (e.g. BTC/USDT)",
+  start_date: "Backtest start date",
+  end_date: "Backtest end date",
+  min_risk_reward: "Minimum required Profit/Risk ratio to enter a trade",
+  trailing_stop_distance: "Distance to trail the stop loss behind price (e.g. 0.02 = 2%)",
+  breakeven_trigger_r: "Profit multiplier to trigger move to breakeven (e.g. 1.0 = Move stop to entry when profit hits 1R)",
+  max_total_risk_percent: "Maximum combined risk of all open positions",
+  dynamic_position_sizing: "Adjust position size based on current capital/risk",
+
+  // Strategy Specific
+  primary_timeframe: "The main timeframe for candle analysis (e.g. 4h, 1h)",
+  min_range_factor: "Minimum size of a candle relative to recent average",
+  use_trend_filter: "Enable/Disable trading only in direction of EMA trend",
+  trend_ema_period: "Period for Exponential Moving Average to determine trend direction",
+  risk_reward_ratio: "Target Profit/Risk ratio for trade exits",
+  sl_buffer_atr: "Buffer added to Stop Loss based on ATR (volatility)",
+  use_rsi_filter: "Enable/Disable RSI checks for overbought/oversold conditions",
+  rsi_period: "Lookback period for RSI indicator",
+  rsi_overbought: "RSI level above which Longs are avoided (Too high)",
+  rsi_oversold: "RSI level below which Shorts are avoided (Too low)",
+  min_wick_to_range: "Minimum wick size relative to candle body (for Pin Bars)",
+  max_body_to_range: "Maximum body size relative to total range (for Pin Bars)",
+  use_adx_filter: "Enable/Disable ADX (Trend Strength) Filter",
+  adx_period: "Lookback period for ADX indicator",
+  adx_threshold: "Minimum ADX value required to enter a trade (Trend Strength)",
+  use_rsi_momentum: "Enable/Disable RSI Momentum (Long if > 50, Short if < 50)",
+  rsi_momentum_threshold: "Threshold for RSI Momentum (usually 50)",
+};
 
 // Custom tooltip components for formatting numbers
 const CustomTooltip = ({ active, payload, label }: any) => {
@@ -119,6 +158,7 @@ interface BacktestConfig {
   strategy_config: Record<string, any>;
   min_risk_reward: number;
   trailing_stop_distance: number;
+  breakeven_trigger_r: number;
   max_total_risk_percent: number;
   dynamic_position_sizing: boolean;
 }
@@ -166,6 +206,7 @@ export default function App() {
     strategy_config: {},
     min_risk_reward: 2.0,
     trailing_stop_distance: 0.02,
+    breakeven_trigger_r: 1.0,
     max_total_risk_percent: 15.0,
     dynamic_position_sizing: true
   });
@@ -184,7 +225,7 @@ export default function App() {
     { title: "Core Settings", keys: ["mode", "allow_short"] },
     { title: "Timeframes", keys: ["high_timeframe", "low_timeframe"] },
     { title: "Volatility Filters", keys: ["volatility_filter_enabled", "atr_period", "atr_percentile_min", "atr_percentile_max", "sl_atr_multiplier", "min_signal_confidence"] },
-    { title: "Technical Entry Filters", keys: ["use_rsi_filter", "rsi_period", "rsi_overbought", "rsi_oversold", "use_trend_filter", "trend_ema_period"] },
+    { title: "Technical Entry Filters", keys: ["use_rsi_filter", "rsi_period", "rsi_overbought", "rsi_oversold", "use_rsi_momentum", "rsi_momentum_threshold", "use_adx_filter", "adx_period", "adx_threshold", "use_trend_filter", "trend_ema_period"] },
     { title: "Pattern Settings", keys: ["min_range_factor", "min_wick_to_range", "max_body_to_range", "risk_reward_ratio", "sl_buffer_atr"] },
     { title: "Partial Take Profits", keys: ["use_partial_tp", "tp1_r", "tp1_pct", "tp2_r", "tp2_pct", "runner_pct"] },
     { title: "Exit Management", keys: ["trailing_stop_enabled", "trail_start", "trail_step", "breakeven_move_enabled"] },
@@ -209,38 +250,50 @@ export default function App() {
         // Check if explicitly false (handle undefined as true/default if needed, but safe to assume it follows config)
         if (useRsi === false) isDisabled = true;
       }
+      if (["rsi_momentum_threshold"].includes(key)) {
+        const useMom = (strategyConfig as any)["use_rsi_momentum"];
+        if (useMom === false) isDisabled = true;
+      }
       if (key === "trend_ema_period") {
         const useTrend = (strategyConfig as any)["use_trend_filter"];
         if (useTrend === false) isDisabled = true;
       }
+      if (["adx_period", "adx_threshold"].includes(key)) {
+        const useAdx = (strategyConfig as any)["use_adx_filter"];
+        if (useAdx === false) isDisabled = true;
+      }
     }
 
     return (
-      <Grid item xs={12} md={6} key={key}>
-        {isBoolean ? (
-          <FormControlLabel
-            control={
-              <Switch
-                checked={value !== undefined ? Boolean(value === true || value === "true") : Boolean(schema?.default)}
-                onChange={e => handleStrategyConfigChange(key, e.target.checked)}
-                disabled={isDisabled}
+      <Grid item xs={12} md={isBoolean ? 12 : 6} key={key}>
+        <MuiTooltip title={TOOLTIP_HINTS[key] || "No description available"} arrow placement="top">
+          <Box>
+            {isBoolean ? (
+              <FormControlLabel
+                control={
+                  <Switch
+                    checked={value !== undefined ? Boolean(value === true || value === "true") : Boolean(schema?.default)}
+                    onChange={e => handleStrategyConfigChange(key, e.target.checked)}
+                    disabled={isDisabled}
+                  />
+                }
+                label={label}
               />
-            }
-            label={label}
-          />
-        ) : (
-          <TextField
-            label={label}
-            type={schema?.type === "number" ? "number" : "text"}
-            value={value !== undefined ? value : (schema?.default || "")}
-            onChange={e => {
-              const newValue = schema?.type === "number" ? parseFloat(e.target.value) : e.target.value;
-              handleStrategyConfigChange(key, newValue);
-            }}
-            disabled={isDisabled}
-            fullWidth
-          />
-        )}
+            ) : (
+              <TextField
+                label={label}
+                type={schema?.type === "number" ? "number" : "text"}
+                value={value !== undefined ? value : (schema?.default || "")}
+                onChange={e => {
+                  const newValue = schema?.type === "number" ? parseFloat(e.target.value) : e.target.value;
+                  handleStrategyConfigChange(key, newValue);
+                }}
+                disabled={isDisabled}
+                fullWidth
+              />
+            )}
+          </Box>
+        </MuiTooltip>
       </Grid>
     );
   };
@@ -610,127 +663,163 @@ export default function App() {
                 <AccordionDetails>
                   <Grid container spacing={2}>
                     <Grid item xs={12} md={3}>
-                      <TextField
-                        label="Initial Capital"
-                        type="number"
-                        value={config.initial_capital}
-                        onChange={e => handleConfigChange("initial_capital", parseFloat(e.target.value))}
-                        disabled={isConfigDisabled}
-                        fullWidth
-                      />
+                      <MuiTooltip title={TOOLTIP_HINTS["initial_capital"]} arrow placement="top">
+                        <TextField
+                          label="Initial Capital"
+                          type="number"
+                          value={config.initial_capital}
+                          onChange={e => handleConfigChange("initial_capital", parseFloat(e.target.value))}
+                          disabled={isConfigDisabled}
+                          fullWidth
+                        />
+                      </MuiTooltip>
                     </Grid>
                     <Grid item xs={12} md={3}>
-                      <TextField
-                        label="Risk Per Trade (%)"
-                        type="number"
-                        value={config.risk_per_trade}
-                        onChange={e => handleConfigChange("risk_per_trade", parseFloat(e.target.value))}
-                        disabled={isConfigDisabled}
-                        fullWidth
-                      />
+                      <MuiTooltip title={TOOLTIP_HINTS["risk_per_trade"]} arrow placement="top">
+                        <TextField
+                          label="Risk Per Trade (%)"
+                          type="number"
+                          value={config.risk_per_trade}
+                          onChange={e => handleConfigChange("risk_per_trade", parseFloat(e.target.value))}
+                          disabled={isConfigDisabled}
+                          fullWidth
+                        />
+                      </MuiTooltip>
                     </Grid>
                     <Grid item xs={12} md={3}>
-                      <TextField
-                        label="Max Drawdown (%)"
-                        type="number"
-                        value={config.max_drawdown}
-                        onChange={e => handleConfigChange("max_drawdown", parseFloat(e.target.value))}
-                        disabled={isConfigDisabled}
-                        fullWidth
-                      />
+                      <MuiTooltip title={TOOLTIP_HINTS["max_drawdown"]} arrow placement="top">
+                        <TextField
+                          label="Max Drawdown (%)"
+                          type="number"
+                          value={config.max_drawdown}
+                          onChange={e => handleConfigChange("max_drawdown", parseFloat(e.target.value))}
+                          disabled={isConfigDisabled}
+                          fullWidth
+                        />
+                      </MuiTooltip>
                     </Grid>
                     <Grid item xs={12} md={3}>
-                      <TextField
-                        label="Leverage"
-                        type="number"
-                        value={config.leverage}
-                        onChange={e => handleConfigChange("leverage", parseFloat(e.target.value))}
-                        disabled={isConfigDisabled}
-                        fullWidth
-                      />
+                      <MuiTooltip title={TOOLTIP_HINTS["leverage"]} arrow placement="top">
+                        <TextField
+                          label="Leverage"
+                          type="number"
+                          value={config.leverage}
+                          onChange={e => handleConfigChange("leverage", parseFloat(e.target.value))}
+                          disabled={isConfigDisabled}
+                          fullWidth
+                        />
+                      </MuiTooltip>
                     </Grid>
                     <Grid item xs={12} md={3}>
-                      <TextField
-                        label="Max Positions"
-                        type="number"
-                        value={config.max_positions}
-                        onChange={e => handleConfigChange("max_positions", parseFloat(e.target.value))}
-                        disabled={isConfigDisabled}
-                        fullWidth
-                      />
+                      <MuiTooltip title={TOOLTIP_HINTS["max_positions"]} arrow placement="top">
+                        <TextField
+                          label="Max Positions"
+                          type="number"
+                          value={config.max_positions}
+                          onChange={e => handleConfigChange("max_positions", parseFloat(e.target.value))}
+                          disabled={isConfigDisabled}
+                          fullWidth
+                        />
+                      </MuiTooltip>
                     </Grid>
                     <Grid item xs={12} md={4}>
-                      <TextField
-                        label="Symbol"
-                        value={config.symbol}
-                        onChange={e => handleConfigChange("symbol", e.target.value)}
-                        disabled={isConfigDisabled}
-                        fullWidth
-                      />
+                      <MuiTooltip title={TOOLTIP_HINTS["symbol"]} arrow placement="top">
+                        <TextField
+                          label="Symbol"
+                          value={config.symbol}
+                          onChange={e => handleConfigChange("symbol", e.target.value)}
+                          disabled={isConfigDisabled}
+                          fullWidth
+                        />
+                      </MuiTooltip>
                     </Grid>
                     <Grid item xs={12} md={4}>
-                      <TextField
-                        label="Start Date"
-                        type="date"
-                        value={config.start_date}
-                        onChange={e => handleConfigChange("start_date", e.target.value)}
-                        disabled={isConfigDisabled}
-                        fullWidth
-                        InputLabelProps={{ shrink: true }}
-                      />
+                      <MuiTooltip title={TOOLTIP_HINTS["start_date"]} arrow placement="top">
+                        <TextField
+                          label="Start Date"
+                          type="date"
+                          value={config.start_date}
+                          onChange={e => handleConfigChange("start_date", e.target.value)}
+                          disabled={isConfigDisabled}
+                          fullWidth
+                          InputLabelProps={{ shrink: true }}
+                        />
+                      </MuiTooltip>
                     </Grid>
                     <Grid item xs={12} md={4}>
-                      <TextField
-                        label="End Date"
-                        type="date"
-                        value={config.end_date}
-                        onChange={e => handleConfigChange("end_date", e.target.value)}
-                        disabled={isConfigDisabled}
-                        fullWidth
-                        InputLabelProps={{ shrink: true }}
-                      />
+                      <MuiTooltip title={TOOLTIP_HINTS["end_date"]} arrow placement="top">
+                        <TextField
+                          label="End Date"
+                          type="date"
+                          value={config.end_date}
+                          onChange={e => handleConfigChange("end_date", e.target.value)}
+                          disabled={isConfigDisabled}
+                          fullWidth
+                          InputLabelProps={{ shrink: true }}
+                        />
+                      </MuiTooltip>
                     </Grid>
                     <Grid item xs={12} md={3}>
-                      <TextField
-                        label="Min Risk/Reward"
-                        type="number"
-                        value={config.min_risk_reward}
-                        onChange={e => handleConfigChange("min_risk_reward", parseFloat(e.target.value))}
-                        disabled={isConfigDisabled}
-                        fullWidth
-                      />
+                      <MuiTooltip title={TOOLTIP_HINTS["min_risk_reward"]} arrow placement="top">
+                        <TextField
+                          label="Min Risk/Reward"
+                          type="number"
+                          value={config.min_risk_reward}
+                          onChange={e => handleConfigChange("min_risk_reward", parseFloat(e.target.value))}
+                          disabled={isConfigDisabled}
+                          fullWidth
+                        />
+                      </MuiTooltip>
                     </Grid>
                     <Grid item xs={12} md={3}>
-                      <TextField
-                        label="Trailing Stop Distance"
-                        type="number"
-                        value={config.trailing_stop_distance}
-                        onChange={e => handleConfigChange("trailing_stop_distance", parseFloat(e.target.value))}
-                        disabled={isConfigDisabled}
-                        fullWidth
-                      />
+                      <MuiTooltip title={TOOLTIP_HINTS["trailing_stop_distance"]} arrow placement="top">
+                        <TextField
+                          label="Trailing Stop Distance"
+                          type="number"
+                          value={config.trailing_stop_distance}
+                          onChange={e => handleConfigChange("trailing_stop_distance", parseFloat(e.target.value))}
+                          disabled={isConfigDisabled}
+                          fullWidth
+                        />
+                      </MuiTooltip>
                     </Grid>
                     <Grid item xs={12} md={3}>
-                      <TextField
-                        label="Max Total Risk (%)"
-                        type="number"
-                        value={config.max_total_risk_percent}
-                        onChange={e => handleConfigChange("max_total_risk_percent", parseFloat(e.target.value))}
-                        disabled={isConfigDisabled}
-                        fullWidth
-                      />
+                      <MuiTooltip title={TOOLTIP_HINTS["breakeven_trigger_r"]} arrow placement="top">
+                        <TextField
+                          label="Breakeven Trigger (R)"
+                          type="number"
+                          value={config.breakeven_trigger_r}
+                          onChange={e => handleConfigChange("breakeven_trigger_r", parseFloat(e.target.value))}
+                          disabled={isConfigDisabled}
+                          fullWidth
+                        />
+                      </MuiTooltip>
                     </Grid>
                     <Grid item xs={12} md={3}>
-                      <FormControlLabel
-                        control={
-                          <Switch
-                            checked={config.dynamic_position_sizing}
-                            onChange={e => handleConfigChange("dynamic_position_sizing", e.target.checked)}
-                            disabled={isConfigDisabled}
-                          />
-                        }
-                        label="Dynamic Position Sizing"
-                      />
+                      <MuiTooltip title={TOOLTIP_HINTS["max_total_risk_percent"]} arrow placement="top">
+                        <TextField
+                          label="Max Total Risk (%)"
+                          type="number"
+                          value={config.max_total_risk_percent}
+                          onChange={e => handleConfigChange("max_total_risk_percent", parseFloat(e.target.value))}
+                          disabled={isConfigDisabled}
+                          fullWidth
+                        />
+                      </MuiTooltip>
+                    </Grid>
+                    <Grid item xs={12} md={3}>
+                      <MuiTooltip title={TOOLTIP_HINTS["dynamic_position_sizing"]} arrow placement="top">
+                        <FormControlLabel
+                          control={
+                            <Switch
+                              checked={config.dynamic_position_sizing}
+                              onChange={e => handleConfigChange("dynamic_position_sizing", e.target.checked)}
+                              disabled={isConfigDisabled}
+                            />
+                          }
+                          label="Dynamic Position Sizing"
+                        />
+                      </MuiTooltip>
                     </Grid>
                   </Grid>
                 </AccordionDetails>
