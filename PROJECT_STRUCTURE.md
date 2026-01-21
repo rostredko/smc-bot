@@ -507,3 +507,24 @@ Maps liquidity zones and detects liquidity sweeps.
 - filters: volume_threshold, rsi_period, ema_filter_period, min_signal_confidence
 
 
+
+---
+
+## WEB DASHBOARD MODULE
+
+### 1. server.py
+FastAPI backend that bridges the Python trading engine with the React frontend.
+
+**Endpoints:**
+- `/config`: Read/Write JSON configuration
+- `/backtest/start`: Triggers `BacktestEngine` in a background thread
+- `/ws`: WebSocket for real-time log streaming from `Logger`
+
+### 2. src/App.tsx
+Main React component handling strategy selection, configuration forms, and simulation control.
+
+### 3. src/components/BacktestHistoryList.tsx
+Displays historical backtest runs with:
+- Dedicated columns for Strategy and Period
+- Expandable rows showing full configuration diffs
+- PnL and other performance metrics

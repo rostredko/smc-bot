@@ -318,7 +318,13 @@ async def get_config():
             "timeframes": config.get("trading", {}).get("timeframes", ["4h", "15m"]),
             "start_date": config.get("period", {}).get("start_date", "2023-01-01"),
             "end_date": config.get("period", {}).get("end_date", "2023-12-31"),
-            "strategy": config.get("strategy", {}).get("name", "smc_strategy")
+            "strategy": config.get("strategy", {}).get("name", "smc_strategy"),
+            "strategy_config": config.get("strategy", {}).get("config", {}),
+            "min_risk_reward": config.get("min_risk_reward", 2.0),
+            "trailing_stop_distance": config.get("trailing_stop_distance", 0.02),
+            "breakeven_trigger_r": config.get("breakeven_trigger_r", 1.0),
+            "max_total_risk_percent": config.get("max_total_risk_percent", 15.0),
+            "dynamic_position_sizing": config.get("dynamic_position_sizing", True)
         }
         return flat_config
     return {}
@@ -372,6 +378,18 @@ async def update_config(config: Dict[str, Any]):
     # Update strategy settings
     if "strategy" in config:
         existing_config["strategy"]["name"] = config["strategy"]
+        
+    # Update root level settings
+    if "min_risk_reward" in config:
+        existing_config["min_risk_reward"] = config["min_risk_reward"]
+    if "trailing_stop_distance" in config:
+        existing_config["trailing_stop_distance"] = config["trailing_stop_distance"]
+    if "breakeven_trigger_r" in config:
+        existing_config["breakeven_trigger_r"] = config["breakeven_trigger_r"]
+    if "max_total_risk_percent" in config:
+        existing_config["max_total_risk_percent"] = config["max_total_risk_percent"]
+    if "dynamic_position_sizing" in config:
+        existing_config["dynamic_position_sizing"] = config["dynamic_position_sizing"]
     
     # Save updated config
     with open(config_path, 'w') as f:
@@ -462,6 +480,66 @@ async def get_result_file(filename: str):
         return data
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error reading file: {str(e)}")
+
+
+
+@app.get("/api/backtest/history")
+async def get_backtest_history():
+    """Get history of last 10 backtests with summary metrics."""
+    history = []
+    
+    if os.path.exists(RESULTS_DIR):
+        # Get list of JSON files with their modification times
+        files = []
+        for name in os.listdir(RESULTS_DIR):
+            if name.endswith(".json") and name.startswith("backtest_"):
+                # Skip log files and generic result files
+                if "_logs" in name or name == "backtest_results.json":
+                    continue
+                    
+                file_path = os.path.join(RESULTS_DIR, name)
+                try:
+                    mtime = os.path.getmtime(file_path)
+                    files.append((name, mtime))
+                except OSError:
+                    continue
+        
+        # Sort by modification time (descending)
+        files.sort(key=lambda x: x[1], reverse=True)
+        
+        # Process top 10 most recent files
+        for filename, mtime in files[:10]:
+            try:
+                file_path = os.path.join(RESULTS_DIR, filename)
+                with open(file_path, 'r') as f:
+                    data = json.load(f)
+                
+                # Extract simplified summary stats
+                summary = {
+                    "filename": filename,
+                    "timestamp": datetime.fromtimestamp(mtime).isoformat(),
+                    "total_pnl": data.get("total_pnl", 0),
+                    "initial_capital": data.get("initial_capital", data.get("configuration", {}).get("initial_capital", 10000)),
+                    "win_rate": data.get("win_rate", 0),
+                    "max_drawdown": data.get("max_drawdown", 0),
+                    "total_trades": data.get("total_trades", 0),
+                    "profit_factor": data.get("profit_factor", 0),
+                    "sharpe_ratio": data.get("sharpe_ratio", 0),
+                    "expected_value": data.get("expected_value", 0), # Expectancy if available
+                    "avg_win": data.get("avg_win", 0),
+                    "avg_loss": data.get("avg_loss", 0),
+                    "winning_trades": data.get("winning_trades", 0),
+                    "losing_trades": data.get("losing_trades", 0),
+                    "strategy": data.get("configuration", {}).get("strategy", "Unknown"),
+                    # Pass full configuration for detailed view
+                    "configuration": data.get("configuration", {})
+                }
+                history.append(summary)
+            except Exception as e:
+                print(f"Error reading history file {filename}: {e}")
+                continue
+                
+    return {"history": history}
 
 
 @app.delete("/backtest/{run_id}")

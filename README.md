@@ -256,6 +256,8 @@ python server.py
 - 🎨 **Modern UI** - Beautiful Material-UI design
 - ⏹️ **Stop Button** - Cancel backtest mid-run and get intermediate results
 - 💾 **Auto-Save Results** - JSON export to `results/` directory
+- 📜 **Enhanced History** - Clickable rows, Period display, Config grouping, PnL tracking
+- 🔄 **Smart Reset** - Button helps restore default configs from server
 
 #### Live Console Output
 
@@ -371,6 +373,8 @@ web-dashboard/
 ├── requirements.txt          # Python dependencies
 ├── package.json             # Node.js dependencies
 ├── src/
+│   ├── components/         # React components
+│   │   └── BacktestHistoryList.tsx
 │   ├── App.tsx             # Main React component
 │   └── index.css           # Styles
 ├── dist/                    # Built React app

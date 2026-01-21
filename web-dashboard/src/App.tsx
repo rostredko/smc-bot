@@ -53,6 +53,7 @@ import {
   Pie,
   Cell
 } from "recharts";
+import BacktestHistoryList from "./components/BacktestHistoryList";
 
 const API_BASE = "http://localhost:8000";
 
@@ -189,27 +190,29 @@ interface BacktestResults {
   trades: Array<any>;
 }
 
+const DEFAULT_CONFIG: BacktestConfig = {
+  initial_capital: 10000,
+  risk_per_trade: 1.0,
+  max_drawdown: 10.0,
+  max_positions: 3,
+  leverage: 1.0,
+  symbol: "BTC/USDT",
+  timeframes: ["4h", "15m"],
+  start_date: "2023-01-01",
+  end_date: "2023-12-31",
+  strategy: "",
+  strategy_config: {},
+  min_risk_reward: 2.0,
+  trailing_stop_distance: 0.02,
+  breakeven_trigger_r: 1.0,
+  max_total_risk_percent: 10.0,
+  dynamic_position_sizing: true
+};
+
 export default function App() {
   const [strategies, setStrategies] = useState<Strategy[]>([]);
   const [selectedStrategy, setSelectedStrategy] = useState<string>("");
-  const [config, setConfig] = useState<BacktestConfig>({
-    initial_capital: 10000,
-    risk_per_trade: 2.0,
-    max_drawdown: 15.0,
-    max_positions: 3,
-    leverage: 10.0,
-    symbol: "BTC/USDT",
-    timeframes: ["4h", "15m"],
-    start_date: "2023-01-01",
-    end_date: "2023-12-31",
-    strategy: "",
-    strategy_config: {},
-    min_risk_reward: 2.0,
-    trailing_stop_distance: 0.02,
-    breakeven_trigger_r: 1.0,
-    max_total_risk_percent: 15.0,
-    dynamic_position_sizing: true
-  });
+  const [config, setConfig] = useState<BacktestConfig>(DEFAULT_CONFIG);
   const [strategyConfig, setStrategyConfig] = useState<Record<string, any>>({});
   const [backtestStatus, setBacktestStatus] = useState<BacktestStatus | null>(null);
   const [results, setResults] = useState<BacktestResults | null>(null);
@@ -312,8 +315,8 @@ export default function App() {
   // Load strategies and config on mount
   useEffect(() => {
     const loadData = async () => {
-      await loadStrategies();
-      await loadConfig();
+      const loadedStrategies = await loadStrategies();
+      await loadConfig(loadedStrategies);
     };
     loadData();
 
@@ -376,23 +379,59 @@ export default function App() {
       const data = await response.json();
       console.log("Loaded strategies:", data.strategies);
       setStrategies(data.strategies || []);
+      return data.strategies || [];
     } catch (error) {
       console.error("Failed to load strategies:", error);
+      return [];
     }
   };
 
-  const loadConfig = async () => {
+  const loadConfig = async (currentStrategies: Strategy[] = strategies) => {
     try {
       const response = await fetch(`${API_BASE}/config`);
       const data = await response.json();
       console.log("Loaded config:", data);
 
       setConfig(prev => ({ ...prev, ...data }));
-      setSelectedStrategy("");
-      setStrategyConfig({});
+
+      if (data.strategy) {
+        setSelectedStrategy(data.strategy);
+
+        // Find the strategy definition to get defaults
+        const strategyDef = currentStrategies.find(s => s.name === data.strategy);
+        if (strategyDef) {
+          const defaults: Record<string, any> = {};
+          Object.entries(strategyDef.config_schema || {}).forEach(([key, schema]: [string, any]) => {
+            defaults[key] = schema.default;
+          });
+
+          // Merge defaults with loaded config
+          setStrategyConfig({
+            ...defaults,
+            ...(data.strategy_config || {})
+          });
+        } else {
+          // Fallback if strategy definition not found yet (should not happen if loaded)
+          setStrategyConfig(data.strategy_config || {});
+        }
+      } else {
+        setStrategyConfig({});
+      }
     } catch (error) {
       console.error("Failed to load config:", error);
     }
+  };
+
+  const resetDashboard = async () => {
+    // 1. Reset Run State
+    setIsRunning(false);
+    setIsConfigDisabled(false);
+    setBacktestStatus(null);
+    setResults(null);
+    setConsoleOutput([]);
+
+    // 2. Reload Config from Server
+    await loadConfig();
   };
 
   const startBacktest = async () => {
@@ -619,13 +658,7 @@ export default function App() {
                     <Button
                       variant="outlined"
                       startIcon={<Refresh />}
-                      onClick={() => {
-                        setIsRunning(false);
-                        setIsConfigDisabled(false);
-                        setBacktestStatus(null);
-                        setResults(null);
-                        setConsoleOutput([]);
-                      }}
+                      onClick={resetDashboard}
                       disabled={isRunning}
                     >
                       Reset
@@ -1101,6 +1134,12 @@ export default function App() {
             </Grid>
           </>
         )}
+
+        {/* Backtest History */}
+        <Grid item xs={12}>
+          <BacktestHistoryList />
+        </Grid>
+
       </Grid>
     </Container>
   );
