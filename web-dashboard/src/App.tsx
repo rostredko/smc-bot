@@ -29,7 +29,13 @@ import {
   TableHead,
   TableRow,
   Chip,
-  Tooltip as MuiTooltip
+  Tooltip as MuiTooltip,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
+  Divider,
+  Stack
 } from "@mui/material";
 import {
   PlayArrow,
@@ -196,7 +202,7 @@ const DEFAULT_CONFIG: BacktestConfig = {
   max_positions: 3,
   leverage: 1.0,
   symbol: "BTC/USDT",
-  timeframes: ["4h", "15m"],
+  timeframes: ["4h"],
   start_date: "2023-01-01",
   end_date: "2023-12-31",
   strategy: "",
@@ -213,18 +219,11 @@ const validateBacktestConfig = (config: BacktestConfig): Record<string, string> 
 
   // 1. Timeframe validation
   const tfPrimary = config.timeframes && config.timeframes[0] !== undefined ? config.timeframes[0].trim() : "";
-  const tfSecondary = config.timeframes && config.timeframes[1] !== undefined ? config.timeframes[1].trim() : "";
 
   if (!tfPrimary) {
     newErrors['timeframe_primary'] = "Required";
   } else if (!timeframeRegex.test(tfPrimary)) {
     newErrors['timeframe_primary'] = "Invalid (e.g. 4h)";
-  }
-
-  if (!tfSecondary) {
-    newErrors['timeframe_secondary'] = "Required";
-  } else if (!timeframeRegex.test(tfSecondary)) {
-    newErrors['timeframe_secondary'] = "Invalid (e.g. 15m)";
   }
 
   // 2. Numeric validation
@@ -695,19 +694,63 @@ export default function App() {
     }));
   }, [results]);
 
+  const [selectedTrade, setSelectedTrade] = useState<any | null>(null);
+  const [isTradeModalOpen, setIsTradeModalOpen] = useState(false);
+
+  // ... [Keep existing useEffects and handlers]
+
+  // Update tradeData to include full trade object and formatted date
   const tradeData = useMemo(() => {
     if (!results?.trades || results.trades.length === 0) {
       return [
-        { trade: 1, pnl: 0, type: "NO_TRADES" }
+        { trade: 1, pnl: 0, type: "NO_TRADES", date: "", fullTrade: null }
       ];
     }
     return results.trades.map((trade, index) => ({
       trade: index + 1,
       pnl: trade.pnl || 0,
-      type: trade.pnl > 0 ? "WIN" : "LOSS"
+      type: trade.pnl > 0 ? "WIN" : "LOSS",
+      date: trade.entry_time ? new Date(trade.entry_time).toLocaleDateString() : 'N/A',
+      fullTrade: trade
     }));
   }, [results]);
 
+  const handleBarClick = (data: any) => {
+    if (data && data.fullTrade) {
+      setSelectedTrade(data.fullTrade);
+      setIsTradeModalOpen(true);
+    }
+  };
+
+  const CustomTradeTooltip = ({ active, payload, label }: any) => {
+    if (active && payload && payload.length) {
+      const data = payload[0].payload;
+      return (
+        <div style={{
+          backgroundColor: '#1e1e1e',
+          border: '1px solid #333',
+          borderRadius: '4px',
+          padding: '12px',
+          boxShadow: '0 4px 6px rgba(0,0,0,0.3)',
+          color: '#fff'
+        }}>
+          <p style={{ margin: 0, fontWeight: 'bold', borderBottom: '1px solid #444', paddingBottom: '4px', marginBottom: '8px' }}>
+            Trade #{label}
+          </p>
+          <p style={{ margin: 0, fontSize: '0.9rem' }}>
+            <span style={{ color: '#aaa' }}>Date:</span> {data.date}
+          </p>
+          <p style={{ margin: 0, fontSize: '0.9rem', color: data.pnl >= 0 ? '#4caf50' : '#f44336' }}>
+            <span style={{ color: '#aaa' }}>PnL:</span> ${data.pnl?.toFixed(2)}
+          </p>
+          <p style={{ margin: '8px 0 0 0', fontSize: '0.8rem', color: '#888', fontStyle: 'italic' }}>
+            Click for details
+          </p>
+        </div>
+      );
+    }
+    return null;
+  };
   const pieData = useMemo(() => {
     if (!results) return [];
     const winning = results.winning_trades || 0;
@@ -727,6 +770,136 @@ export default function App() {
 
   return (
     <Container maxWidth="xl" sx={{ py: 4 }}>
+      {/* Trade Modal */}
+      <Dialog
+        open={isTradeModalOpen}
+        onClose={() => setIsTradeModalOpen(false)}
+        maxWidth="md"
+        fullWidth
+        PaperProps={{
+          sx: { bgcolor: '#1e1e1e', color: '#fff' }
+        }}
+      >
+        {selectedTrade && (
+          <>
+            <DialogTitle sx={{ borderBottom: '1px solid #333', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <Box display="flex" alignItems="center" gap={2}>
+                <Typography variant="h6">Trade #{selectedTrade.id}</Typography>
+                <Chip
+                  label={selectedTrade.direction?.toUpperCase()}
+                  color={selectedTrade.direction === 'LONG' ? 'success' : 'error'}
+                  size="small"
+                  variant="outlined"
+                />
+                <Chip
+                  label={selectedTrade.pnl >= 0 ? "WIN" : "LOSS"}
+                  color={selectedTrade.pnl >= 0 ? "success" : "error"}
+                  size="small"
+                />
+              </Box>
+              <Typography variant="h5" color={selectedTrade.pnl >= 0 ? "success.main" : "error.main"}>
+                {selectedTrade.pnl >= 0 ? "+" : ""}${selectedTrade.pnl?.toFixed(2)} ({selectedTrade.pnl_percent?.toFixed(2)}%)
+              </Typography>
+            </DialogTitle>
+            <DialogContent sx={{ mt: 2 }}>
+              <Grid container spacing={3}>
+                <Grid item xs={12}>
+                  <Paper variant="outlined" sx={{ p: 2, bgcolor: 'rgba(255,255,255,0.05)', borderColor: '#333' }}>
+                    <Typography variant="caption" sx={{ color: '#fff', opacity: 0.7 }} gutterBottom display="block">ENTRY REASON / CONTEXT</Typography>
+                    <Typography variant="body1" sx={{ fontStyle: 'italic', fontWeight: 'medium', color: '#fff' }}>
+                      "{selectedTrade.reason || 'No specific reason recorded'}"
+                    </Typography>
+
+                    {selectedTrade.metadata && Object.keys(selectedTrade.metadata).length > 0 && (
+                      <Box sx={{ mt: 2, pt: 2, borderTop: '1px solid rgba(255,255,255,0.1)' }}>
+                        <Typography variant="caption" sx={{ color: '#fff', opacity: 0.7 }} gutterBottom display="block">ADDITIONAL CONTEXT</Typography>
+                        <Grid container spacing={1}>
+                          {Object.entries(selectedTrade.metadata).map(([key, value]) => (
+                            <Grid item xs={6} md={4} key={key}>
+                              <Typography variant="caption" sx={{ color: '#aaa', textTransform: 'uppercase', fontSize: '0.7rem' }} display="block">
+                                {key.replace(/_/g, ' ')}
+                              </Typography>
+                              <Typography variant="body2" sx={{ color: '#fff' }}>
+                                {typeof value === 'object' ? JSON.stringify(value) : String(value)}
+                              </Typography>
+                            </Grid>
+                          ))}
+                        </Grid>
+                      </Box>
+                    )}
+                  </Paper>
+                </Grid>
+
+                <Grid item xs={12} md={6}>
+                  <Stack spacing={2}>
+                    <Box>
+                      <Typography variant="subtitle2" color="gray">ENTRY TIME</Typography>
+                      <Typography variant="body1">{selectedTrade.entry_time ? new Date(selectedTrade.entry_time).toLocaleString() : 'N/A'}</Typography>
+                    </Box>
+                    <Box>
+                      <Typography variant="subtitle2" color="gray">ENTRY PRICE</Typography>
+                      <Typography variant="body1">${selectedTrade.entry_price?.toFixed(2)}</Typography>
+                    </Box>
+                    <Box>
+                      <Typography variant="subtitle2" color="gray">SIZE</Typography>
+                      <Typography variant="body1">{selectedTrade.size?.toFixed(4)}</Typography>
+                    </Box>
+                  </Stack>
+                </Grid>
+
+                <Grid item xs={12} md={6}>
+                  <Stack spacing={2}>
+                    <Box>
+                      <Typography variant="subtitle2" color="gray">EXIT TIME</Typography>
+                      <Typography variant="body1">{selectedTrade.exit_time ? new Date(selectedTrade.exit_time).toLocaleString() : 'N/A'}</Typography>
+                    </Box>
+                    <Box>
+                      <Typography variant="subtitle2" color="gray">EXIT PRICE</Typography>
+                      <Typography variant="body1">${selectedTrade.exit_price?.toFixed(2)}</Typography>
+                    </Box>
+                    <Box>
+                      <Typography variant="subtitle2" color="gray">DURATION</Typography>
+                      <Typography variant="body1">
+                        {(() => {
+                          if (!selectedTrade.duration) return 'N/A';
+                          // Parse duration string "HH:MM:SS" or similar
+                          const parts = selectedTrade.duration.split(':');
+                          if (parts.length >= 2) {
+                            const h = parseInt(parts[0]);
+                            const m = parseInt(parts[1]);
+                            return `${h}h ${m}m`;
+                          }
+                          return selectedTrade.duration;
+                        })()}
+                      </Typography>
+                    </Box>
+                  </Stack>
+                </Grid>
+
+                <Grid item xs={12}>
+                  <Divider sx={{ borderColor: '#333', my: 1 }} />
+                </Grid>
+
+                <Grid item xs={6} md={3}>
+                  <Typography variant="caption" color="gray">STOP LOSS</Typography>
+                  <Typography variant="body2">${selectedTrade.stop_loss?.toFixed(2)}</Typography>
+                </Grid>
+                <Grid item xs={6} md={3}>
+                  <Typography variant="caption" color="gray">TAKE PROFIT</Typography>
+                  <Typography variant="body2">${selectedTrade.take_profit?.toFixed(2)}</Typography>
+                </Grid>
+                <Grid item xs={12} md={6}>
+                  <Typography variant="caption" color="gray">EXIT REASON</Typography>
+                  <Typography variant="body2">{selectedTrade.exit_reason}</Typography>
+                </Grid>
+              </Grid>
+            </DialogContent>
+            <DialogActions sx={{ borderTop: '1px solid #333', p: 2 }}>
+              <Button onClick={() => setIsTradeModalOpen(false)} color="inherit">Close</Button>
+            </DialogActions>
+          </>
+        )}
+      </Dialog>
       <Typography variant="h3" component="h1" gutterBottom align="center">
         Backtest Machine Dashboard
       </Typography>
@@ -931,40 +1104,20 @@ export default function App() {
                       </MuiTooltip>
                     </Grid>
 
-                    <Grid item xs={12} md={2}>
+                    <Grid item xs={12} md={4}>
                       <MuiTooltip title={TOOLTIP_HINTS["timeframe_primary"]} arrow placement="top">
                         <TextField
-                          label="Primary Timeframe"
+                          label="Timeframe"
                           required
                           value={config.timeframes && config.timeframes[0] ? config.timeframes[0] : ""}
                           onChange={e => {
-                            const newTimeframes = [...(config.timeframes || ["", ""])];
-                            newTimeframes[0] = e.target.value;
-                            handleConfigChange("timeframes", newTimeframes);
+                            const val = e.target.value;
+                            handleConfigChange("timeframes", [val]);
                           }}
                           disabled={isConfigDisabled}
                           fullWidth
                           error={!!errors.timeframe_primary}
                           helperText={errors.timeframe_primary}
-
-                        />
-                      </MuiTooltip>
-                    </Grid>
-                    <Grid item xs={12} md={2}>
-                      <MuiTooltip title={TOOLTIP_HINTS["timeframe_secondary"]} arrow placement="top">
-                        <TextField
-                          label="Secondary Timeframe"
-                          required
-                          value={config.timeframes && config.timeframes[1] ? config.timeframes[1] : ""}
-                          onChange={e => {
-                            const newTimeframes = [...(config.timeframes || ["", ""])];
-                            newTimeframes[1] = e.target.value;
-                            handleConfigChange("timeframes", newTimeframes);
-                          }}
-                          disabled={isConfigDisabled}
-                          fullWidth
-                          error={!!errors.timeframe_secondary}
-                          helperText={errors.timeframe_secondary}
 
                         />
                       </MuiTooltip>
@@ -1259,12 +1412,26 @@ export default function App() {
                 <CardHeader title="Trade Analysis" />
                 <CardContent>
                   <ResponsiveContainer width="100%" height={300}>
-                    <BarChart data={tradeData}>
+                    <BarChart
+                      data={tradeData}
+                      onClick={(data) => {
+                        if (data && data.activePayload && data.activePayload.length > 0) {
+                          handleBarClick(data.activePayload[0].payload);
+                        }
+                      }}
+                      style={{ cursor: 'pointer' }}
+                    >
                       <CartesianGrid strokeDasharray="3 3" />
                       <XAxis dataKey="trade" />
                       <YAxis />
-                      <Tooltip content={<CustomTooltip />} />
-                      <Bar dataKey="pnl" fill="#8884d8" />
+                      <Tooltip content={<CustomTradeTooltip />} cursor={{ fill: 'rgba(255,255,255,0.05)' }} />
+                      <Bar dataKey="pnl" fill="#8884d8">
+                        {
+                          tradeData.map((entry, index) => (
+                            <Cell key={`cell-${index}`} fill={entry.pnl >= 0 ? '#4caf50' : '#f44336'} />
+                          ))
+                        }
+                      </Bar>
                     </BarChart>
                   </ResponsiveContainer>
                 </CardContent>

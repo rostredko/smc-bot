@@ -770,23 +770,30 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
                 if trade.entry_price and trade.original_size:
                     pnl_percent = (trade.realized_pnl / (trade.entry_price * trade.original_size)) * 100
                 
+                # Format duration string (remove '0 days ' artifact)
+                duration_str = None
+                if trade.exit_time and trade.entry_time:
+                    diff = trade.exit_time - trade.entry_time
+                    duration_str = str(diff).replace("0 days ", "")
+
                 trade_dict = {
                     'id': trade.id,
                     'direction': trade.direction,
                     'entry_price': trade.entry_price,
                     'exit_price': trade.exit_price,
-                    'size': trade.size,
-                    'pnl': trade.realized_pnl,  # Add pnl field for frontend
-                    'pnl_percent': pnl_percent,  # Add pnl_percent field for frontend
+                    'size': trade.original_size, # Use original_size as current size is 0 for closed trades
+                    'pnl': trade.realized_pnl,
+                    'pnl_percent': pnl_percent,
                     'entry_time': trade.entry_time.isoformat() if trade.entry_time else None,
                     'exit_time': trade.exit_time.isoformat() if trade.exit_time else None,
-                    'duration': str(trade.exit_time - trade.entry_time) if trade.exit_time and trade.entry_time else None,
+                    'duration': duration_str,
                     'status': 'CLOSED' if trade.is_closed else 'OPEN',
                     'stop_loss': trade.stop_loss,
                     'take_profit': trade.take_profit,
                     'realized_pnl': trade.realized_pnl,
                     'exit_reason': trade.exit_reason,
-                    'reason': trade.reason
+                    'reason': trade.reason,
+                    'metadata': trade.metadata if hasattr(trade, 'metadata') else {}
                 }
                 trades_data.append(trade_dict)
             

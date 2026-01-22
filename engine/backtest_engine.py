@@ -5,7 +5,7 @@ simulates trades, and aggregates results.
 """
 
 import json
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 import pandas as pd
 
@@ -170,7 +170,7 @@ class BacktestEngine:
                 self._execute_signal(signal, current_price, current_time)
 
             # Update existing positions
-            self._update_positions(current_price, current_time)
+            self._update_positions(row, current_time)
 
             # Update equity curve
             self._update_equity_curve(current_time)
@@ -249,7 +249,7 @@ class BacktestEngine:
         temp_position_size = self.risk_manager.calculate_position_size(entry_price, stop_loss)
 
         # Check if we can open a new position with this risk and projected value
-        can_open, reason = self.risk_manager.can_open_position(entry_price, stop_loss, current_time.to_pydatetime(), current_price)
+        can_open, reason = self.risk_manager.can_open_position(entry_price, stop_loss, current_time.to_pydatetime(), entry_price) # Use entry_price for check
         if not can_open:
             rejection_details = {
                 "max_positions": self.risk_manager.max_positions,
@@ -290,6 +290,10 @@ class BacktestEngine:
             reason=signal.get("reason", "Strategy signal"),
             direction=signal.get("direction", "LONG"),
         )
+        
+        # Capture metadata from signal
+        if "metadata" in signal:
+            position.metadata = signal["metadata"]
 
         # Set up laddered exits if not specified
         if take_profit is None:
@@ -341,15 +345,21 @@ class BacktestEngine:
             {"price": tp3_price, "percentage": 0.2, "reason": "Runner - Trailing"},
         ]
 
-    def _update_positions(self, current_price: float, current_time: pd.Timestamp):
+    def _update_positions(self, row: pd.Series, current_time: pd.Timestamp):
         """Update all open positions and check for exit conditions."""
         positions_to_remove = []
+        
+        current_price = row['close']
+        high_price = row['high']
+        low_price = row['low']
+        open_price = row['open']
 
         for position in self.open_positions:
 
             # Check stop loss
-            if self._is_stop_hit(position, current_price):
-                self._close_position(position, current_price, current_time, "STOP LOSS")
+            is_hit, exit_price = self._is_stop_hit(position, low_price, high_price, open_price, current_price)
+            if is_hit:
+                self._close_position(position, exit_price, current_time, "STOP LOSS")
                 positions_to_remove.append(position)
                 continue
 
@@ -369,12 +379,24 @@ class BacktestEngine:
             self.closed_trades.append(position)
             self.risk_manager.remove_position(position)
 
-    def _is_stop_hit(self, position: Position, current_price: float) -> bool:
-        """Check if stop loss is hit."""
+    def _is_stop_hit(self, position: Position, low: float, high: float, open_p: float, close: float) -> Tuple[bool, float]:
+        """Check if stop loss is hit and return exit price."""
         if position.direction == "LONG":
-            return current_price <= position.stop_loss
+            # If Low drops below SL
+            if low <= position.stop_loss:
+                # Check for Gap Down on Open
+                if open_p < position.stop_loss:
+                    return True, open_p # Gap logic: Exit at Open
+                return True, position.stop_loss # Normal fill at SL
         else:  # SHORT
-            return current_price >= position.stop_loss
+            # If High rises above SL
+            if high >= position.stop_loss:
+                # Check for Gap Up on Open
+                if open_p > position.stop_loss:
+                    return True, open_p # Gap logic: Exit at Open
+                return True, position.stop_loss # Normal fill at SL
+                
+        return False, 0.0
 
     def _check_take_profits(self, position: Position, current_price: float, current_time: pd.Timestamp) -> bool:
         """

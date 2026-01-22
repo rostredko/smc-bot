@@ -163,7 +163,15 @@ class PriceActionStrategy(StrategyBase):
                 "entry_price": row['close'],
                 "stop_loss": sl_price,
                 "take_profit": tp_price,
-                "reason": f"{pattern_name} (Filters: EMA={self.use_trend_filter}, RSI={self.use_rsi_filter})"
+                "reason": f"{pattern_name} (Filters: EMA={self.use_trend_filter}, RSI={self.use_rsi_filter})",
+                "metadata": {
+                    "pattern": pattern_name,
+                    "rsi": round(row['rsi'], 2) if 'rsi' in row else None,
+                    "ema_trend": "BULLISH" if self.use_trend_filter and row['close'] > row['trend_ema'] else "N/A",
+                    "adx": round(row['adx'], 2) if 'adx' in row else None,
+                    "close_price": row['close'],
+                    "trend_ema": round(row['trend_ema'], 2) if 'trend_ema' in row else None
+                }
             })
 
 
@@ -213,7 +221,15 @@ class PriceActionStrategy(StrategyBase):
                 "entry_price": row['close'],
                 "stop_loss": sl_price,
                 "take_profit": tp_price,
-                "reason": f"{pattern_name} (Filters: EMA={self.use_trend_filter}, RSI={self.use_rsi_filter})"
+                "reason": f"{pattern_name} (Filters: EMA={self.use_trend_filter}, RSI={self.use_rsi_filter})",
+                "metadata": {
+                    "pattern": pattern_name,
+                    "rsi": round(row['rsi'], 2) if 'rsi' in row else None,
+                    "ema_trend": "BEARISH" if self.use_trend_filter and row['close'] < row['trend_ema'] else "N/A",
+                    "adx": round(row['adx'], 2) if 'adx' in row else None,
+                    "close_price": row['close'],
+                    "trend_ema": round(row['trend_ema'], 2) if 'trend_ema' in row else None
+                }
             })
 
         return signals
