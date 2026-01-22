@@ -634,6 +634,22 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
             'trades_file': 'results/trades_history.json'
         }
         
+        # CRITICAL: Sync dashboard timeframes with strategy config
+        # The strategy uses 'high_timeframe' and 'low_timeframe' keys, while engine uses 'timeframes' list
+        # CRITICAL: Sync dashboard timeframes with strategy config
+        # The strategy uses 'high_timeframe' and 'low_timeframe' keys, while engine uses 'timeframes' list
+        if len(engine_config['timeframes']) >= 2:
+            engine_config['strategy_config']['high_timeframe'] = engine_config['timeframes'][0]
+            engine_config['strategy_config']['low_timeframe'] = engine_config['timeframes'][1]
+            # Map primary_timeframe for PriceActionStrategy
+            engine_config['strategy_config']['primary_timeframe'] = engine_config['timeframes'][0]
+        elif len(engine_config['timeframes']) == 1:
+            # Fallback if only one provided
+            engine_config['strategy_config']['high_timeframe'] = engine_config['timeframes'][0]
+            engine_config['strategy_config']['low_timeframe'] = engine_config['timeframes'][0]
+            engine_config['strategy_config']['primary_timeframe'] = engine_config['timeframes'][0]
+        
+        
         # Log configuration details
         await broadcast_message(f"[{run_id}] ============================================================\n")
         await broadcast_message(f"[{run_id}] BACKTEST CONFIGURATION\n")

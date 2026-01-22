@@ -17,6 +17,7 @@ import {
   Alert,
   TextField,
   Switch,
+  Checkbox,
   FormControlLabel,
   Accordion,
   AccordionSummary,
@@ -69,6 +70,8 @@ const TOOLTIP_HINTS: Record<string, string> = {
   symbol: "Trading pair to backtest (e.g. BTC/USDT)",
   start_date: "Backtest start date",
   end_date: "Backtest end date",
+  timeframe_primary: "The main timeframe for analysis (e.g. 4h, 1d)",
+  timeframe_secondary: "The lower timeframe for entries (e.g. 15m, 1h)",
   trailing_stop_distance: "Distance to trail the stop loss behind price (e.g. 0.02 = 2%)",
   breakeven_trigger_r: "Profit multiplier to trigger move to breakeven (e.g. 1.0 = Move stop to entry when profit hits 1R)",
   dynamic_position_sizing: "Adjust position size based on current capital/risk",
@@ -203,6 +206,57 @@ const DEFAULT_CONFIG: BacktestConfig = {
   dynamic_position_sizing: true
 };
 
+// Validation helper outside component (pure function)
+const validateBacktestConfig = (config: BacktestConfig): Record<string, string> => {
+  const newErrors: Record<string, string> = {};
+  const timeframeRegex = /^\d+[mhdwM]$/;
+
+  // 1. Timeframe validation
+  const tfPrimary = config.timeframes && config.timeframes[0] !== undefined ? config.timeframes[0].trim() : "";
+  const tfSecondary = config.timeframes && config.timeframes[1] !== undefined ? config.timeframes[1].trim() : "";
+
+  if (!tfPrimary) {
+    newErrors['timeframe_primary'] = "Required";
+  } else if (!timeframeRegex.test(tfPrimary)) {
+    newErrors['timeframe_primary'] = "Invalid (e.g. 4h)";
+  }
+
+  if (!tfSecondary) {
+    newErrors['timeframe_secondary'] = "Required";
+  } else if (!timeframeRegex.test(tfSecondary)) {
+    newErrors['timeframe_secondary'] = "Invalid (e.g. 15m)";
+  }
+
+  // 2. Numeric validation
+  if (isNaN(config.initial_capital) || config.initial_capital <= 0) newErrors['initial_capital'] = "Must be positive number";
+  if (isNaN(config.risk_per_trade) || config.risk_per_trade <= 0) newErrors['risk_per_trade'] = "Must be positive number";
+  if (isNaN(config.max_drawdown) || config.max_drawdown <= 0) newErrors['max_drawdown'] = "Must be positive number";
+  if (isNaN(config.leverage) || config.leverage <= 0) newErrors['leverage'] = "Must be positive number";
+
+  // 3. Date validation
+  const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+  if (!config.start_date || !dateRegex.test(config.start_date)) {
+    newErrors['start_date'] = "Invalid (YYYY-MM-DD)";
+  }
+  if (!config.end_date || !dateRegex.test(config.end_date)) {
+    newErrors['end_date'] = "Invalid (YYYY-MM-DD)";
+  }
+
+  if (!newErrors['start_date'] && !newErrors['end_date']) {
+    if (new Date(config.start_date) >= new Date(config.end_date)) {
+      newErrors['start_date'] = "Must be before End Date";
+      newErrors['end_date'] = "Must be after Start Date";
+    }
+  }
+
+  // Symbol validation
+  if (!config.symbol || !config.symbol.trim()) {
+    newErrors['symbol'] = "Required";
+  }
+
+  return newErrors;
+};
+
 export default function App() {
   const [strategies, setStrategies] = useState<Strategy[]>([]);
   const [selectedStrategy, setSelectedStrategy] = useState<string>("");
@@ -211,9 +265,11 @@ export default function App() {
   const [backtestStatus, setBacktestStatus] = useState<BacktestStatus | null>(null);
   const [results, setResults] = useState<BacktestResults | null>(null);
   const [consoleOutput, setConsoleOutput] = useState<string[]>([]);
+  const [errors, setErrors] = useState<Record<string, string>>({});
   const [isRunning, setIsRunning] = useState(false);
   const [isConfigDisabled, setIsConfigDisabled] = useState(false);
   const [websocketConnected, setWebsocketConnected] = useState(false);
+  const [autoScroll, setAutoScroll] = useState(true);
   const consoleEndRef = useRef<HTMLDivElement>(null);
   const websocketRef = useRef<WebSocket | null>(null);
 
@@ -303,59 +359,105 @@ export default function App() {
   };
 
   useEffect(() => {
-    scrollToBottom();
-  }, [consoleOutput]);
+    if (autoScroll) {
+      scrollToBottom();
+    }
+  }, [consoleOutput, autoScroll]);
 
-  // Load strategies and config on mount
-  useEffect(() => {
-    const loadData = async () => {
-      const loadedStrategies = await loadStrategies();
-      await loadConfig(loadedStrategies);
-    };
-    loadData();
+  // WebSocket buffering to prevent render flooding
+  const logBuffer = useRef<string[]>([]);
+  const lastFlushTime = useRef<number>(0);
+  const flushTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-    // Connect to WebSocket for console output
-    const connectWebSocket = () => {
-      try {
-        const ws = new WebSocket(`ws://localhost:8000/ws`);
+  const flushLogs = useCallback(() => {
+    if (logBuffer.current.length === 0) return;
 
-        ws.onopen = () => {
-          console.log('✅ WebSocket connected');
-          setWebsocketConnected(true);
-        };
+    setConsoleOutput(prev => {
+      // Take all messages from buffer
+      const newMessages = [...logBuffer.current];
+      logBuffer.current = []; // Clear buffer immediately
 
-        ws.onmessage = (event) => {
-          if (event.data && event.data.trim()) {
-            setConsoleOutput(prev => [...prev, event.data]);
-          }
-        };
-
-        ws.onerror = (error) => {
-          console.error('❌ WebSocket error:', error);
-          setWebsocketConnected(false);
-        };
-
-        ws.onclose = () => {
-          console.log('🔄 WebSocket disconnected, reconnecting in 3s...');
-          setWebsocketConnected(false);
-          setTimeout(() => connectWebSocket(), 3000);
-        };
-
-        websocketRef.current = ws;
-      } catch (error) {
-        console.error('❌ Failed to connect WebSocket:', error);
-        setWebsocketConnected(false);
+      const newOutput = [...prev, ...newMessages];
+      // Keep strictly 500 lines
+      if (newOutput.length > 500) {
+        return newOutput.slice(-500);
       }
-    };
+      return newOutput;
+    });
 
+    lastFlushTime.current = Date.now();
+    flushTimeout.current = null;
+  }, []);
+
+  const connectWebSocket = useCallback(() => {
+    // Determine the base URL for the WebSocket
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const host = window.location.hostname;
+    // Assume backend is on port 8000 for local dev, or same port for prod
+    const port = '8000';
+    const wsUrl = `${protocol}//${host}:${port}/ws`;
+
+    console.log(`Connecting to WebSocket: ${wsUrl}`);
+
+    try {
+      const ws = new WebSocket(wsUrl);
+
+      ws.onopen = () => {
+        console.log('✅ WebSocket connected');
+        setWebsocketConnected(true);
+      };
+
+      ws.onmessage = (event) => {
+        if (event.data && event.data.trim()) {
+          // Push to buffer
+          logBuffer.current.push(event.data);
+
+          // Throttle updates: Only flush at most every 100ms
+          const now = Date.now();
+          if (!flushTimeout.current) {
+            if (now - lastFlushTime.current >= 100) {
+              // Can flush immediately
+              flushLogs();
+            } else {
+              // Schedule flush
+              flushTimeout.current = setTimeout(flushLogs, 100);
+            }
+          }
+        }
+      };
+
+      ws.onclose = () => {
+        setWebsocketConnected(false);
+        // Clear any pending logs
+        if (flushTimeout.current) {
+          clearTimeout(flushTimeout.current);
+          flushLogs(); // Flush remaining
+        }
+        // Simple reconnect
+        setTimeout(() => connectWebSocket(), 3000);
+      };
+
+      websocketRef.current = ws;
+    } catch (error) {
+      console.error('❌ Failed to connect WebSocket:', error);
+    }
+  }, [flushLogs]);
+
+  // Initial data load moved to after function definitions
+
+  // WebSocket connection effect
+  useEffect(() => {
     connectWebSocket();
-
     return () => {
       if (websocketRef.current) {
+        websocketRef.current.onclose = null;
         websocketRef.current.close();
       }
+      if (flushTimeout.current) {
+        clearTimeout(flushTimeout.current);
+      }
     };
-  }, []);
+  }, [connectWebSocket]);
 
   // Poll for backtest status when running
   useEffect(() => {
@@ -416,6 +518,15 @@ export default function App() {
     }
   };
 
+  // Load strategies and config on mount
+  useEffect(() => {
+    const loadData = async () => {
+      const loadedStrategies = await loadStrategies();
+      await loadConfig(loadedStrategies);
+    };
+    loadData();
+  }, []);
+
   const resetDashboard = async () => {
     // 1. Reset Run State
     setIsRunning(false);
@@ -429,6 +540,14 @@ export default function App() {
   };
 
   const startBacktest = async () => {
+    // Run validation immediately
+    const newErrors = validateBacktestConfig(config);
+    if (Object.keys(newErrors).length > 0) {
+      setErrors(newErrors);
+      return;
+    }
+    setErrors({});
+
     try {
       setIsRunning(true);
       setIsConfigDisabled(true);
@@ -438,9 +557,12 @@ export default function App() {
       const requestBody = {
         config: {
           ...config,
+          timeframes: config.timeframes.filter(t => t.trim() !== ""),
           strategy_config: strategyConfig
         }
       };
+
+
 
       const response = await fetch(`${API_BASE}/backtest/start`, {
         method: "POST",
@@ -536,7 +658,24 @@ export default function App() {
 
   const handleConfigChange = useCallback((key: string, value: any) => {
     setConfig(prev => ({ ...prev, [key]: value }));
-  }, []);
+    // Clear error for this field
+    if (errors[key]) {
+      setErrors(prev => {
+        const newErrors = { ...prev };
+        delete newErrors[key];
+        return newErrors;
+      });
+    }
+    // Also handle nested timeframe errors implicitly by key if needed
+    if (key === 'timeframes') {
+      setErrors(prev => {
+        const newErrors = { ...prev };
+        delete newErrors['timeframe_primary'];
+        delete newErrors['timeframe_secondary'];
+        return newErrors;
+      });
+    }
+  }, [errors]);
 
   const handleStrategyConfigChange = useCallback((key: string, value: any) => {
     setStrategyConfig(prev => ({ ...prev, [key]: value }));
@@ -589,7 +728,7 @@ export default function App() {
   return (
     <Container maxWidth="xl" sx={{ py: 4 }}>
       <Typography variant="h3" component="h1" gutterBottom align="center">
-        SMC Trading Engine Dashboard
+        Backtest Machine Dashboard
       </Typography>
 
       {/* WebSocket Connection Status */}
@@ -632,14 +771,27 @@ export default function App() {
                 <Grid item xs={12} md={6}>
                   <Box sx={{ display: 'flex', gap: 1 }}>
                     <Button
-                      variant="contained"
+                      variant="outlined"
+                      size="large"
                       startIcon={<PlayArrow />}
                       onClick={startBacktest}
                       disabled={!selectedStrategy || isRunning}
-                      color="success"
+                      sx={{
+                        borderWidth: 2,
+                        borderColor: '#2e7d32',
+                        color: '#2e7d32',
+                        fontWeight: 'bold',
+                        '&:hover': {
+                          borderWidth: 2,
+                          borderColor: '#1b5e20',
+                          color: '#1b5e20',
+                          bgcolor: 'transparent' // Explicitly avoid fill
+                        }
+                      }}
                     >
                       Start Backtest
                     </Button>
+
                     <Button
                       variant="contained"
                       startIcon={<Stop />}
@@ -693,11 +845,15 @@ export default function App() {
                       <MuiTooltip title={TOOLTIP_HINTS["initial_capital"]} arrow placement="top">
                         <TextField
                           label="Initial Capital"
+                          required
                           type="number"
-                          value={config.initial_capital}
+                          value={isNaN(config.initial_capital) ? "" : config.initial_capital}
                           onChange={e => handleConfigChange("initial_capital", parseFloat(e.target.value))}
                           disabled={isConfigDisabled}
                           fullWidth
+                          error={!!errors.initial_capital}
+                          helperText={errors.initial_capital}
+
                         />
                       </MuiTooltip>
                     </Grid>
@@ -705,11 +861,15 @@ export default function App() {
                       <MuiTooltip title={TOOLTIP_HINTS["risk_per_trade"]} arrow placement="top">
                         <TextField
                           label="Risk Per Trade (%)"
+                          required
                           type="number"
-                          value={config.risk_per_trade}
+                          value={isNaN(config.risk_per_trade) ? "" : config.risk_per_trade}
                           onChange={e => handleConfigChange("risk_per_trade", parseFloat(e.target.value))}
                           disabled={isConfigDisabled}
                           fullWidth
+                          error={!!errors.risk_per_trade}
+                          helperText={errors.risk_per_trade}
+
                         />
                       </MuiTooltip>
                     </Grid>
@@ -718,10 +878,13 @@ export default function App() {
                         <TextField
                           label="Max Drawdown (%)"
                           type="number"
-                          value={config.max_drawdown}
+                          value={isNaN(config.max_drawdown) ? "" : config.max_drawdown}
                           onChange={e => handleConfigChange("max_drawdown", parseFloat(e.target.value))}
                           disabled={isConfigDisabled}
                           fullWidth
+                          error={!!errors.max_drawdown}
+                          helperText={errors.max_drawdown}
+
                         />
                       </MuiTooltip>
                     </Grid>
@@ -730,10 +893,13 @@ export default function App() {
                         <TextField
                           label="Leverage"
                           type="number"
-                          value={config.leverage}
+                          value={isNaN(config.leverage) ? "" : config.leverage}
                           onChange={e => handleConfigChange("leverage", parseFloat(e.target.value))}
                           disabled={isConfigDisabled}
                           fullWidth
+                          error={!!errors.leverage}
+                          helperText={errors.leverage}
+
                         />
                       </MuiTooltip>
                     </Grid>
@@ -742,7 +908,7 @@ export default function App() {
                         <TextField
                           label="Max Positions"
                           type="number"
-                          value={config.max_positions}
+                          value={isNaN(config.max_positions) ? "" : config.max_positions}
                           onChange={e => handleConfigChange("max_positions", parseFloat(e.target.value))}
                           disabled={isConfigDisabled}
                           fullWidth
@@ -753,10 +919,53 @@ export default function App() {
                       <MuiTooltip title={TOOLTIP_HINTS["symbol"]} arrow placement="top">
                         <TextField
                           label="Symbol"
+                          required
                           value={config.symbol}
                           onChange={e => handleConfigChange("symbol", e.target.value)}
                           disabled={isConfigDisabled}
                           fullWidth
+                          error={!!errors.symbol}
+                          helperText={errors.symbol}
+
+                        />
+                      </MuiTooltip>
+                    </Grid>
+
+                    <Grid item xs={12} md={2}>
+                      <MuiTooltip title={TOOLTIP_HINTS["timeframe_primary"]} arrow placement="top">
+                        <TextField
+                          label="Primary Timeframe"
+                          required
+                          value={config.timeframes && config.timeframes[0] ? config.timeframes[0] : ""}
+                          onChange={e => {
+                            const newTimeframes = [...(config.timeframes || ["", ""])];
+                            newTimeframes[0] = e.target.value;
+                            handleConfigChange("timeframes", newTimeframes);
+                          }}
+                          disabled={isConfigDisabled}
+                          fullWidth
+                          error={!!errors.timeframe_primary}
+                          helperText={errors.timeframe_primary}
+
+                        />
+                      </MuiTooltip>
+                    </Grid>
+                    <Grid item xs={12} md={2}>
+                      <MuiTooltip title={TOOLTIP_HINTS["timeframe_secondary"]} arrow placement="top">
+                        <TextField
+                          label="Secondary Timeframe"
+                          required
+                          value={config.timeframes && config.timeframes[1] ? config.timeframes[1] : ""}
+                          onChange={e => {
+                            const newTimeframes = [...(config.timeframes || ["", ""])];
+                            newTimeframes[1] = e.target.value;
+                            handleConfigChange("timeframes", newTimeframes);
+                          }}
+                          disabled={isConfigDisabled}
+                          fullWidth
+                          error={!!errors.timeframe_secondary}
+                          helperText={errors.timeframe_secondary}
+
                         />
                       </MuiTooltip>
                     </Grid>
@@ -764,12 +973,16 @@ export default function App() {
                       <MuiTooltip title={TOOLTIP_HINTS["start_date"]} arrow placement="top">
                         <TextField
                           label="Start Date"
+                          required
                           type="date"
                           value={config.start_date}
                           onChange={e => handleConfigChange("start_date", e.target.value)}
                           disabled={isConfigDisabled}
                           fullWidth
                           InputLabelProps={{ shrink: true }}
+                          error={!!errors.start_date}
+                          helperText={errors.start_date}
+
                         />
                       </MuiTooltip>
                     </Grid>
@@ -777,12 +990,16 @@ export default function App() {
                       <MuiTooltip title={TOOLTIP_HINTS["end_date"]} arrow placement="top">
                         <TextField
                           label="End Date"
+                          required
                           type="date"
                           value={config.end_date}
                           onChange={e => handleConfigChange("end_date", e.target.value)}
                           disabled={isConfigDisabled}
                           fullWidth
                           InputLabelProps={{ shrink: true }}
+                          error={!!errors.end_date}
+                          helperText={errors.end_date}
+
                         />
                       </MuiTooltip>
                     </Grid>
@@ -792,7 +1009,7 @@ export default function App() {
                         <TextField
                           label="Trailing Stop Distance"
                           type="number"
-                          value={config.trailing_stop_distance}
+                          value={isNaN(config.trailing_stop_distance) ? "" : config.trailing_stop_distance}
                           onChange={e => handleConfigChange("trailing_stop_distance", parseFloat(e.target.value))}
                           disabled={isConfigDisabled}
                           fullWidth
@@ -804,7 +1021,7 @@ export default function App() {
                         <TextField
                           label="Breakeven Trigger (R)"
                           type="number"
-                          value={config.breakeven_trigger_r}
+                          value={isNaN(config.breakeven_trigger_r) ? "" : config.breakeven_trigger_r}
                           onChange={e => handleConfigChange("breakeven_trigger_r", parseFloat(e.target.value))}
                           disabled={isConfigDisabled}
                           fullWidth
@@ -860,9 +1077,30 @@ export default function App() {
             <CardHeader
               title="Live Output"
               action={
-                <Typography variant="body2" color={websocketConnected ? "success.main" : "error.main"}>
-                  {websocketConnected ? "🟢 Live" : "🔴 Offline"}
-                </Typography>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    color="inherit"
+                    onClick={() => setConsoleOutput([])}
+                  >
+                    Clear
+                  </Button>
+                  <FormControlLabel
+                    control={
+                      <Checkbox
+                        checked={autoScroll}
+                        onChange={(e) => setAutoScroll(e.target.checked)}
+                        size="small"
+                        sx={{ color: '#666', '&.Mui-checked': { color: '#00ff00' } }} // Styled to match dark theme/terminal
+                      />
+                    }
+                    label={<Typography variant="body2" sx={{ color: '#888' }}>Stick to bottom</Typography>}
+                  />
+                  <Typography variant="body2" color={websocketConnected ? "success.main" : "error.main"}>
+                    {websocketConnected ? "🟢 Live" : "🔴 Offline"}
+                  </Typography>
+                </Box>
               }
             />
             <CardContent>
@@ -1113,6 +1351,6 @@ export default function App() {
         </Grid>
 
       </Grid>
-    </Container>
+    </Container >
   );
 }
