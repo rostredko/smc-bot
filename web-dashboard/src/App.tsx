@@ -69,10 +69,8 @@ const TOOLTIP_HINTS: Record<string, string> = {
   symbol: "Trading pair to backtest (e.g. BTC/USDT)",
   start_date: "Backtest start date",
   end_date: "Backtest end date",
-  min_risk_reward: "Minimum required Profit/Risk ratio to enter a trade",
   trailing_stop_distance: "Distance to trail the stop loss behind price (e.g. 0.02 = 2%)",
   breakeven_trigger_r: "Profit multiplier to trigger move to breakeven (e.g. 1.0 = Move stop to entry when profit hits 1R)",
-  max_total_risk_percent: "Maximum combined risk of all open positions",
   dynamic_position_sizing: "Adjust position size based on current capital/risk",
 
   // Strategy Specific
@@ -157,10 +155,8 @@ interface BacktestConfig {
   end_date: string;
   strategy: string;
   strategy_config: Record<string, any>;
-  min_risk_reward: number;
   trailing_stop_distance: number;
   breakeven_trigger_r: number;
-  max_total_risk_percent: number;
   dynamic_position_sizing: boolean;
 }
 
@@ -202,10 +198,8 @@ const DEFAULT_CONFIG: BacktestConfig = {
   end_date: "2023-12-31",
   strategy: "",
   strategy_config: {},
-  min_risk_reward: 2.0,
   trailing_stop_distance: 0.02,
   breakeven_trigger_r: 1.0,
-  max_total_risk_percent: 10.0,
   dynamic_position_sizing: true
 };
 
@@ -792,18 +786,7 @@ export default function App() {
                         />
                       </MuiTooltip>
                     </Grid>
-                    <Grid item xs={12} md={3}>
-                      <MuiTooltip title={TOOLTIP_HINTS["min_risk_reward"]} arrow placement="top">
-                        <TextField
-                          label="Min Risk/Reward"
-                          type="number"
-                          value={config.min_risk_reward}
-                          onChange={e => handleConfigChange("min_risk_reward", parseFloat(e.target.value))}
-                          disabled={isConfigDisabled}
-                          fullWidth
-                        />
-                      </MuiTooltip>
-                    </Grid>
+
                     <Grid item xs={12} md={3}>
                       <MuiTooltip title={TOOLTIP_HINTS["trailing_stop_distance"]} arrow placement="top">
                         <TextField
@@ -828,18 +811,7 @@ export default function App() {
                         />
                       </MuiTooltip>
                     </Grid>
-                    <Grid item xs={12} md={3}>
-                      <MuiTooltip title={TOOLTIP_HINTS["max_total_risk_percent"]} arrow placement="top">
-                        <TextField
-                          label="Max Total Risk (%)"
-                          type="number"
-                          value={config.max_total_risk_percent}
-                          onChange={e => handleConfigChange("max_total_risk_percent", parseFloat(e.target.value))}
-                          disabled={isConfigDisabled}
-                          fullWidth
-                        />
-                      </MuiTooltip>
-                    </Grid>
+
                     <Grid item xs={12} md={3}>
                       <MuiTooltip title={TOOLTIP_HINTS["dynamic_position_sizing"]} arrow placement="top">
                         <FormControlLabel

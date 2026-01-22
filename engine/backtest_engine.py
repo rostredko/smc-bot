@@ -220,7 +220,16 @@ class BacktestEngine:
 
         # Check risk/reward ratio using Risk Manager validation
         if take_profit is not None:
-            min_risk_reward = self.config.get("min_risk_reward", 3.0)
+            # NEW: Use Strategy's Target RR as the Minimum Acceptable RR (Filter = Target)
+            # This simplifies config and ensures we only take trades meeting the strategy's own standard.
+            strategy_rr_target = 1.5 # Default conservative
+            
+            if self.strategy and hasattr(self.strategy, "config"):
+                strategy_rr_target = self.strategy.config.get("risk_reward_ratio", 1.5)
+            
+            # Fallback to legacy config if present (e.g. user manually added it back)
+            min_risk_reward = self.config.get("min_risk_reward", strategy_rr_target)
+
             rr_valid, rr_reason = self.risk_manager.validate_risk_reward_ratio(entry_price, stop_loss, take_profit, min_risk_reward)
 
             if not rr_valid:
