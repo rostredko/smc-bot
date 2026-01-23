@@ -33,7 +33,7 @@ pnpm-debug.log*
 *.iml
 
 # --- Data & Results ---
-data_cache/*.csv
+data_cache/
 results/*.json
 results/*.log
 
