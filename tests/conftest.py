@@ -115,116 +115,6 @@ def trending_ohlcv_data():
 
 
 # ============================================================================
-# ENGINE COMPONENT FIXTURES
-# ============================================================================
-
-@pytest.fixture
-def risk_manager():
-    """Create a RiskManager instance for testing."""
-    from engine.risk_manager import RiskManager
-    return RiskManager(
-        initial_capital=10000,
-        leverage=1.0,
-        risk_per_trade=2.0,
-        max_drawdown=15.0,
-        max_positions=3
-    )
-
-
-@pytest.fixture
-def logger():
-    """Create a Logger instance for testing."""
-    from engine.logger import Logger
-    return Logger("INFO")
-
-
-@pytest.fixture
-def performance_reporter():
-    """Create a PerformanceReporter instance for testing."""
-    from engine.metrics import PerformanceReporter
-    return PerformanceReporter()
-
-
-@pytest.fixture
-def mock_position():
-    """Create a mock Position for testing."""
-    from engine.position import Position
-    return Position(
-        id=1,
-        entry_price=50000,
-        size=0.1,
-        stop_loss=49000,
-        take_profit=52000,
-        direction='LONG'
-    )
-
-
-@pytest.fixture
-def mock_closed_trade():
-    """Create a mock closed trade for metrics testing."""
-    class MockTrade:
-        def __init__(self):
-            self.realized_pnl = 100
-            self.risk_amount = 100
-            self.risk_reward_ratio = 2.0
-            self.entry_time = pd.Timestamp('2023-01-01 10:00:00')
-            self.exit_time = pd.Timestamp('2023-01-01 12:00:00')
-    
-    return MockTrade()
-
-
-# ============================================================================
-# STRATEGY FIXTURES
-# ============================================================================
-
-@pytest.fixture
-def simple_test_strategy():
-    """Create a SimpleTestStrategy instance."""
-    from strategies.simple_test_strategy import SimpleTestStrategy
-    return SimpleTestStrategy({
-        'signal_frequency': 5,
-        'risk_reward_ratio': 2.0
-    })
-
-
-@pytest.fixture
-def smc_strategy():
-    """Create an SMCStrategy instance."""
-    from strategies.smc_strategy import SMCStrategy
-    return SMCStrategy({
-        'high_timeframe': '4h',
-        'low_timeframe': '15m',
-        'min_zone_strength': 0.6,
-        'confluence_required': True
-    })
-
-
-# ============================================================================
-# SMC ANALYSIS COMPONENT FIXTURES
-# ============================================================================
-
-@pytest.fixture
-def order_block_detector():
-    """Create an OrderBlockDetector instance."""
-    from engine.smc_analysis import OrderBlockDetector
-    return OrderBlockDetector(min_strength=0.6)
-
-
-@pytest.fixture
-def fvg_detector():
-    """Create a FairValueGapDetector instance."""
-    from engine.smc_analysis import FairValueGapDetector
-    return FairValueGapDetector(min_gap_size=0.001)
-
-
-@pytest.fixture
-def liquidity_mapper():
-    """Create a LiquidityZoneMapper instance."""
-    from engine.smc_analysis import LiquidityZoneMapper
-    return LiquidityZoneMapper(sweep_threshold=0.002)
-
-
-# ============================================================================
 # MOCK FIXTURES
 # ============================================================================
 
@@ -268,57 +158,10 @@ def backtest_config():
         'timeframes': ['4h', '15m'],
         'start_date': '2023-01-01',
         'end_date': '2023-01-31',
-        'strategy': 'simple_test_strategy',
+        'strategy': 'price_action_strategy',
         'exchange': 'binance',
         'log_level': 'INFO'
     }
-
-
-@pytest.fixture
-def spot_config():
-    """Create a spot trading configuration."""
-    return {
-        'initial_capital': 10000,
-        'risk_per_trade': 0.5,
-        'max_drawdown': 15.0,
-        'max_positions': 1,
-        'leverage': 1.0,
-        'symbol': 'BTC/USDT',
-        'timeframes': ['4h', '15m'],
-        'strategy': 'smc_strategy',
-        'exchange': 'binance',
-        'log_level': 'INFO'
-    }
-
-
-# ============================================================================
-# TEST UTILITIES
-# ============================================================================
-
-@pytest.fixture
-def create_sample_trades():
-    """Factory fixture to create sample trades."""
-    def _create_trades(count=4, pnl_values=None):
-        """Create mock trades with specified PnL values."""
-        if pnl_values is None:
-            pnl_values = [100, -50, 150, -50]
-        
-        trades = []
-        for i, pnl in enumerate(pnl_values[:count]):
-            class MockTrade:
-                def __init__(self, trade_id, realized_pnl):
-                    self.id = trade_id
-                    self.realized_pnl = realized_pnl
-                    self.risk_amount = 100
-                    self.risk_reward_ratio = 2.0
-                    self.entry_time = pd.Timestamp('2023-01-01') + timedelta(hours=i)
-                    self.exit_time = pd.Timestamp('2023-01-01') + timedelta(hours=i+1)
-            
-            trades.append(MockTrade(i+1, pnl))
-        
-        return trades
-    
-    return _create_trades
 
 
 # ============================================================================

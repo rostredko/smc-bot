@@ -44,29 +44,39 @@ class DataLoader:
                 {
                     "rateLimit": 1200,  # Respect rate limits
                     "enableRateLimit": True,
+                    "options": {
+                        "defaultType": "swap",
+                    },
+                    "urls": {
+                        "api": {
+                            "public": "https://fapi.binance.com/fapi/v1",
+                        }
+                    }
                 }
             )
 
             # Test connection and get exchange info
             print(f"✅ Connected to {exchange.name}")
-            print(f"📊 Exchange info:")
-            print(f"   - Rate limit: {exchange.rateLimit}ms")
-            print(f"   - Has futures: {exchange.has.get('futures', False)}")
-            print(f"   - Has spot: {exchange.has.get('spot', False)}")
-
-            # Test market loading
-            print(f"📈 Loading markets...")
-            markets = exchange.load_markets()
-            print(f"✅ Loaded {len(markets)} markets")
-
-            # Show some popular symbols
-            popular_symbols = [s for s in markets.keys() if "BTC" in s or "ETH" in s][:5]
-            print(f"🎯 Popular symbols: {', '.join(popular_symbols)}")
+            
+            # Test market loading (optional, can fail in offline mode)
+            try:
+                print(f"📈 Loading markets...")
+                markets = exchange.load_markets()
+                print(f"✅ Loaded {len(markets)} markets")
+                
+                # Show some popular symbols
+                popular_symbols = [s for s in markets.keys() if "BTC" in s or "ETH" in s][:5]
+                print(f"🎯 Popular symbols: {', '.join(popular_symbols)}")
+            except Exception as e:
+                print(f"⚠️ Warning: Failed to load markets (Offline Mode?): {e}")
 
             return exchange
         except Exception as e:
-            print(f"❌ Failed to initialize {self.exchange_name} exchange: {e}")
-            raise RuntimeError(f"Failed to initialize {self.exchange_name} exchange: {e}")
+            print(f"❌ Failed to fully initialize {self.exchange_name} exchange: {e}")
+            # Do not raise, return the exchange object anyway to allow cache usage
+            if 'exchange' in locals():
+                return exchange
+            raise RuntimeError(f"Could not create exchange object: {e}")
 
     def fetch_ohlcv(self, symbol: str, timeframe: str, start_date: str, end_date: str) -> pd.DataFrame:
         """

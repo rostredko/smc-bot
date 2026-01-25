@@ -192,14 +192,14 @@ interface BacktestResults {
   signals_generated: number;
   initial_capital: number;
   equity_curve: Array<{ date: string, equity: number }>;
-  trades: Array<any>;
+  closed_trades: Array<any>;
 }
 
 const DEFAULT_CONFIG: BacktestConfig = {
   initial_capital: 10000,
   risk_per_trade: 1.0,
   max_drawdown: 10.0,
-  max_positions: 3,
+  max_positions: 1,
   leverage: 1.0,
   symbol: "BTC/USDT",
   timeframes: ["4h"],
@@ -701,17 +701,17 @@ export default function App() {
 
   // Update tradeData to include full trade object and formatted date
   const tradeData = useMemo(() => {
-    if (!results?.trades || results.trades.length === 0) {
+    if (!results?.closed_trades || results.closed_trades.length === 0) {
       return [
         { trade: 1, pnl: 0, type: "NO_TRADES", date: "", fullTrade: null }
       ];
     }
-    return results.trades.map((trade, index) => ({
+    return results.closed_trades.map((trade, index) => ({
       trade: index + 1,
       pnl: trade.pnl || 0,
       type: trade.pnl > 0 ? "WIN" : "LOSS",
       date: trade.entry_time ? new Date(trade.entry_time).toLocaleDateString() : 'N/A',
-      fullTrade: trade
+      fullTrade: { ...trade, id: index + 1 }
     }));
   }, [results]);
 
@@ -1076,6 +1076,7 @@ export default function App() {
                         />
                       </MuiTooltip>
                     </Grid>
+                    {/*
                     <Grid item xs={12} md={3}>
                       <MuiTooltip title={TOOLTIP_HINTS["max_positions"]} arrow placement="top">
                         <TextField
@@ -1088,6 +1089,7 @@ export default function App() {
                         />
                       </MuiTooltip>
                     </Grid>
+*/}
                     <Grid item xs={12} md={4}>
                       <MuiTooltip title={TOOLTIP_HINTS["symbol"]} arrow placement="top">
                         <TextField
@@ -1302,7 +1304,7 @@ export default function App() {
                     <Grid item xs={6} md={2}>
                       <Paper sx={{ p: 2, textAlign: 'center' }}>
                         <Typography variant="h6" color={results.total_pnl >= 0 ? "success.main" : "error.main"}>
-                          ${results.total_pnl?.toFixed(1)}
+                          ${results.total_pnl?.toFixed(2)}
                         </Typography>
                         <Typography variant="body2">Total PnL</Typography>
                       </Paper>
@@ -1318,7 +1320,7 @@ export default function App() {
                     <Grid item xs={6} md={2}>
                       <Paper sx={{ p: 2, textAlign: 'center' }}>
                         <Typography variant="h6" color="warning.main">
-                          {results.profit_factor?.toFixed(1)}
+                          {results.profit_factor?.toFixed(2)}
                         </Typography>
                         <Typography variant="body2">Profit Factor</Typography>
                       </Paper>
@@ -1455,7 +1457,7 @@ export default function App() {
                       <TableBody>
                         <TableRow>
                           <TableCell>Total PnL</TableCell>
-                          <TableCell>${results.total_pnl?.toFixed(1)}</TableCell>
+                          <TableCell>${results.total_pnl?.toFixed(2)}</TableCell>
                           <TableCell>Overall profit/loss</TableCell>
                         </TableRow>
                         <TableRow>
@@ -1465,7 +1467,7 @@ export default function App() {
                         </TableRow>
                         <TableRow>
                           <TableCell>Profit Factor</TableCell>
-                          <TableCell>{results.profit_factor?.toFixed(1)}</TableCell>
+                          <TableCell>{results.profit_factor?.toFixed(2)}</TableCell>
                           <TableCell>Gross profit / Gross loss</TableCell>
                         </TableRow>
                         <TableRow>

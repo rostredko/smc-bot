@@ -1,644 +1,265 @@
+
 """
-Core BacktestEngine class that orchestrates the entire backtesting process.
-Coordinates data feeds, runs the backtest loop, executes strategy signals,
-simulates trades, and aggregates results.
+Core BacktestEngine class refactored to use the `backtesting.py` library.
+This maintains the original interface for compatibility but delegates execution.
 """
 
 import json
-from typing import Any, Dict, List, Tuple
-
 import pandas as pd
+from typing import Any, Dict, List
+from backtesting import Backtest
+from backtesting.lib import FractionalBacktest
 
 from .data_loader import DataLoader
-from .risk_manager import RiskManager
-from .position import Position, TradeSimulator
 from .logger import Logger
-from .metrics import PerformanceReporter
-
+from .adapters import BacktestingAdapter
 
 class BacktestEngine:
     """
-    Main coordinator class that ties everything together.
-    Handles configuration, data loading, strategy execution, and results reporting.
+    Coordinator using backtesting.py for simulation.
     """
 
     def __init__(self, config: Dict[str, Any]):
-        """
-        Initialize the backtest engine with configuration parameters.
-
-        Args:
-            config: Dictionary containing backtest parameters:
-                - initial_capital: Starting account balance
-                - risk_per_trade: Risk percentage per trade (e.g., 2.0 for 2%)
-                - max_drawdown: Maximum allowed drawdown percentage
-                - max_positions: Legacy parameter - positions now managed by risk/reward ratio
-                - symbol: Trading pair (e.g., 'BTC/USDT')
-                - timeframes: List of timeframes needed
-                - start_date: Backtest start date
-                - end_date: Backtest end date
-                - strategy: Strategy module name
-                - leverage: Maximum leverage to use
-        """
         self.config = config
         self.initial_capital = config.get("initial_capital", 10000)
-        self.current_capital = self.initial_capital
-        self.peak_capital = self.initial_capital
-
-        # Initialize components
-        self.data_loader = DataLoader(config.get("exchange", "binance"))
-        self.risk_manager = RiskManager(
-            initial_capital=self.initial_capital,
-            leverage=config.get("leverage", 1.0),
-            risk_per_trade=config.get("risk_per_trade", 0.5),
-            max_drawdown=config.get("max_drawdown", 15.0),
-            max_positions=config.get("max_positions", 3),
-            max_consecutive_losses=config.get("max_consecutive_losses", 50), # Default high for backtests
-            dynamic_position_sizing=config.get("dynamic_position_sizing", True)
-        )
-        # self.trade_simulator = TradeSimulator() # Unused in current implementation, relying on internal logic
+        
         self.logger = Logger(config.get("log_level", "INFO"))
-        self.reporter = PerformanceReporter(self.initial_capital)
-
-        # Cancellation flag for graceful shutdown
-        self.should_cancel = False
-
-        # Strategy and data storage
-        self.strategy = None
-        self.data = {}
-        self.open_positions: List[Position] = []
-        self.closed_trades: List[Position] = []
-        self.equity_curve = []
-
-        # Load strategy
+        self.data_loader = DataLoader(config.get("exchange", "binance"))
+        
+        self.strategy_class = None
         self._load_strategy()
+        
+        self.data = pd.DataFrame()
+        self.bt_instance = None # Will hold the Backtest instance
 
     def _load_strategy(self):
-        """Load the specified strategy module."""
-        strategy_name = self.config.get("strategy", "smc_strategy")
+        """Load the specified strategy class."""
+        strategy_name = self.config.get("strategy", "price_action_strategy")
         try:
-            # Import strategy module
             strategy_module = __import__(f"strategies.{strategy_name}", fromlist=["Strategy"])
-
-            # Try to find the strategy class
-            strategy_class = None
             
-            # Convert snake_case to PascalCase for the strategy name
-            # e.g. price_action_strategy -> PriceActionStrategy
+            # Simple heuristic to find the class
             pascal_name = "".join(x.title() for x in strategy_name.split("_"))
+            candidates = [pascal_name, f"{pascal_name}Strategy", "Strategy", "PriceActionStrategy"]
             
-            candidate_names = [
-                "Strategy", 
-                "SMCStrategy", 
-                "SimpleTestStrategy", 
-                "SimplifiedSMCStrategy",
-                pascal_name,
-                f"{pascal_name}Strategy"  # In case someone named it PriceActionStrategyStrategy ?? unlikely but possible if file is price_action
-            ]
-            
-            for class_name in candidate_names:
-                if hasattr(strategy_module, class_name):
-                    strategy_class = getattr(strategy_module, class_name)
+            for name in candidates:
+                if hasattr(strategy_module, name):
+                    self.strategy_class = getattr(strategy_module, name)
                     break
+                    
+            if not self.strategy_class:
+                raise AttributeError(f"Could not find strategy class in {strategy_name}")
 
-            if strategy_class is None:
-                raise AttributeError(f"No strategy class found in {strategy_name}")
-
-            # Get strategy config from engine config
-            strategy_config = self.config.get('strategy_config', {})
-            self.strategy = strategy_class(strategy_config)
-            self.logger.strategy = self.strategy  # Link strategy to logger for detailed logging
-            self.logger.log("INFO", f"Loaded strategy: {strategy_name}")
+            self.logger.log("INFO", f"Loaded strategy class: {self.strategy_class.__name__}")
+            
         except Exception as e:
-            raise RuntimeError(f"Failed to load strategy {strategy_name}: {e}")
+            self.logger.log("ERROR", f"Failed to load strategy: {e}")
+            raise e
 
     def load_data(self):
-        """Fetch historical data for all required timeframes."""
+        """Fetch historical data."""
         symbol = self.config["symbol"]
-        timeframes = self.config.get("timeframes", ["1h"])
-        start_date = self.config["start_date"]
-        end_date = self.config["end_date"]
-
-        self.logger.log("INFO", f"Loading data for {symbol} from {start_date} to {end_date}")
-
-        for timeframe in timeframes:
-            self.logger.log("INFO", f"Fetching {timeframe} data...")
-            df = self.data_loader.get_data(symbol, timeframe, start_date, end_date)
-            self.data[timeframe] = df
-            self.logger.log("INFO", f"Loaded {len(df)} bars for {timeframe}")
-
-        # Use primary timeframe for main loop
-        self.primary_timeframe = timeframes[0]
-        self.primary_data = self.data[self.primary_timeframe]
-
-    def run_backtest(self):
-        """Execute the main backtest simulation loop."""
-        self.logger.log("INFO", "Starting backtest simulation...")
-        self.logger.log("INFO", f"Initial capital: ${self.initial_capital:,.2f}")
-
-        # Track equity curve
-        self.equity_curve.append({"timestamp": self.primary_data.index[0], "equity": self.current_capital, "drawdown": 0.0})
-
-        # Main simulation loop
-        for i, (timestamp, row) in enumerate(self.primary_data.iterrows()):
-            # Check for cancellation request
-            if self.should_cancel:
-                self.logger.log("INFO", f"⏹️ Backtest cancelled by user at {timestamp.strftime('%Y-%m-%d %H:%M:%S')}")
-                break
-
-            current_price = row["close"]
-            current_time = timestamp
-
-            # Prepare market data snapshot for strategy
-            market_data = self._prepare_market_data(current_time)
-
-            # Generate signals from strategy
-            try:
-                signals = self.strategy.generate_signals(market_data)
-                if signals is None:
-                    signals = []
-
-                # Log signal generation details
-                for signal in signals:
-                    self.logger.log_signal_generation(signal, market_data, current_time)
-
-            except Exception as e:
-                self.logger.log("ERROR", f"Strategy error at {current_time}: {e}")
-                signals = []
-
-            # Process new signals
-            for signal in signals:
-                self._execute_signal(signal, current_price, current_time)
-
-            # Update existing positions
-            self._update_positions(row, current_time)
-
-            # Update equity curve
-            self._update_equity_curve(current_time)
-
-        # Close any remaining positions at end
-        self._close_remaining_positions()
-
-        # Generate final report
-        metrics = self._generate_final_report()
-        return metrics
-
-    def _prepare_market_data(self, current_time: pd.Timestamp) -> Dict[str, pd.DataFrame]:
-        """Prepare market data snapshot up to current time for strategy."""
-        market_data = {}
-
-        for timeframe, df in self.data.items():
-            # Get data up to current time (inclusive)
-            mask = df.index <= current_time
-            market_data[timeframe] = df[mask].copy()
-
-        return market_data
-
-    def _calculate_risk_reward_ratio(self, entry_price: float, stop_loss: float, take_profit: float, direction: str) -> float:
-        """Calculate risk/reward ratio for a trade."""
-        risk_distance = abs(entry_price - stop_loss)
-        reward_distance = abs(take_profit - entry_price)
-
-        if risk_distance <= 0:
-            return 0
-
-        return reward_distance / risk_distance
-
-    def _execute_signal(self, signal: Dict[str, Any], current_price: float, current_time: pd.Timestamp):
-        """Process a new trade signal."""
-        # Get stop loss and take profit first
-        stop_loss = signal.get("stop_loss")
-        take_profit = signal.get("take_profit")
-
-        # Determine entry price
-        entry_price = signal.get("entry_price", current_price)
-        if entry_price is None:
-            entry_price = current_price
-
-        if stop_loss is None:
-            self.logger.log("WARNING", "No stop loss specified, using default")
-            stop_loss = entry_price * 0.98 if signal["direction"] == "LONG" else entry_price * 1.02
-
-        # Check risk/reward ratio using Risk Manager validation
-        if take_profit is not None:
-            # NEW: Use Strategy's Target RR as the Minimum Acceptable RR (Filter = Target)
-            # This simplifies config and ensures we only take trades meeting the strategy's own standard.
-            strategy_rr_target = 1.5 # Default conservative
+        timeframe = self.config.get("timeframes", ["1h"])[0] # Use primary
+        start = self.config["start_date"]
+        end = self.config["end_date"]
+        
+        self.logger.log("INFO", f"Loading data for {symbol} ({start} - {end})...")
+        df = self.data_loader.get_data(symbol, timeframe, start, end)
+        
+        # Rename columns to match backtesting.py requirements (Title Case)
+        df = df.rename(columns={
+            "open": "Open",
+            "high": "High",
+            "low": "Low",
+            "close": "Close",
+            "volume": "Volume"
+        })
+        
+        # Ensure proper Index
+        if not isinstance(df.index, pd.DatetimeIndex):
+            df.index = pd.to_datetime(df.index)
             
-            if self.strategy and hasattr(self.strategy, "config"):
-                strategy_rr_target = self.strategy.config.get("risk_reward_ratio", 1.5)
-            
-            # Fallback to legacy config if present (e.g. user manually added it back)
-            min_risk_reward = self.config.get("min_risk_reward", strategy_rr_target)
+        self.data = df
+        self.logger.log("INFO", f"Loaded {len(df)} bars.")
 
-            rr_valid, rr_reason = self.risk_manager.validate_risk_reward_ratio(entry_price, stop_loss, take_profit, min_risk_reward)
+    def run_backtest(self) -> Dict[str, Any]:
+        """Execute backtest using backtesting.py."""
+        self.logger.log("INFO", "Starting backtest (backtesting.py engine)...")
+        
+        # Configure Adapter
+        BacktestingAdapter.target_strategy_class = self.strategy_class
+        
+        # Merge strategy-specific config with main config so Adapter has access to everything
+        # (risk_per_trade, initial_capital, etc.)
+        strategy_conf = self.config.get("strategy_config", {}).copy()
+        full_conf = self.config.copy()
+        full_conf.update(strategy_conf) # Strategy config overrides main config if key conflict (unlikely)
+        
+        BacktestingAdapter.target_strategy_config = full_conf
+        
+        # Ensure config has timeframe for consistency
+        BacktestingAdapter.target_strategy_config['primary_timeframe'] = self.config.get("timeframes", ["1h"])[0]
+        
+        # Pass reference price for scaling detection
+        if not self.data.empty:
+            BacktestingAdapter.target_strategy_config['reference_price'] = float(self.data['Close'].iloc[0])
 
-            if not rr_valid:
-                rejection_details = {
-                    "calculated_rr": self._calculate_risk_reward_ratio(entry_price, stop_loss, take_profit, signal["direction"]),
-                    "min_required_rr": min_risk_reward,
-                    "entry_price": entry_price,
-                    "stop_loss": stop_loss,
-                    "take_profit": take_profit,
-                    "reason": rr_reason,
-                }
-                self.logger.log_signal_rejection(signal, "Risk/Reward", rejection_details, current_time)
-                return
+        if not self.data.empty:
+            BacktestingAdapter.target_strategy_config['reference_price'] = float(self.data['Close'].iloc[0])
 
-        # Calculate potential risk for this position
-        risk_distance = abs(entry_price - stop_loss)
-        temp_position_size = self.risk_manager.calculate_position_size(entry_price, stop_loss)
+        # Initialize detailed trades collection
+        BacktestingAdapter.detailed_trades = []
 
-        # Check if we can open a new position with this risk and projected value
-        can_open, reason = self.risk_manager.can_open_position(entry_price, stop_loss, current_time.to_pydatetime(), entry_price) # Use entry_price for check
-        if not can_open:
-            rejection_details = {
-                "max_positions": self.risk_manager.max_positions,
-                "current_positions": len(self.open_positions),
-                "potential_risk": risk_distance * temp_position_size,
-                "total_potential_risk": self.risk_manager._calculate_total_potential_risk() + risk_distance * temp_position_size,
-                "reason": reason,
-            }
-            self.logger.log_signal_rejection(signal, "Risk/Reward", rejection_details, current_time)
-            return
-
-        # Calculate final position size
-        position_size = self.risk_manager.calculate_position_size(entry_price, stop_loss)
-
-        if position_size <= 0:
-            rejection_details = {
-                "calculated_size": position_size,
-                "entry_price": entry_price,
-                "stop_loss": stop_loss,
-                "risk_amount": abs(entry_price - stop_loss) * position_size,
-                "reason": "Position size too small",
-            }
-            self.logger.log_signal_rejection(signal, "Position size", rejection_details, current_time)
-            return
-
-        # Determine if trailing stop should be enabled based on config
-        # trailing_dist = self.config.get("trailing_stop_distance", 0)
-        # is_trailing_enabled = trailing_dist > 0
-
-        # Create position
-        position = Position(
-            id=len(self.open_positions) + len(self.closed_trades) + 1,
-            entry_price=entry_price,
-            size=position_size,
-            stop_loss=stop_loss,
-            take_profit=take_profit,
-            entry_time=current_time,
-            reason=signal.get("reason", "Strategy signal"),
-            direction=signal.get("direction", "LONG"),
+        # Initialize Backtest with Fractional support
+        self.bt_instance = FractionalBacktest(
+            self.data,
+            BacktestingAdapter,
+            cash=self.initial_capital,
+            commission=self.config.get("commission", 0.0004), # DEFAULT TAKER FEE
+            exclusive_orders=True # Simplified mode
         )
         
-        # Capture metadata from signal
-        if "metadata" in signal:
-            position.metadata = signal["metadata"]
-
-        # Set up laddered exits if not specified
-        if take_profit is None:
-            self._setup_laddered_exits(position)
-
-        self.open_positions.append(position)
-
-        # Calculate and deduct entry fee
-        entry_fee = entry_price * position_size * 0.0004  # 0.04% taker fee
-        position.entry_fee = entry_fee
-        self.current_capital -= entry_fee
-
-        # Log trade opening
-        self.logger.log_trade_open(position, self.current_capital, self.initial_capital)
+        # Run
+        stats = self.bt_instance.run()
         
-        # Debug log for position creation
-        # self.logger.log("INFO", f"Position {position.id} created. Trailing Enabled: {is_trailing_enabled}, TP: {take_profit}")
-
-        # Update risk manager
-        self.risk_manager.add_position(position)
-
-        # Update strategy executed signals counter
-        if hasattr(self.strategy, "signals_executed"):
-            self.strategy.signals_executed += 1
-
-        # BUG FIX: Enable trailing stop active immediately if configured and using single TP
-        # (Laddered exits handle activation internally, but single TP was missing it)
-        # BUG FIX & FEATURE: Enable trailing stop active immediately if configured and using single TP
-        if take_profit is not None and position.trailing_stop_enabled:
-             position.trailing_active = True
-             # self.logger.log("INFO", "Trailing stop activated (Immediate)")
-
-    def _setup_laddered_exits(self, position: Position):
-        """Set up laddered take-profit levels for a position."""
-        risk_distance = abs(position.entry_price - position.stop_loss)
-
-        if position.direction == "LONG":
-            tp1_price = position.entry_price + risk_distance  # 1:1 R:R
-            tp2_price = position.entry_price + (2 * risk_distance)  # 1:2 R:R
-            tp3_price = position.entry_price + (2.5 * risk_distance)  # 1:2.5 R:R (runner)
-        else:  # SHORT
-            tp1_price = position.entry_price - risk_distance
-            tp2_price = position.entry_price - (2 * risk_distance)
-            tp3_price = position.entry_price - (2.5 * risk_distance)
-
-        position.take_profit_levels = [
-            {"price": tp1_price, "percentage": 0.5, "reason": "TP1 - 1R"},
-            {"price": tp2_price, "percentage": 0.3, "reason": "TP2 - 2R"},
-            {"price": tp3_price, "percentage": 0.2, "reason": "Runner - Trailing"},
-        ]
-
-    def _update_positions(self, row: pd.Series, current_time: pd.Timestamp):
-        """Update all open positions and check for exit conditions."""
-        positions_to_remove = []
+        # Map Results
+        metrics = self._map_results(stats)
         
-        current_price = row['close']
-        high_price = row['high']
-        low_price = row['low']
-        open_price = row['open']
-
-        for position in self.open_positions:
-
-            # Check stop loss
-            is_hit, exit_price = self._is_stop_hit(position, low_price, high_price, open_price, current_price)
-            if is_hit:
-                self._close_position(position, exit_price, current_time, "STOP LOSS")
-                positions_to_remove.append(position)
-                continue
-
-            # Check take profit levels
-            if self._check_take_profits(position, current_price, current_time):
-                # Position might be partially or fully closed
-                if position.size <= 0:
-                    positions_to_remove.append(position)
-
-            # Update trailing stop if active
-            if position.trailing_active:
-                self._update_trailing_stop(position, current_price)
-
-        # Remove closed positions
-        for position in positions_to_remove:
-            self.open_positions.remove(position)
-            self.closed_trades.append(position)
-            self.risk_manager.remove_position(position)
-
-    def _is_stop_hit(self, position: Position, low: float, high: float, open_p: float, close: float) -> Tuple[bool, float]:
-        """Check if stop loss is hit and return exit price."""
-        if position.direction == "LONG":
-            # If Low drops below SL
-            if low <= position.stop_loss:
-                # Check for Gap Down on Open
-                if open_p < position.stop_loss:
-                    return True, open_p # Gap logic: Exit at Open
-                return True, position.stop_loss # Normal fill at SL
-        else:  # SHORT
-            # If High rises above SL
-            if high >= position.stop_loss:
-                # Check for Gap Up on Open
-                if open_p > position.stop_loss:
-                    return True, open_p # Gap logic: Exit at Open
-                return True, position.stop_loss # Normal fill at SL
-                
-        return False, 0.0
-
-    def _check_take_profits(self, position: Position, current_price: float, current_time: pd.Timestamp) -> bool:
-        """
-        Check and execute take profit levels. 
-        Supports both laddered exits (take_profit_levels) and simple single take_profit.
-        Returns True if position is fully closed.
-        """
         
-        # 1. Handle Laddered Exits
-        if hasattr(position, "take_profit_levels") and position.take_profit_levels:
-            for tp_level in position.take_profit_levels:
-                tp_price = tp_level["price"]
-                tp_percentage = tp_level["percentage"]
+        self.logger.log("INFO", "Backtest completed.")
+        
+        # Prepare metrics for logging (Logger expects 0-100 for win_rate)
+        log_metrics = metrics.copy()
+        log_metrics['win_rate'] = metrics['win_rate'] * 100
+        self.logger.print_summary(log_metrics)
+        
+        return metrics
 
-                if position.tp_hit.get(tp_price, False):
-                    continue  # Already hit this TP
-
-                # Check TP based on direction
-                tp_hit = False
-                if position.direction == "LONG" and current_price >= tp_price:
-                    tp_hit = True
-                elif position.direction == "SHORT" and current_price <= tp_price:
-                    tp_hit = True
-
-                if tp_hit:
-                    # Execute partial exit
-                    # If this is the last TP or closes the rest, logic might differ, 
-                    # but simple percentage of initial size is standard for ladder
-                    exit_size = position.size * tp_percentage 
-                    # Note: Need to be careful if exit_size > current remaining size due to rounding or logic
+    def _map_results(self, stats: pd.Series) -> Dict[str, Any]:
+        """Convert backtesting.py stats Series to our standard metrics dictionary."""
+        # Extract trade history
+        # backtesting.py stores trades in stats['_trades']
+        trades_df = stats['_trades']
+        closed_trades = []
+        
+        winning_trades = 0
+        losing_trades = 0
+        total_win_pnl = 0.0
+        total_loss_pnl = 0.0
+        
+        if not trades_df.empty:
+            for _, t in trades_df.iterrows():
+                pnl = t.get("PnL")
+                if pnl > 0:
+                    winning_trades += 1
+                    total_win_pnl += pnl
+                elif pnl < 0:
+                    losing_trades += 1
+                    total_loss_pnl += pnl
                     
-                    self._partial_exit(position, exit_size, tp_price, current_time, tp_level.get("reason", f"TP hit at {tp_price}"))
+                # Attempt to find detailed info
+                detailed_info = {}
+                if hasattr(BacktestingAdapter, 'detailed_trades'):
+                     # Match by Entry Time (approximate or exact)
+                     # stats EntryTime is pd.Timestamp
+                     entry_time = t.get("EntryTime")
+                     
+                     # Normalize comparison to string to avoid Timestamp type issues
+                     entry_time_str = str(entry_time)
+                     
+                     for dt in BacktestingAdapter.detailed_trades:
+                         # dt['entry_time'] comes from backtesting Trade object (Timestamp)
+                         dt_time_str = str(dt.get('entry_time'))
+                         
+                         if dt_time_str == entry_time_str:
+                             detailed_info = dt
+                             break
+                
+                # Format Duration
+                duration = t.get("Duration")
+                duration_str = "N/A"
+                if pd.notna(duration):
+                    # duration is a Timedelta
+                    total_seconds = int(duration.total_seconds())
+                    days = total_seconds // 86400
+                    hours = (total_seconds % 86400) // 3600
+                    minutes = (total_seconds % 3600) // 60
+                    
+                    parts = []
+                    if days > 0: parts.append(f"{days}d")
+                    if hours > 0: parts.append(f"{hours}h")
+                    parts.append(f"{minutes}m")
+                    duration_str = " ".join(parts)
 
-                    # Move stop to breakeven after TP1
-                    if tp_percentage == 0.5 and not position.breakeven_moved:
-                        position.stop_loss = position.entry_price
-                        position.breakeven_moved = True
-                        self.logger.log("INFO", f"Stop moved to breakeven: {position.entry_price}")
+                closed_trades.append({
+                    "entry_time": t.get("EntryTime").isoformat() if pd.notna(t.get("EntryTime")) else None,
+                    "exit_time": t.get("ExitTime").isoformat() if pd.notna(t.get("ExitTime")) else None,
+                    "entry_price": t.get("EntryPrice"),
+                    "exit_price": t.get("ExitPrice"),
+                    "direction": "LONG" if t.get("Size") > 0 else "SHORT",
+                    "size": abs(t.get("Size", 0)), # Absolute size
+                    "pnl": pnl,
+                    "return_pct": t.get("ReturnPct") * 100,
+                    "reason": detailed_info.get("reason", "Signal"),
+                    "stop_loss": detailed_info.get("stop_loss"),
+                    "take_profit": detailed_info.get("take_profit"),
+                    "exit_reason": detailed_info.get("exit_reason", "Signal/Manual"),
+                    "duration": duration_str,
+                    "metadata": detailed_info.get("metadata", {})
+                })
 
-                    # Activate trailing stop after TP2
-                    if tp_percentage == 0.3 and not position.trailing_active:
-                        position.trailing_active = True
-                        self.logger.log("INFO", "Trailing stop activated")
+        # Calculate PnL manually if needed, or derived from Equity
+        equity_final = stats.get("Equity Final [$]", 0.0)
+        total_pnl = equity_final - self.initial_capital
 
-                    position.tp_hit[tp_price] = True
-                    break
-            return position.size <= 0
-
-        # 2. Handle Simple Take Profit (Single Level)
-        elif position.take_profit is not None:
-             # Check Breakeven Condition (Standard: 1R, Configurable: breakeven_trigger_r)
-             trigger_r = self.config.get("breakeven_trigger_r", 1.0)
-             risk_distance = abs(position.entry_price - position.stop_loss)
-             
-             if not position.breakeven_moved:
-                 if position.direction == "LONG":
-                     if current_price >= position.entry_price + (risk_distance * trigger_r):
-                         position.move_stop_to_breakeven()
-                         self.logger.log("INFO", f"Stop moved to breakeven: {position.entry_price} (Price hit +{trigger_r}R)")
-                 else:  # SHORT
-                     if current_price <= position.entry_price - (risk_distance * trigger_r):
-                         position.move_stop_to_breakeven()
-                         self.logger.log("INFO", f"Stop moved to breakeven: {position.entry_price} (Price hit +{trigger_r}R)")
-
-             # Check Take Profit
-             tp_hit = False
-             if position.direction == "LONG" and current_price >= position.take_profit:
-                 tp_hit = True
-             elif position.direction == "SHORT" and current_price <= position.take_profit:
-                 tp_hit = True
+        # Map Metrics
+        metrics = {
+            # Frontend likely expects 0.0-1.0 for Win Rate (formatting as %), but backtesting.py gives 0-100
+            "win_rate": stats.get("Win Rate [%]", 0.0) / 100.0, 
+            "total_return_pct": stats.get("Return [%]", 0.0),
+            "total_trades": int(stats.get("# Trades", 0)),
+            "total_pnl": total_pnl,
+            "sharpe_ratio": stats.get("Sharpe Ratio", 0.0),
             
-             if tp_hit:
-                 self._close_position(position, current_price, current_time, "TAKE PROFIT")
-                 return True
-
-        return False
-
-    def _partial_exit(self, position: Position, exit_size: float, exit_price: float, current_time: pd.Timestamp, reason: str):
-        """Execute a partial position exit."""
-        # Calculate PnL for this portion based on direction
-        if position.direction == "LONG":
-            pnl = (exit_price - position.entry_price) * exit_size
-        else:  # SHORT
-            pnl = (position.entry_price - exit_price) * exit_size
-
-        # Apply fees
-        fee = exit_price * exit_size * 0.0004  # 0.04% taker fee
-        net_pnl = pnl - fee
-
-        # Update position
-        position.size -= exit_size
-        position.realized_pnl += net_pnl
-
-        # Update account balance
-        self.current_capital += net_pnl
-
-        # Log partial exit
-        self.logger.log_partial_exit(position, exit_size, exit_price, net_pnl, reason, current_time, self.current_capital, self.initial_capital)
-
-    def _update_trailing_stop(self, position: Position, current_price: float):
-        """Update trailing stop based on price movement."""
-        trailing_dist_pct = self.config.get("trailing_stop_distance", 0.02)
+            # Map robustly
+            "profit_factor": stats.get("Profit Factor", 0.0),
+            "max_drawdown": abs(stats.get("Max. Drawdown [%]", 0.0)), # Ensure positive or match format
+            "signals_generated": int(stats.get("# Trades", 0)), # Approximation: executed trades = signals
+            
+            "max_drawdown_pct": stats.get("Max. Drawdown [%]", 0.0), 
+            "avg_trade_pct": stats.get("Avg. Trade [%]", 0.0),
+            
+            "equity_final": equity_final,
+            "equity_peak": stats.get("Equity Peak [$]", 0.0),
+            
+            "winning_trades": winning_trades,
+            "losing_trades": losing_trades,
+            "avg_win": total_win_pnl / winning_trades if winning_trades > 0 else 0.0,
+            "avg_loss": total_loss_pnl / losing_trades if losing_trades > 0 else 0.0,
+            
+            # Detailed lists expected by frontend
+            "closed_trades": closed_trades,
+            "equity_curve": [],
+            "configuration": self.config
+        }
         
-        if position.direction == "LONG":
-            # For LONG positions: move stop up as price goes up
-            if current_price > position.trailing_high:
-                position.trailing_high = current_price
-                # Move stop to some distance below the high
-                atr_distance = current_price * trailing_dist_pct
-                new_stop = current_price - atr_distance
-                if new_stop > position.stop_loss:
-                    position.stop_loss = new_stop
-        else:  # SHORT
-            # For SHORT positions: move stop down as price goes down
-            if current_price < position.trailing_low:
-                position.trailing_low = current_price
-                # Move stop to some distance above the low
-                atr_distance = current_price * trailing_dist_pct
-                new_stop = current_price + atr_distance
-                if new_stop < position.stop_loss:
-                    position.stop_loss = new_stop
-
-    def _close_position(self, position: Position, exit_price: float, current_time: pd.Timestamp, reason: str):
-        """Close a position completely."""
-        # Calculate final PnL based on direction
-        remaining_size = position.size
-        if position.direction == "LONG":
-            pnl = (exit_price - position.entry_price) * remaining_size
-        else:  # SHORT
-            pnl = (position.entry_price - exit_price) * remaining_size
-
-        # Apply fees
-        fee = exit_price * remaining_size * 0.0004
-        net_pnl = pnl - fee
-
-        # Update position
-        position.exit_price = exit_price
-        position.exit_time = current_time
-        position.exit_reason = reason
-        position.realized_pnl += net_pnl
-        position.size = 0
-
-        # Update account balance and risk manager
-        self.current_capital += net_pnl
-        self.risk_manager.update_balance(net_pnl, position_direction=position.direction, exit_time=current_time.to_pydatetime())
-
-        # Update peak equity with current price
-        self.risk_manager.update_peak_equity(exit_price)
-
-        # Log final exit
-        self.logger.log_trade_close(position, net_pnl, self.current_capital, self.initial_capital)
-
-    def _close_remaining_positions(self):
-        """Close any remaining positions at the end of backtest."""
-        final_price = self.primary_data["close"].iloc[-1]
-        final_time = self.primary_data.index[-1]
-
-        for position in self.open_positions.copy():
-            self._close_position(position, final_price, final_time, "End of backtest")
-            self.open_positions.remove(position)
-            self.closed_trades.append(position)
-
-    def _update_equity_curve(self, current_time: pd.Timestamp):
-        """Update equity curve for drawdown calculation with detailed tracking."""
-        # Get current price from the primary timeframe data
-        primary_tf = self.config.get("timeframes", ["1h"])[0]
-
-        # Find the closest available timestamp
-        try:
-            current_price = self.data[primary_tf].loc[current_time, "close"]
-        except KeyError:
-            # If exact timestamp not found, get the last available price
-            current_price = self.data[primary_tf]["close"].iloc[-1]
-
-        # Calculate current equity (capital + unrealized PnL)
-        unrealized_pnl = 0
-        total_position_value = 0
-        for position in self.open_positions:
-            position_value = position.entry_price * position.size
-            total_position_value += position_value
-
-            if position.direction == "LONG":
-                unrealized_pnl += (current_price - position.entry_price) * position.size
-            else:
-                unrealized_pnl += (position.entry_price - current_price) * position.size
-
-        current_equity = self.current_capital + unrealized_pnl
-
-        # Update peak capital
-        if current_equity > self.peak_capital:
-            self.peak_capital = current_equity
-
-        # Update risk manager peak equity
-        self.risk_manager.update_peak_equity(current_price)
-
-        # Calculate drawdown
-        drawdown = (self.peak_capital - current_equity) / self.peak_capital * 100
-
-        # Calculate return from initial capital
-        total_return = (current_equity - self.initial_capital) / self.initial_capital * 100
-
-        # Calculate daily return (if we have previous equity point)
-        daily_return = 0
-        if self.equity_curve:
-            prev_equity = self.equity_curve[-1]["equity"]
-            if prev_equity > 0:
-                daily_return = (current_equity - prev_equity) / prev_equity * 100
-
-        self.equity_curve.append(
-            {
-                "timestamp": current_time,
-                "equity": current_equity,
-                "capital": self.current_capital,
-                "unrealized_pnl": unrealized_pnl,
-                "drawdown": drawdown,
-                "total_return_pct": total_return,
-                "daily_return_pct": daily_return,
-                "current_price": current_price,
-                "open_positions_count": len(self.open_positions),
-                "total_position_value": total_position_value,
-                "peak_capital": self.peak_capital,
-            }
-        )
-
-    def _generate_final_report(self):
-        """Generate and display final performance report."""
-        self.logger.log("INFO", "Backtest completed. Generating report...")
-
-        # Calculate metrics
-        metrics = self.reporter.compute_metrics(self.closed_trades, self.equity_curve)
-
-        # Add configuration used for this backtest
-        metrics["configuration"] = self.config
-
-        # Print summary
-        self.logger.print_summary(metrics)
+        # Parse equity curve for chart
+        if '_equity_curve' in stats:
+            eq_df = stats['_equity_curve']
+            # Format: timestamp, equity, drawdown?
+            curve = []
+            for ts, row in eq_df.iterrows():
+                curve.append({
+                    "date": ts.isoformat() if hasattr(ts, 'isoformat') else str(ts), # Rename timestamp -> date
+                    "equity": row['Equity'],
+                    "drawdown": row.get('DrawdownPct', 0) * 100 if 'DrawdownPct' in row else 0
+                })
+            metrics['equity_curve'] = curve
 
         return metrics
-
 
 def run_backtest(config_file: str):
-    """Main function to run a backtest from a configuration file."""
+    """Entry point."""
     with open(config_file, "r") as f:
         config = json.load(f)
 
@@ -647,24 +268,3 @@ def run_backtest(config_file: str):
     metrics = engine.run_backtest()
 
     return engine, metrics
-
-
-if __name__ == "__main__":
-    # Example usage
-    config = {
-        "initial_capital": 10000,
-        "risk_per_trade": 2.0,
-        "max_drawdown": 15.0,
-        "max_positions": 3,
-        "symbol": "BTC/USDT",
-        "timeframes": ["4h", "15m"],
-        "start_date": "2023-01-01",
-        "end_date": "2023-12-31",
-        "strategy": "smc_strategy",
-        "leverage": 10.0,
-        "exchange": "binance",
-    }
-
-    engine = BacktestEngine(config)
-    engine.load_data()
-    engine.run_backtest()

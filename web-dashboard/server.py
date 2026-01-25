@@ -22,8 +22,8 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from engine.backtest_engine import BacktestEngine
-from strategies.smc_strategy import SMCStrategy
-from strategies.simple_test_strategy import SimpleTestStrategy
+# Strategies are now loaded dynamically by the engine
+
 
 
 # Store original stdout/stderr at module level for use in broadcast functions
@@ -65,7 +65,7 @@ class BacktestConfig(BaseModel):
     initial_capital: float = 10000
     risk_per_trade: float = 2.0
     max_drawdown: float = 15.0
-    max_positions: int = 3
+    max_positions: int = 1
     leverage: float = 10.0
     symbol: str = "BTC/USDT"
     timeframes: List[str] = ["4h", "15m"]
@@ -74,10 +74,8 @@ class BacktestConfig(BaseModel):
     confluence_required: str = "false"
     strategy: str = "smc_strategy"
     strategy_config: Dict[str, Any] = {}
-    min_risk_reward: float = 2.0
     trailing_stop_distance: float = 0.02
     breakeven_trigger_r: float = 1.0
-    max_total_risk_percent: float = 15.0
     dynamic_position_sizing: bool = True
 
 
@@ -320,10 +318,8 @@ async def get_config():
             "end_date": config.get("period", {}).get("end_date", "2023-12-31"),
             "strategy": config.get("strategy", {}).get("name", "smc_strategy"),
             "strategy_config": config.get("strategy", {}).get("config", {}),
-            "min_risk_reward": config.get("min_risk_reward", 2.0),
             "trailing_stop_distance": config.get("trailing_stop_distance", 0.02),
             "breakeven_trigger_r": config.get("breakeven_trigger_r", 1.0),
-            "max_total_risk_percent": config.get("max_total_risk_percent", 15.0),
             "dynamic_position_sizing": config.get("dynamic_position_sizing", True)
         }
         return flat_config
@@ -380,14 +376,8 @@ async def update_config(config: Dict[str, Any]):
         existing_config["strategy"]["name"] = config["strategy"]
         
     # Update root level settings
-    if "min_risk_reward" in config:
-        existing_config["min_risk_reward"] = config["min_risk_reward"]
-    if "trailing_stop_distance" in config:
-        existing_config["trailing_stop_distance"] = config["trailing_stop_distance"]
     if "breakeven_trigger_r" in config:
         existing_config["breakeven_trigger_r"] = config["breakeven_trigger_r"]
-    if "max_total_risk_percent" in config:
-        existing_config["max_total_risk_percent"] = config["max_total_risk_percent"]
     if "dynamic_position_sizing" in config:
         existing_config["dynamic_position_sizing"] = config["dynamic_position_sizing"]
     
@@ -617,10 +607,8 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
             'end_date': config.get('end_date', '2023-12-31'),
             'strategy': config.get('strategy', 'smc_strategy'),
             'strategy_config': config.get('strategy_config', {}),
-            'min_risk_reward': config.get('min_risk_reward', 2.0),
             'trailing_stop_distance': config.get('trailing_stop_distance', 0.02),
             'breakeven_trigger_r': config.get('breakeven_trigger_r', 1.0),
-            'max_total_risk_percent': config.get('max_total_risk_percent', 15.0),
             'dynamic_position_sizing': config.get('dynamic_position_sizing', True),
             'log_level': 'INFO',
             'export_logs': True,
@@ -663,10 +651,8 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
         await broadcast_message(f"[{run_id}] Max Drawdown: {engine_config['max_drawdown']}%\n")
         await broadcast_message(f"[{run_id}] Max Positions: {engine_config['max_positions']}\n")
         await broadcast_message(f"[{run_id}] Leverage: {engine_config['leverage']}x\n")
-        await broadcast_message(f"[{run_id}] Min Risk/Reward: {engine_config['min_risk_reward']}\n")
         await broadcast_message(f"[{run_id}] Trailing Stop Distance: {engine_config['trailing_stop_distance']}\n")
         await broadcast_message(f"[{run_id}] Breakeven Trigger (R): {engine_config['breakeven_trigger_r']}\n")
-        await broadcast_message(f"[{run_id}] Max Total Risk: {engine_config['max_total_risk_percent']}%\n")
         await broadcast_message(f"[{run_id}] Dynamic Position Sizing: {engine_config['dynamic_position_sizing']}\n")
         if engine_config['strategy_config']:
             await broadcast_message(f"[{run_id}] Strategy Config: {engine_config['strategy_config']}\n")
@@ -752,92 +738,40 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
             metrics = await loop.run_in_executor(None, engine.run_backtest)
             
             # Check if backtest was cancelled
-            if engine.should_cancel:
-                await broadcast_message(f"[{run_id}] ⏹️ Backtest cancelled by user\n")
-                await broadcast_message(f"[{run_id}] 📊 Intermediate metrics calculated\n")
-                # Use intermediate metrics up to cancellation point
+            if getattr(engine, 'should_cancel', False):
+                 await broadcast_message(f"[{run_id}] ⏹️ Backtest cancelled by user\n")
             else:
-                await broadcast_message(f"[{run_id}] ✅ engine.run_backtest() completed\n")
+                 await broadcast_message(f"[{run_id}] ✅ engine.run_backtest() completed\n")
             
-            # Add signals count to metrics
-            metrics['signals_generated'] = websocket_stdout.signals_count # Use the counter from the custom stdout
-            
-            # Convert Position objects to dictionaries for JSON serialization
-            trades_data = []
-            for trade in engine.closed_trades:
-                # Calculate PnL percentage
-                pnl_percent = 0
-                if trade.entry_price and trade.original_size:
-                    pnl_percent = (trade.realized_pnl / (trade.entry_price * trade.original_size)) * 100
-                
-                # Format duration string (remove '0 days ' artifact)
-                duration_str = None
-                if trade.exit_time and trade.entry_time:
-                    diff = trade.exit_time - trade.entry_time
-                    duration_str = str(diff).replace("0 days ", "")
-
-                trade_dict = {
-                    'id': trade.id,
-                    'direction': trade.direction,
-                    'entry_price': trade.entry_price,
-                    'exit_price': trade.exit_price,
-                    'size': trade.original_size, # Use original_size as current size is 0 for closed trades
-                    'pnl': trade.realized_pnl,
-                    'pnl_percent': pnl_percent,
-                    'entry_time': trade.entry_time.isoformat() if trade.entry_time else None,
-                    'exit_time': trade.exit_time.isoformat() if trade.exit_time else None,
-                    'duration': duration_str,
-                    'status': 'CLOSED' if trade.is_closed else 'OPEN',
-                    'stop_loss': trade.stop_loss,
-                    'take_profit': trade.take_profit,
-                    'realized_pnl': trade.realized_pnl,
-                    'exit_reason': trade.exit_reason,
-                    'reason': trade.reason,
-                    'metadata': trade.metadata if hasattr(trade, 'metadata') else {}
-                }
-                trades_data.append(trade_dict)
-            
-            # Convert equity curve to serializable format
-            equity_data = []
-            for point in engine.equity_curve:
-                equity_dict = {
-                    'date': point['timestamp'].isoformat() if hasattr(point['timestamp'], 'isoformat') else str(point['timestamp']),
-                    'equity': point['equity']
-                }
-                equity_data.append(equity_dict)
-            
-            # Map metrics from PerformanceReporter to frontend format
-            # PerformanceReporter uses: win_count, loss_count, total_pnl
-            # Frontend expects: winning_trades, losing_trades, total_pnl
-            mapped_metrics = {
-                'total_pnl': metrics.get('total_pnl', 0),
-                'winning_trades': metrics.get('win_count', 0),
-                'losing_trades': metrics.get('loss_count', 0),
-                'total_trades': metrics.get('total_trades', 0),
-                'win_rate': metrics.get('win_rate', 0) / 100 if metrics.get('win_rate', 0) > 1 else metrics.get('win_rate', 0),
-                'profit_factor': metrics.get('profit_factor', 0),
-                'max_drawdown': metrics.get('max_drawdown', 0),
-                'sharpe_ratio': metrics.get('sharpe_ratio', 0),
-                'avg_win': metrics.get('avg_win', 0),
-                'avg_loss': metrics.get('avg_loss', 0),
-                'initial_capital': engine_config.get('initial_capital', 10000),
-                'signals_generated': websocket_stdout.signals_count, # Use the counter from the custom stdout
-                'equity_curve': equity_data,
-                'trades': trades_data
-            }
-            
-            # Update metrics with mapped values
-            metrics.update(mapped_metrics)
+            # Add signals count to metrics (from stdout capture)
+            metrics['signals_generated'] = websocket_stdout.signals_count
             
             # Add logs to metrics for complete data preservation
             metrics['logs'] = engine.logger.logs
+            
+            # Helper: Sanitize NaN values for JSON compliance
+            def sanitize_floats(obj):
+                if isinstance(obj, float):
+                    if obj != obj: # NaN check
+                        return 0.0
+                    if obj == float('inf') or obj == float('-inf'):
+                        return 0.0
+                    return obj
+                elif isinstance(obj, dict):
+                    return {k: sanitize_floats(v) for k, v in obj.items()}
+                elif isinstance(obj, list):
+                    return [sanitize_floats(v) for v in obj]
+                return obj
+            
+            # Sanitize metrics before usage
+            metrics = sanitize_floats(metrics)
             
             # Store results in running_backtests IMMEDIATELY so frontend can access them
             running_backtests[run_id].results = metrics
             running_backtests[run_id].progress = 100.0
             
             # Update status AFTER results are set
-            if engine.should_cancel:
+            if getattr(engine, 'should_cancel', False):
                 running_backtests[run_id].status = "cancelled"
                 running_backtests[run_id].message = "Backtest cancelled"
             else:

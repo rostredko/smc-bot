@@ -3,7 +3,7 @@
     "initial_capital": 10000,
     "risk_per_trade": 2.0,
     "max_drawdown": 30.0,
-    "max_positions": 5,
+    "max_positions": 1,
     "leverage": 10.0
   },
   "trading": {

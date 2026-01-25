@@ -4,6 +4,14 @@ A production-ready Python backtesting framework for Smart Money Concepts (SMC) s
 
 **Status**: ✅ Production Ready | **Tests**: 86 passed | **Coverage**: 95%+ critical components
 
+## Architecture
+
+The project uses a **hybrid architecture** that combines the robustness of the standard `backtesting.py` library with custom institutional-grade strategy logic:
+
+1.  **Core Simulation (`backtesting.py`)**: Handles the "mechanics" of trading — market simulation, order execution, equity tracking, and trade statistics. This ensures accurate and standard-compliant backtest results.
+2.  **Strategy Layer (`smc-bot`)**: Contains the custom logic for "Signal Generation". This is where the Smart Money Concepts (SMC) and Price Action patterns are detected.
+3.  **Bridge (`adapters.py`)**: Connects our custom strategies to the `backtesting.py` engine, translating our signals into standard orders.
+
 ---
 
 ## Table of Contents
@@ -334,23 +342,7 @@ REM Opens: http://localhost:8000
 
 ---
 
-### 3. Live Trading
 
-Paper trading (sandbox) or real money trading on Binance.
-
-```bash
-# Linux/macOS
-source venv/bin/activate
-python main.py live --sandbox
-
-# Windows
-venv\Scripts\activate
-python main.py live --sandbox
-```
-
-⚠️ **Warning**: Only use real money after extensive testing in sandbox mode!
-
----
 
 ## Web Dashboard
 
@@ -474,6 +466,17 @@ Features:
 - Trailing stop management
 
 **Best For**: Experienced SMC traders
+
+#### PriceActionStrategy (Primary)
+**File**: `strategies/price_action_strategy.py`
+
+**Patterns**:
+1.  **Pin Bar** (Reversal): Long wick rejecting a level.
+2.  **Engulfing** (Reversal): Strong momentum shift engulfing previous candle.
+3.  **Inside Bar** (Consolidation): Pause in trend, often leading to breakout.
+4.  **Outside Bar** (Expansion): Volatility expansion, often a trap or major reversal.
+
+**Key Filters**: trend alignment (EMA), momentum (RSI/ADX), and volatility filters.
 
 #### SimpleTestStrategy
 **File**: `strategies/simple_test_strategy.py`
@@ -625,9 +628,6 @@ python server.py                           # Start server
 python main.py test                        # All tests
 pytest tests/test_strategies.py -v         # Specific tests
 
-# Live Trading
-python main.py live --sandbox              # Paper trading
-python main.py live                        # Real money ⚠️
 ```
 
 ### Windows
@@ -650,9 +650,6 @@ REM Testing
 python main.py test                        REM All tests
 pytest tests\test_strategies.py -v         REM Specific tests
 
-REM Live Trading
-python main.py live --sandbox              REM Paper trading
-python main.py live                        REM Real money ⚠️
 ```
 
 ---
