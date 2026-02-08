@@ -31,7 +31,8 @@ class BaseEngine(ABC):
         self.cerebro.broker.setcash(initial_capital)
 
         commission = self.config.get("commission", 0.0004) # Default 0.04% for crypto
-        self.cerebro.broker.setcommission(commission=commission)
+        leverage = self.config.get("leverage", 1.0)
+        self.cerebro.broker.setcommission(commission=commission, leverage=leverage)
         
         # Allow fractional sizing for crypto
         self.cerebro.broker.set_coo(True) 
@@ -45,7 +46,8 @@ class BaseEngine(ABC):
         # or handle sizing in the strategy itself.
         # Let's use a fixed sizer for now and let strategy manage size dynamically if needed.
         # Use PercentSizer to trade 10% of portfolio by default
-        self.cerebro.addsizer(bt.sizers.PercentSizer, percents=10)
+        # self.cerebro.addsizer(bt.sizers.PercentSizer, percents=10)
+        pass
 
     @abstractmethod
     def add_data(self):
@@ -58,4 +60,4 @@ class BaseEngine(ABC):
 
     def run(self):
         """Run the engine."""
-        return self.cerebro.run()
+        return self.cerebro.run(runonce=False)

@@ -44,4 +44,5 @@ config/*.local.json
 
 # --- Misc ---
 *.bak
-*.tmp
+*.tmpserver_debug.log
+results/

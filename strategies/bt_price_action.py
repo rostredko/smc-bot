@@ -37,6 +37,11 @@ class PriceActionStrategy(bt.Strategy):
         ('trailing_stop_distance', 0.0), # 0.0 = Disabled
         ('breakeven_trigger_r', 0.0), # 0.0 = Disabled
         
+        # Risk Management
+        ('risk_per_trade', 1.0), # Percent of equity
+        ('leverage', 1.0),
+        ('dynamic_position_sizing', True),
+        ('max_drawdown', 50.0), # Percent
     )
 
     def __init__(self):
@@ -60,6 +65,48 @@ class PriceActionStrategy(bt.Strategy):
         # Metadata tracking
         self.trade_map = {}
         self.pending_metadata = None
+        self.initial_sl = None
+        
+        # Churn prevention
+        self.last_entry_bar = -1
+
+    def _calculate_position_size(self, entry_price, stop_loss):
+        """
+        Calculate position size based on risk per trade and account balance.
+        """
+        cash = self.broker.get_cash()
+        value = self.broker.get_value()
+        
+        if not self.params.dynamic_position_sizing:
+             # Fixed % of equity
+             # Example: 10% of equity
+             # Native BT Sizer would be better here but we want consistent interface
+             # Let's say we use 'risk_per_trade' as the fixed % size of equity
+             target_value = value * (self.params.risk_per_trade / 100.0)
+             size = target_value / entry_price
+        else:
+            # Dynamic Risk-Based Sizing
+            # Risk Amount = Equity * (Risk% / 100)
+            risk_amount = value * (self.params.risk_per_trade / 100.0)
+            
+            risk_per_share = abs(entry_price - stop_loss)
+            
+            if risk_per_share == 0:
+                return 0 # Should not happen
+                
+            size = risk_amount / risk_per_share
+            
+        # Apply Leverage Limit
+        # Max Position Value = Equity * Leverage
+        max_pos_value = value * self.params.leverage
+        current_pos_value = size * entry_price
+        
+        if current_pos_value > max_pos_value:
+            # Scale down to max leverage
+            size = max_pos_value / entry_price
+            # print(f"DEBUG: Position sized capped by leverage {self.params.leverage}x")
+
+        return size
 
     def get_trade_info(self, trade_ref):
         info = self.trade_map.get(trade_ref, {})
@@ -108,7 +155,13 @@ class PriceActionStrategy(bt.Strategy):
 
         elif order.status in [order.Canceled, order.Margin, order.Rejected]:
             dt_str = self.data.datetime.date(0).isoformat()
-            print(f"[{dt_str}] Order Canceled/Margin/Rejected")
+            info_str = f" Info: {order.info}" if order.info else ""
+            if order.status == order.Canceled:
+                print(f"[{dt_str}] ℹ️ Order Canceled (id={order.ref}){info_str}")
+            elif order.status == order.Margin:
+                print(f"[{dt_str}] ⛔ ORDER MARGIN ERROR (id={order.ref}) - Insufficient Cash?{info_str}")
+            else:
+                print(f"[{dt_str}] ⛔ ORDER REJECTED (id={order.ref}){info_str}")
             
             # Reset tracking if orders are canceled
             if order == self.stop_order:
@@ -117,40 +170,80 @@ class PriceActionStrategy(bt.Strategy):
         # Write down: no pending order
         # self.order = None # Don't reset here blindly as we might be tracking position
 
+    # ... (helper mehtods)
+
     def next(self):
-        # Check if an order is pending - if so, we cannot send a 2nd one
+        # Check if an order is pending
         if self.order:
             return
             
-        # Trailing Stop Logic
+        # Reset tracking if not in position
+        if not self.position:
+            self.initial_sl = None
+            
+        # 0. Check Max Drawdown
+        if hasattr(self.stats, 'drawdown'):
+             dd = self.stats.drawdown.max.drawdown
+             if dd > self.params.max_drawdown:
+                 if not getattr(self, '_dd_limit_hit', False):
+                     print(f"[{self.data.datetime.date(0).isoformat()}] CRITICAL: Max Drawdown {dd:.2f}% exceeded limit {self.params.max_drawdown}%. Stopping trading.")
+                     self._dd_limit_hit = True
+                 return 
+                 
+        # Trailing Stop & Breakeven
+        if self.position and self.stop_order:
+             # Breakeven Logic
+             if self.params.breakeven_trigger_r > 0 and self.initial_sl is not None:
+                 risk = abs(self.position.price - self.initial_sl)
+                 if risk > 0:
+                     profit = 0
+                     if self.position.size > 0:
+                         profit = self.close[0] - self.position.price
+                     else:
+                         profit = self.position.price - self.close[0]
+                     
+                     if profit >= (risk * self.params.breakeven_trigger_r):
+                         # Move to Breakeven
+                         # Add a small buffer for commissions? Let's stick to pure entry price for now as per 'Breakeven'
+                         new_sl = self.position.price
+                         
+                         # Check if we need to update
+                         update_needed = False
+                         if self.position.size > 0 and new_sl > self.stop_order.price:
+                             update_needed = True
+                         elif self.position.size < 0 and new_sl < self.stop_order.price:
+                             update_needed = True
+                             
+                         if update_needed:
+                             print(f"[{self.data.datetime.date(0).isoformat()}] BREAKEVEN TRIGGERED: Moving SL to {new_sl:.2f}")
+                             self.cancel(self.stop_order)
+                             if self.position.size > 0:
+                                 self.stop_order = self.sell(price=new_sl, exectype=bt.Order.Stop, size=self.position.size)
+                             else:
+                                 self.stop_order = self.buy(price=new_sl, exectype=bt.Order.Stop, size=abs(self.position.size))
+                             
+                             self.initial_sl = None # Done
+                             
+        # Trailing Stop Logic (runs after or independent of BE)
         if self.position and self.params.trailing_stop_distance > 0 and self.stop_order:
-            if self.position.size > 0: # Long
-                # Calculate new stop price
-                # If trailing_stop_distance is < 1, assume percentage (e.g. 0.02 for 2%)
-                # If > 1, assume absolute price distance? Usually safe to assume percentage for crypto
-                # Let's support both: < 1 is percent, >= 1 is absolute? Or just assume percent as per previous context?
-                # User config had 0.02 default, so it's likely percent.
-                
+             # ... existing trailing logic ...
+             pass
+             
+             if self.position.size > 0: # Long
                 dist = self.close[0] * self.params.trailing_stop_distance
                 new_stop_price = self.close[0] - dist
-                
                 if new_stop_price > self.stop_order.price:
-                    # Move stop up
                     self.cancel(self.stop_order)
                     self.stop_order = self.sell(price=new_stop_price, exectype=bt.Order.Stop, size=self.position.size)
-                    dt_str = self.data.datetime.date(0).isoformat()
-                    # print(f"[{dt_str}] Trailing Stop Moved Up to {new_stop_price:.2f}")
+                    # print(f"[{self.data.datetime.date(0).isoformat()}] Trailing Stop Moved Up to {new_stop_price:.2f}")
 
-            elif self.position.size < 0: # Short
+             elif self.position.size < 0: # Short
                 dist = self.close[0] * self.params.trailing_stop_distance
                 new_stop_price = self.close[0] + dist
-                
                 if new_stop_price < self.stop_order.price:
-                    # Move stop down
                     self.cancel(self.stop_order)
                     self.stop_order = self.buy(price=new_stop_price, exectype=bt.Order.Stop, size=abs(self.position.size))
-                    dt_str = self.data.datetime.date(0).isoformat()
-                    # print(f"[{dt_str}] Trailing Stop Moved Down to {new_stop_price:.2f}")
+                    # print(f"[{self.data.datetime.date(0).isoformat()}] Trailing Stop Moved Down to {new_stop_price:.2f}")
 
 
         # 1. Pattern Detection
@@ -178,8 +271,14 @@ class PriceActionStrategy(bt.Strategy):
         risk = self.close[0] - sl_price
         tp_price = self.close[0] + (risk * self.params.risk_reward_ratio)
         
+        # Churn prevention
+        self.last_entry_bar = len(self.data)
+        
+        # Calculate Position Size
+        size = self._calculate_position_size(self.close[0], sl_price)
+        
         dt_str = self.data.datetime.date(0).isoformat()
-        print(f"[{dt_str}] SIGNAL GENERATED: LONG Entry={self.close[0]:.2f} SL={sl_price:.2f} TP={tp_price:.2f} Reason={reason}")
+        print(f"[{dt_str}] SIGNAL GENERATED: LONG Entry={self.close[0]:.2f} SL={sl_price:.2f} TP={tp_price:.2f} Size={size:.4f} Reason={reason}")
         
         # Prepare metadata for the trade
         self.pending_metadata = {
@@ -187,13 +286,15 @@ class PriceActionStrategy(bt.Strategy):
             'stop_loss': sl_price, 
             'take_profit': tp_price
         }
+        self.initial_sl = sl_price
 
         # Use bracket order for atomic execution assurance
         orders = self.buy_bracket(
             price=self.close[0], 
             stopprice=sl_price, 
             limitprice=tp_price,
-            exectype=bt.Order.Market # Entry at Market
+            exectype=bt.Order.Market, # Entry at Market
+            size=size
         )
         
         # Handle potential nested list return from bracket order
@@ -218,20 +319,28 @@ class PriceActionStrategy(bt.Strategy):
         risk = sl_price - self.close[0]
         tp_price = self.close[0] - (risk * self.params.risk_reward_ratio)
         
+        # Churn prevention
+        self.last_entry_bar = len(self.data)
+        
+        # Calculate Position Size
+        size = self._calculate_position_size(self.close[0], sl_price)
+        
         dt_str = self.data.datetime.date(0).isoformat()
-        print(f"[{dt_str}] SIGNAL GENERATED: SHORT Entry={self.close[0]:.2f} SL={sl_price:.2f} TP={tp_price:.2f} Reason={reason}")
+        print(f"[{dt_str}] SIGNAL GENERATED: SHORT Entry={self.close[0]:.2f} SL={sl_price:.2f} TP={tp_price:.2f} Size={size:.4f} Reason={reason}")
         
         self.pending_metadata = {
             'reason': reason,
             'stop_loss': sl_price, 
             'take_profit': tp_price
         }
+        self.initial_sl = sl_price
         
         orders = self.sell_bracket(
             price=self.close[0], 
             stopprice=sl_price, 
             limitprice=tp_price,
-            exectype=bt.Order.Market
+            exectype=bt.Order.Market,
+            size=size
         )
         
         # Handle potential nested list return from bracket order
@@ -295,23 +404,39 @@ class PriceActionStrategy(bt.Strategy):
 
     def _check_filters_long(self):
         if self.position: return False # Already in position
+        if self.last_entry_bar == len(self.data): return False # Already attempted entry on this bar
         
         if self.params.use_trend_filter:
             if self.close[0] < self.ema[0]: return False
             
         if self.params.use_rsi_filter:
             if self.rsi[0] > self.params.rsi_overbought: return False
+
+        if self.params.use_rsi_momentum:
+            # RSI should be above 50 for bullish momentum
+            if self.rsi[0] < 50: return False
+
+        if self.params.use_adx_filter:
+            if self.adx[0] < self.params.adx_threshold: return False
             
         return True
 
     def _check_filters_short(self):
         if self.position: return False
+        if self.last_entry_bar == len(self.data): return False # Already attempted entry on this bar
 
         if self.params.use_trend_filter:
-            if self.close[0] > self.ema[0]: return False
+             if self.close[0] > self.ema[0]: return False
 
         if self.params.use_rsi_filter:
             if self.rsi[0] < self.params.rsi_oversold: return False
+
+        if self.params.use_rsi_momentum:
+            # RSI should be below 50 for bearish momentum
+            if self.rsi[0] > 50: return False
+
+        if self.params.use_adx_filter:
+            if self.adx[0] < self.params.adx_threshold: return False
             
         return True
 

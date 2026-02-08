@@ -199,17 +199,17 @@ interface BacktestResults {
 
 const DEFAULT_CONFIG: BacktestConfig = {
   initial_capital: 10000,
-  risk_per_trade: 1.0,
-  max_drawdown: 10.0,
+  risk_per_trade: 1.5,
+  max_drawdown: 20.0,
   max_positions: 1,
-  leverage: 1.0,
+  leverage: 10.0,
   symbol: "BTC/USDT",
-  timeframes: ["4h"],
-  start_date: "2023-01-01",
-  end_date: "2023-12-31",
+  timeframes: ["4h", "15m"],
+  start_date: "2025-01-01",
+  end_date: "2025-12-31",
   strategy: "",
   strategy_config: {},
-  trailing_stop_distance: 0.02,
+  trailing_stop_distance: 0.05,
   breakeven_trigger_r: 1.0,
   dynamic_position_sizing: true
 };
@@ -324,16 +324,15 @@ export default function App() {
   const flushTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const flushLogs = useCallback(() => {
-    if (logBuffer.current.length === 0) return;
+    const messagesToFlush = [...logBuffer.current];
+    if (messagesToFlush.length === 0) return;
+
+    logBuffer.current = []; // Clear immediately to avoid race conditions
 
     setConsoleOutput(prev => {
-      const newMessages = [...logBuffer.current];
-      logBuffer.current = [];
-
-      // Limit log history to last 100 lines to prevent DOM lag
-      // 500 lines of complex text was causing React reconciliation issues
-      const combined = [...prev, ...newMessages];
-      return combined.slice(-100);
+      // Limit log history to last 5000 lines to capture full backtest reports
+      const combined = [...prev, ...messagesToFlush];
+      return combined.slice(-5000);
     });
 
     lastFlushTime.current = Date.now();
@@ -579,32 +578,28 @@ export default function App() {
   };
 
   const handleStrategyChange = useCallback((strategyName: string) => {
-    console.log("📍 [1] handleStrategyChange called with:", strategyName);
     setSelectedStrategy(strategyName);
     setConfig(prev => ({ ...prev, strategy: strategyName }));
 
-    console.log("📍 [2] Config updated, now processing strategy config...");
-
     if (strategyName && strategyName.trim() !== "") {
-      console.log("📍 [3] Finding strategy in list...");
       const strategy = strategies.find(s => s.name === strategyName);
-      console.log("📍 [4] Strategy found:", strategy?.name);
 
       if (strategy) {
-        console.log("📍 [5] Extracting defaults from schema...");
         const defaults: Record<string, any> = {};
         Object.entries(strategy.config_schema || {}).forEach(([key, schema]: [string, any]) => {
           defaults[key] = schema.default;
         });
-        console.log("📍 [6] Defaults extracted:", defaults);
         setStrategyConfig(defaults);
-        console.log("📍 [7] Strategy config updated");
+        setIsConfigDisabled(false);
+      } else {
+        // Fallback if strategy definition not found yet (should not happen if loaded)
+        setStrategyConfig({});
+        setIsConfigDisabled(false);
       }
     } else {
-      console.log("📍 [3] No strategy selected, clearing config");
       setStrategyConfig({});
+      setIsConfigDisabled(false);
     }
-    console.log("📍 [8] handleStrategyChange completed");
   }, [strategies]);
 
   const handleConfigChange = useCallback((key: string, value: any) => {

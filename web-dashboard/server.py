@@ -72,22 +72,24 @@ if os.path.exists("dist"):
 # Pydantic models
 class BacktestConfig(BaseModel):
     initial_capital: float = 10000
-    risk_per_trade: float = 2.0
-    max_drawdown: float = 15.0
+    risk_per_trade: float = 1.5
+    max_drawdown: float = 20.0
     max_positions: int = 3
     leverage: float = 10.0
     symbol: str = "BTC/USDT"
     timeframes: List[str] = ["4h", "15m"]
-    start_date: str = "2023-01-01"
-    end_date: str = "2023-12-31"
+    start_date: str = "2025-01-01"
+    end_date: str = "2025-12-31"
     confluence_required: str = "false"
     strategy: str = "smc_strategy"
     strategy_config: Dict[str, Any] = {}
-    min_risk_reward: float = 2.0
-    trailing_stop_distance: float = 0.02
+    min_risk_reward: float = 2.5
+    trailing_stop_distance: float = 0.05
     breakeven_trigger_r: float = 1.0
     max_total_risk_percent: float = 15.0
     dynamic_position_sizing: bool = True
+    taker_fee: float = 0.04  # Default 0.04%
+    slippage_bp: float = 0.0 # Default 0 basis points
 
 
 class BacktestRequest(BaseModel):
@@ -148,13 +150,17 @@ async def broadcast_from_queue():
                             messages_sent += 1
                         except Exception as e:
                             # Silently remove dead connections
+                            # BUT LOG IT NOW for debugging
+                            print(f"DEBUG: WebSocket send error: {e}")
                             with connection_lock:
                                 if connection in active_connections:
                                     active_connections.remove(connection)
+                                    print(f"DEBUG: Removed dead connection. Remaining: {len(active_connections)}")
                 except queue.Empty:
                     break
             
         except Exception as e:
+            print(f"DEBUG: Broadcaster loop error: {e}")
             pass  # Silently ignore errors
         
         # Wait before checking again
@@ -250,7 +256,7 @@ def get_strategy_config_schema(strategy_name: str):
             "use_trend_filter": {"type": "boolean", "default": True},
             "trend_ema_period": {"type": "number", "default": 200},
             
-            "use_rsi_filter": {"type": "boolean", "default": False},
+            "use_rsi_filter": {"type": "boolean", "default": True},
             "rsi_period": {"type": "number", "default": 14},
             "rsi_overbought": {"type": "number", "default": 70},
             "rsi_oversold": {"type": "number", "default": 30},
@@ -260,15 +266,15 @@ def get_strategy_config_schema(strategy_name: str):
             
             "use_adx_filter": {"type": "boolean", "default": False},
             "adx_period": {"type": "number", "default": 14},
-            "adx_threshold": {"type": "number", "default": 21},
+            "adx_threshold": {"type": "number", "default": 25},
             
             # Pattern Settings
             "min_range_factor": {"type": "number", "default": 0.8},
             "min_wick_to_range": {"type": "number", "default": 0.6},
             "max_body_to_range": {"type": "number", "default": 0.3},
 
-            "risk_reward_ratio": {"type": "number", "default": 2.0},
-            "sl_buffer_atr": {"type": "number", "default": 0.5}
+            "risk_reward_ratio": {"type": "number", "default": 2.5},
+            "sl_buffer_atr": {"type": "number", "default": 1.0}
         }
     }
     
@@ -625,6 +631,10 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
         running_backtests[run_id].progress = 10.0
         await broadcast_message(f"[{run_id}] Initializing engine...\n")
         
+        # Calculate commission from taker_fee (e.g. 0.04 -> 0.0004)
+        taker_fee_pct = config.get('taker_fee', 0.04)
+        commission = taker_fee_pct / 100.0
+        
         # Convert config to engine format
         engine_config = {
             'initial_capital': config.get('initial_capital', 10000),
@@ -643,6 +653,9 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
             'breakeven_trigger_r': config.get('breakeven_trigger_r', 1.0),
             'max_total_risk_percent': config.get('max_total_risk_percent', 15.0),
             'dynamic_position_sizing': config.get('dynamic_position_sizing', True),
+            'commission': commission,
+            'taker_fee': taker_fee_pct,
+            'slippage_bp': config.get('slippage_bp', 0.0),
             'log_level': 'INFO',
             'export_logs': True,
             'log_file': 'results/backtest_logs.json',
@@ -657,8 +670,6 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
         
         # CRITICAL: Sync dashboard timeframes with strategy config
         # The strategy uses 'high_timeframe' and 'low_timeframe' keys, while engine uses 'timeframes' list
-        # CRITICAL: Sync dashboard timeframes with strategy config
-        # The strategy uses 'high_timeframe' and 'low_timeframe' keys, while engine uses 'timeframes' list
         if len(engine_config['timeframes']) >= 1:
              # Just ensure the engine has timeframes set (already done via 'timeframes' key)
              pass
@@ -670,6 +681,8 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
         await broadcast_message(f"[{run_id}] ============================================================\n")
         await broadcast_message(f"[{run_id}] Strategy: {engine_config['strategy']}\n")
         await broadcast_message(f"[{run_id}] Symbol: {engine_config['symbol']}\n")
+        await broadcast_message(f"[{run_id}] Commission (Taker): {engine_config['taker_fee']}% ({engine_config['commission']})\n")
+        await broadcast_message(f"[{run_id}] Slippage: {engine_config['slippage_bp']} bp\n")
         await broadcast_message(f"[{run_id}] Timeframes: {', '.join(engine_config['timeframes'])}\n")
         await broadcast_message(f"[{run_id}] Period: {engine_config['start_date']} to {engine_config['end_date']}\n")
         await broadcast_message(f"[{run_id}] Initial Capital: ${engine_config['initial_capital']:,.2f}\n")
@@ -723,6 +736,10 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
             # These are defined at the top level in the UI but needed by the strategy
             st_config['trailing_stop_distance'] = engine_config.get('trailing_stop_distance', 0.0)
             st_config['breakeven_trigger_r'] = engine_config.get('breakeven_trigger_r', 0.0)
+            st_config['risk_per_trade'] = engine_config.get('risk_per_trade', 1.0)
+            st_config['leverage'] = engine_config.get('leverage', 1.0)
+            st_config['dynamic_position_sizing'] = engine_config.get('dynamic_position_sizing', True)
+            st_config['max_drawdown'] = engine_config.get('max_drawdown', 50.0)
             
             engine.add_strategy(PriceActionStrategy, **st_config)
             
@@ -751,95 +768,102 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
             
             await broadcast_message(f"[{run_id}] ✅ engine.run_backtest() completed\n")
             
-            # Add signals count to metrics (Backtrader doesn't expose this easily without custom logic, 
-            # but we can try to guess or use the stdout count we captured)
-            metrics['signals_generated'] = websocket_stdout.signals_count 
+            # Initialize mapped_metrics to ensure scope visibility
+            mapped_metrics = None
             
-            # Convert Dictionary trades to expected format
-            trades_data = []
-            for trade in engine.closed_trades:
-                entry_time = datetime.fromisoformat(trade['entry_time']) if trade['entry_time'] else None
-                exit_time = datetime.fromisoformat(trade['exit_time']) if trade['exit_time'] else None
+            try:
+                # Add signals count to metrics (Backtrader doesn't expose this easily without custom logic, 
+                # but we can try to guess or use the stdout count we captured)
+                metrics['signals_generated'] = websocket_stdout.signals_count 
                 
-                # Format duration string (remove '0 days ' artifact)
-                duration_str = None
-                if exit_time and entry_time:
-                    diff = exit_time - entry_time
-                    duration_str = str(diff).replace("0 days ", "")
+                # Convert Dictionary trades to expected format
+                trades_data = []
+                for trade in engine.closed_trades:
+                    entry_time = datetime.fromisoformat(trade['entry_time']) if trade['entry_time'] else None
+                    exit_time = datetime.fromisoformat(trade['exit_time']) if trade['exit_time'] else None
+                    
+                    # Format duration string (remove '0 days ' artifact)
+                    duration_str = None
+                    if exit_time and entry_time:
+                        diff = exit_time - entry_time
+                        duration_str = str(diff).replace("0 days ", "")
 
-                trade_dict = {
-                    'id': trade['id'],
-                    'direction': trade['direction'],
-                    'entry_price': trade['entry_price'],
-                    'exit_price': trade['exit_price'],
-                    'size': trade['size'],
-                    'pnl': trade['realized_pnl'],
-                    'pnl_percent': (trade['realized_pnl'] / (trade['entry_price'] * trade['size'])) * 100 if trade['entry_price'] and trade['size'] else 0,
-                    'entry_time': trade['entry_time'],
-                    'exit_time': trade['exit_time'],
-                    'duration': duration_str,
-                    'status': 'CLOSED',
-                    'stop_loss': trade['stop_loss'],
-                    'take_profit': trade['take_profit'],
-                    'realized_pnl': trade['realized_pnl'],
-                    'exit_reason': trade.get('exit_reason', 'Unknown'),
-                    'commission': trade.get('commission', 0),
-                    'reason': trade['reason'],
-                    'metadata': {}
-                }
-                trades_data.append(trade_dict)
-            
-            # Convert equity curve to serializable format with downsampling
-            equity_data = []
-            
-            # Downsample to max 100 points
-            total_points = len(engine.equity_curve)
-            step = max(1, int(total_points / 100))
-            
-            for i, point in enumerate(engine.equity_curve):
-                if i % step == 0 or i == total_points - 1:
-                    equity_dict = {
-                        'date': point['timestamp'].isoformat() if hasattr(point['timestamp'], 'isoformat') else str(point['timestamp']),
-                        'equity': point['equity']
+                    trade_dict = {
+                        'id': trade['id'],
+                        'direction': trade['direction'],
+                        'entry_price': trade['entry_price'],
+                        'exit_price': trade['exit_price'],
+                        'size': trade['size'],
+                        'pnl': trade['realized_pnl'],
+                        'pnl_percent': (trade['realized_pnl'] / (trade['entry_price'] * trade['size'])) * 100 if trade['entry_price'] and trade['size'] else 0,
+                        'entry_time': trade['entry_time'],
+                        'exit_time': trade['exit_time'],
+                        'duration': duration_str,
+                        'status': 'CLOSED',
+                        'stop_loss': trade['stop_loss'],
+                        'take_profit': trade['take_profit'],
+                        'realized_pnl': trade['realized_pnl'],
+                        'exit_reason': trade.get('exit_reason', 'Unknown'),
+                        'commission': trade.get('commission', 0),
+                        'reason': trade.get('reason', 'Unknown'), # Use .get() for safety
+                        'metadata': {}
                     }
-                    equity_data.append(equity_dict)
-            
-            # Map metrics from PerformanceReporter to frontend format
-            # PerformanceReporter uses: win_count, loss_count, total_pnl
-            # Frontend expects: winning_trades, losing_trades, total_pnl
-            mapped_metrics = {
-                'total_pnl': metrics.get('total_pnl', 0),
-                'winning_trades': metrics.get('win_count', 0),
-                'losing_trades': metrics.get('loss_count', 0),
-                'total_trades': metrics.get('total_trades', 0),
-                'win_rate': metrics.get('win_rate', 0) / 100 if metrics.get('win_rate', 0) > 1 else metrics.get('win_rate', 0),
-                'profit_factor': metrics.get('profit_factor', 0),
-                'max_drawdown': metrics.get('max_drawdown', 0),
-                'sharpe_ratio': metrics.get('sharpe_ratio', 0),
-                'avg_win': metrics.get('avg_win', 0),
-                'avg_loss': metrics.get('avg_loss', 0),
-                'initial_capital': engine_config.get('initial_capital', 10000),
-                'final_capital': metrics.get('final_capital', 0),
-                'signals_generated': websocket_stdout.signals_count, # Use the counter from the custom stdout
-                'equity_curve': equity_data,
-                'trades': trades_data,
-                'strategy': engine_config.get('strategy', 'Unknown'),
-                'configuration': engine_config
-            }
-            
-            # Update metrics with mapped values
-            metrics.update(mapped_metrics)
-            
-            # Add logs to metrics for complete data preservation
-            metrics['logs'] = engine.logger.logs
-            
-            # Store results in running_backtests IMMEDIATELY so frontend can access them
-            running_backtests[run_id].results = metrics
-            running_backtests[run_id].progress = 100.0
-            
-            # Update status AFTER results are set
-            # Status will be updated to completed after broadcasting results
-            pass
+                    trades_data.append(trade_dict)
+                
+                # Convert equity curve to serializable format with downsampling
+                equity_data = []
+                
+                # Downsample to max 100 points
+                total_points = len(engine.equity_curve)
+                step = max(1, int(total_points / 100))
+                
+                for i, point in enumerate(engine.equity_curve):
+                    if i % step == 0 or i == total_points - 1:
+                        equity_dict = {
+                            'date': point['timestamp'].isoformat() if hasattr(point['timestamp'], 'isoformat') else str(point['timestamp']),
+                            'equity': point['equity']
+                        }
+                        equity_data.append(equity_dict)
+                
+                # Map metrics from PerformanceReporter to frontend format
+                # PerformanceReporter uses: win_count, loss_count, total_pnl
+                # Frontend expects: winning_trades, losing_trades, total_pnl
+                mapped_metrics = {
+                    'total_pnl': metrics.get('total_pnl', 0),
+                    'winning_trades': metrics.get('win_count', 0),
+                    'losing_trades': metrics.get('loss_count', 0),
+                    'total_trades': metrics.get('total_trades', 0),
+                    'win_rate': metrics.get('win_rate', 0) / 100 if metrics.get('win_rate', 0) > 1 else metrics.get('win_rate', 0),
+                    'profit_factor': metrics.get('profit_factor', 0),
+                    'max_drawdown': metrics.get('max_drawdown', 0),
+                    'sharpe_ratio': metrics.get('sharpe_ratio', 0),
+                    'avg_win': metrics.get('avg_win', 0),
+                    'avg_loss': metrics.get('avg_loss', 0),
+                    'initial_capital': engine_config.get('initial_capital', 10000),
+                    'final_capital': metrics.get('final_capital', 0),
+                    'signals_generated': websocket_stdout.signals_count, # Use the counter from the custom stdout
+                    'equity_curve': equity_data,
+                    'trades': trades_data,
+                    'strategy': engine_config.get('strategy', 'Unknown'),
+                    'configuration': engine_config
+                }
+                
+                # Update metrics with mapped values
+                metrics.update(mapped_metrics)
+                
+                # Add logs to metrics for complete data preservation
+                metrics['logs'] = engine.logger.logs
+                
+                # Store results in running_backtests IMMEDIATELY so frontend can access them
+                running_backtests[run_id].results = metrics
+                running_backtests[run_id].progress = 100.0
+                
+            except Exception as e:
+                import traceback
+                error_trace = traceback.format_exc()
+                logger.error(f"Error processing backtest data: {e}\n{error_trace}")
+                await broadcast_message(f"[{run_id}] ⚠️ Error processing backtest data: {str(e)}\n")
+                # Don't raise, try to continue if possible, but mapped_metrics might be None
             
             # Update status
             running_backtests[run_id].message = "Generating report..."
@@ -852,51 +876,68 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
                 with open(result_file, 'w') as f:
                     json.dump(metrics, f, indent=2, default=str)
                 await broadcast_message(f"[{run_id}] ✅ Results saved to {result_file}\n")
-                await asyncio.sleep(0.1) # Yield to event loop
+                print(f"DEBUG: Results saved. Proceeding to report generation for {run_id}")
+                await asyncio.sleep(0.5) # Increased sleep to ensure flush
             except Exception as e:
                 import traceback
                 logger.error(f"Error saving results: {e}\n{traceback.format_exc()}")
                 await broadcast_message(f"[{run_id}] ⚠️ Error saving results: {str(e)}\n")
             
+            # Restore stdout/stderr BEFORE generating the report to ensure no interference
+            sys.stdout = original_stdout
+            sys.stderr = original_stderr
+            
             # Broadcast results summary to logs
-            try:
-                await broadcast_message(f"[{run_id}] Generating detailed report...\n")  
-                
-                # Safe calculations for summary
-                init_cap = mapped_metrics.get('initial_capital', 1)
-                if init_cap == 0: init_cap = 1 # Avoid division by zero
-                
-                total_pnl = mapped_metrics.get('total_pnl', 0)
-                
-                return_pct = (total_pnl / init_cap) * 100
-                
-                summary = (
-                    f"============================================================\n"
-                    f"BACKTEST RESULTS SUMMARY\n"
-                    f"============================================================\n"
-                    f"Final Balance:    ${mapped_metrics.get('final_capital', 0):.2f}\n"
-                    f"Total PnL:        ${total_pnl:.2f}\n"
-                    f"Return:           {return_pct:.2f}%\n"
-                    f"Max Drawdown:     {mapped_metrics.get('max_drawdown', 0):.2f}%\n"
-                    f"Win Rate:         {mapped_metrics.get('win_rate', 0) * 100:.2f}%\n"
-                    f"Profit Factor:    {mapped_metrics.get('profit_factor', 0):.2f}\n"
-                    f"Total Trades:     {mapped_metrics.get('total_trades', 0)}\n"
-                    f"  - Winning:      {metrics.get('win_count', 0)}\n"
-                    f"  - Losing:       {metrics.get('loss_count', 0)}\n"
-                    f"Sharpe Ratio:     {mapped_metrics['sharpe_ratio']:.2f}\n"
-                    f"============================================================"
-                )
-                
-                # Use broadcast_message directly for reliability
-                # Frontend handles newlines in a single message correctly
-                await broadcast_message(f"[{run_id}] Backtest Summary:\n{summary}\n")
-                
-                # Also log to file for debugging
-                logger.info(f"[{run_id}] Backtest Summary:\n{summary}")
+            # Broadcast results summary to logs
 
-                # Allow extended time for logs to flush to WebSocket BEFORE marking as completed
-                await broadcast_message(f"[{run_id}] Report generated. Finalizing...\n")
-                await asyncio.sleep(2.0)
+            try:
+                if mapped_metrics is None:
+                    await broadcast_message(f"[{run_id}] ⚠️ Skipping report generation (metrics missing)\n")
+                else:
+                    await broadcast_message(f"[{run_id}] Generating detailed report...\n")
+                    
+                    # Safe calculations for summary
+                    init_cap = mapped_metrics.get('initial_capital', 1)
+                    if init_cap == 0: init_cap = 1 # Avoid division by zero
+                    
+                    total_pnl = mapped_metrics.get('total_pnl', 0)
+                    final_cap = mapped_metrics.get('final_capital', 0)
+                    
+                    return_pct = (total_pnl / init_cap) * 100
+                    
+                    # Construct summary lines
+                    summary_lines = [
+                        "============================================================",
+                        "BACKTEST RESULTS SUMMARY",
+                        "============================================================",
+                        f"Final Balance:    ${final_cap:,.2f}",
+                        f"Total PnL:        ${total_pnl:,.2f}",
+                        f"Return:           {return_pct:.2f}%",
+                        f"Max Drawdown:     {mapped_metrics.get('max_drawdown', 0):.2f}%",
+                        f"Win Rate:         {mapped_metrics.get('win_rate', 0) * 100:.2f}%",
+                        f"Profit Factor:    {mapped_metrics.get('profit_factor', 0):.2f}",
+                        f"Total Trades:     {mapped_metrics.get('total_trades', 0)}",
+                        f"  - Winning:      {metrics.get('win_count', 0)}",
+                        f"  - Losing:       {metrics.get('loss_count', 0)}",
+                        f"Sharpe Ratio:     {mapped_metrics.get('sharpe_ratio', 0):.2f}",
+                        "============================================================"
+                    ]
+                    
+                    # Broadcast line by line to ensure reliability with explicit delay
+                    await broadcast_message(f"[{run_id}] Backtest Summary:\n")
+                    await asyncio.sleep(0.1)
+                    
+                    for line in summary_lines:
+                         await broadcast_message(f"[{run_id}] {line}\n")
+                         # Explicit delay to prevent flooding/race conditions
+                         await asyncio.sleep(0.2)
+                    
+                    # Also log to file for debugging
+                    logger.info(f"[{run_id}] Backtest Summary Generated")
+
+                    # Allow extended time for logs to flush to WebSocket BEFORE marking as completed
+                    await broadcast_message(f"[{run_id}] Report generated. Finalizing...\n")
+                    await asyncio.sleep(1.0)
                 
                 # Update status to completed FINAL step
                 if not engine.should_cancel:
@@ -906,13 +947,14 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
             except Exception as e:
                 import traceback
                 error_trace = traceback.format_exc()
-                print(f"CRITICAL ERROR generating report: {e}\n{error_trace}") # Print to stdout
                 logger.error(f"Error generating report summary: {e}\n{error_trace}")
                 await broadcast_message(f"[{run_id}] Error generating report summary: {str(e)}\n")
+                
+                running_backtests[run_id].status = "failed"
+                running_backtests[run_id].message = f"Report generation failed: {str(e)}"
         
         finally:
             # Restore original stdout
-            sys.stdout = original_stdout
             sys.stderr = original_stderr # Also restore stderr
         
     except Exception as e:
