@@ -51,14 +51,11 @@ const GENERAL_SETTINGS = [
     { label: "Risk Per Trade", key: "risk_per_trade", suffix: "%" },
     { label: "Max Drawdown", key: "max_drawdown", suffix: "%" },
     { label: "Leverage", key: "leverage", suffix: "x" },
-    { label: "Max Positions", key: "max_positions" },
     { label: "Symbol", key: "symbol" },
     { label: "Start Date", key: "start_date" },
     { label: "End Date", key: "end_date" },
-    { label: "Min Risk/Reward", key: "min_risk_reward" },
     { label: "Trailing Stop Dist", key: "trailing_stop_distance" },
     { label: "Breakeven Trigger", key: "breakeven_trigger_r", suffix: "R" },
-    { label: "Max Total Risk", key: "max_total_risk_percent", suffix: "%" },
     { label: "Dynamic Sizing", key: "dynamic_position_sizing" },
 ];
 

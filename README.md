@@ -2,7 +2,7 @@
 
 A production-ready Python backtesting framework for Smart Money Concepts (SMC) spot crypto trading strategies with Binance integration, comprehensive risk management, web dashboard, and automated testing.
 
-**Status**: ✅ Production Ready | **Tests**: 86 passed | **Coverage**: 95%+ critical components
+**Status**: ✅ Production Ready | **Tests**: 100% Passing | **Engine**: Backtrader (v1.9)
 
 ---
 
@@ -455,6 +455,8 @@ After each backtest, results are saved to `results/{run_id}.json`:
 | `start_date` | Backtest start date | - |
 | `end_date` | Backtest end date | - |
 | `strategy.name` | Strategy to use | smc_strategy |
+| `trailing_stop_distance` | Trailing stop distance (e.g., 0.02 for 2%) | 0.02 |
+| `breakeven_trigger_r` | R-multiple to move SL to breakeven | 1.0 |
 
 ---
 
@@ -462,18 +464,17 @@ After each backtest, results are saved to `results/{run_id}.json`:
 
 ### Available Strategies
 
-#### SMCStrategy
-**File**: `strategies/smc_strategy.py`
+#### PriceActionStrategy (Backtrader)
+**File**: `strategies/bt_price_action.py`
 
 Features:
-- Multi-timeframe analysis (4H bias, 15m entries)
-- Order block detection with strength rating
-- Fair value gap analysis
-- Adaptive stop loss calculation
-- Dynamic position sizing
-- Trailing stop management
+- Built on **Backtrader** framework
+- Trend Following with EMA filter
+- Momentum analysis using RSI
+- Atomic order execution (Bracket Orders) for guaranteed SL/TP
+- Candlestick pattern detection (Pinbar, Engulfing)
 
-**Best For**: Experienced SMC traders
+**Best For**: Price Action traders
 
 #### SimpleTestStrategy
 **File**: `strategies/simple_test_strategy.py`

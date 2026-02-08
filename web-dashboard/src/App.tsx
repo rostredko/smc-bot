@@ -61,6 +61,7 @@ import {
   Cell
 } from "recharts";
 import BacktestHistoryList from "./components/BacktestHistoryList";
+import StrategyField from "./components/StrategyField";
 
 const API_BASE = "http://localhost:8000";
 
@@ -94,6 +95,7 @@ const TOOLTIP_HINTS: Record<string, string> = {
   rsi_overbought: "RSI level above which Longs are avoided (Too high)",
   rsi_oversold: "RSI level below which Shorts are avoided (Too low)",
   min_wick_to_range: "Minimum wick size relative to candle body (for Pin Bars)",
+
   max_body_to_range: "Maximum body size relative to total range (for Pin Bars)",
   use_adx_filter: "Enable/Disable ADX (Trend Strength) Filter",
   adx_period: "Lookback period for ADX indicator",
@@ -199,7 +201,7 @@ const DEFAULT_CONFIG: BacktestConfig = {
   initial_capital: 10000,
   risk_per_trade: 1.0,
   max_drawdown: 10.0,
-  max_positions: 3,
+  max_positions: 1,
   leverage: 1.0,
   symbol: "BTC/USDT",
   timeframes: ["4h"],
@@ -273,87 +275,40 @@ export default function App() {
   const websocketRef = useRef<WebSocket | null>(null);
 
   // Sections mapping for strategy parameters (order matters)
+  // Sections mapping for strategy parameters (order matters)
+  // Sections mapping for strategy parameters (order matters)
   const strategySections: Array<{ title: string; keys: string[] }> = [
-    { title: "Core Settings", keys: ["mode", "allow_short"] },
-    { title: "Timeframes", keys: ["high_timeframe", "low_timeframe"] },
-    { title: "Volatility Filters", keys: ["volatility_filter_enabled", "atr_period", "atr_percentile_min", "atr_percentile_max", "sl_atr_multiplier", "min_signal_confidence"] },
-    { title: "Technical Entry Filters", keys: ["use_rsi_filter", "rsi_period", "rsi_overbought", "rsi_oversold", "use_rsi_momentum", "rsi_momentum_threshold", "use_adx_filter", "adx_period", "adx_threshold", "use_trend_filter", "trend_ema_period"] },
-    { title: "Pattern Settings", keys: ["min_range_factor", "min_wick_to_range", "max_body_to_range", "risk_reward_ratio", "sl_buffer_atr"] },
-    { title: "Partial Take Profits", keys: ["use_partial_tp", "tp1_r", "tp1_pct", "tp2_r", "tp2_pct", "runner_pct"] },
-    { title: "Exit Management", keys: ["trailing_stop_enabled", "trail_start", "trail_step", "breakeven_move_enabled"] },
-    { title: "Market Structure", keys: ["require_structure_confirmation", "support_level_lookback_bars"] },
-    { title: "Cooldown & Psychology", keys: ["cooldown_after_loss_bars", "reduce_risk_after_loss", "risk_reduction_after_loss"] },
-    { title: "Exchange Settings", keys: ["min_notional", "taker_fee", "slippage_bp"] },
+    {
+      title: "Filters",
+      keys: [
+        "volatility_filter_enabled", "atr_period", "atr_percentile_min", "atr_percentile_max", "sl_atr_multiplier", "min_signal_confidence",
+        "use_rsi_filter", "rsi_period", "rsi_overbought", "rsi_oversold", "use_rsi_momentum", "rsi_momentum_threshold",
+        "use_adx_filter", "adx_period", "adx_threshold",
+        "use_trend_filter", "trend_ema_period",
+        "require_structure_confirmation", "support_level_lookback_bars"
+      ]
+    },
+    {
+      title: "Pattern Settings",
+      keys: ["min_range_factor", "min_wick_to_range", "max_body_to_range"]
+    },
   ];
 
-  // Helper to render a single strategy field by key
-  const renderStrategyField = (key: string) => {
-    const strategy = strategies.find(s => s.name === selectedStrategy);
-    const schema = strategy?.config_schema?.[key] || {};
-    const value = (strategyConfig as any)[key];
-    const label = key.replace(/_/g, " ").replace(/\b\w/g, (l: string) => l.toUpperCase());
-    const isBoolean = schema?.type === "boolean" || typeof value === "boolean" || value === "true" || value === "false";
+  // Keys extracted from "Strategy Settings" to be merged into "General Settings"
+  const generalStrategyKeys = [
+    "mode", "allow_short",
+    "risk_reward_ratio", "sl_buffer_atr",
+    "use_partial_tp", "tp1_r", "tp1_pct", "tp2_r", "tp2_pct", "runner_pct",
+    "cooldown_after_loss_bars", "reduce_risk_after_loss", "risk_reduction_after_loss",
+    "min_notional", "taker_fee", "slippage_bp"
+  ];
 
-    // Dependency Logic
-    let isDisabled = isConfigDisabled;
-    if (!isDisabled) {
-      if (["rsi_period", "rsi_overbought", "rsi_oversold"].includes(key)) {
-        const useRsi = (strategyConfig as any)["use_rsi_filter"];
-        // Check if explicitly false (handle undefined as true/default if needed, but safe to assume it follows config)
-        if (useRsi === false) isDisabled = true;
-      }
-      if (["rsi_momentum_threshold"].includes(key)) {
-        const useMom = (strategyConfig as any)["use_rsi_momentum"];
-        if (useMom === false) isDisabled = true;
-      }
-      if (key === "trend_ema_period") {
-        const useTrend = (strategyConfig as any)["use_trend_filter"];
-        if (useTrend === false) isDisabled = true;
-      }
-      if (["adx_period", "adx_threshold"].includes(key)) {
-        const useAdx = (strategyConfig as any)["use_adx_filter"];
-        if (useAdx === false) isDisabled = true;
-      }
-    }
 
-    return (
-      <Grid item xs={12} md={isBoolean ? 12 : 6} key={key}>
-        <MuiTooltip title={TOOLTIP_HINTS[key] || "No description available"} arrow placement="top">
-          <Box>
-            {isBoolean ? (
-              <FormControlLabel
-                control={
-                  <Switch
-                    checked={value !== undefined ? Boolean(value === true || value === "true") : Boolean(schema?.default)}
-                    onChange={e => handleStrategyConfigChange(key, e.target.checked)}
-                    disabled={isDisabled}
-                  />
-                }
-                label={label}
-              />
-            ) : (
-              <TextField
-                label={label}
-                type={schema?.type === "number" ? "number" : "text"}
-                value={value !== undefined ? value : (schema?.default || "")}
-                onChange={e => {
-                  const newValue = schema?.type === "number" ? parseFloat(e.target.value) : e.target.value;
-                  handleStrategyConfigChange(key, newValue);
-                }}
-                disabled={isDisabled}
-                fullWidth
-              />
-            )}
-          </Box>
-        </MuiTooltip>
-      </Grid>
-    );
-  };
 
   // Auto-scroll console to bottom
   const scrollToBottom = () => {
     setTimeout(() => {
-      consoleEndRef.current?.scrollIntoView({ behavior: "smooth" });
+      consoleEndRef.current?.scrollIntoView({ behavior: "auto" }); // Changed smooth to auto for performance
     }, 0);
   };
 
@@ -372,16 +327,13 @@ export default function App() {
     if (logBuffer.current.length === 0) return;
 
     setConsoleOutput(prev => {
-      // Take all messages from buffer
       const newMessages = [...logBuffer.current];
-      logBuffer.current = []; // Clear buffer immediately
+      logBuffer.current = [];
 
-      const newOutput = [...prev, ...newMessages];
-      // Keep strictly 500 lines
-      if (newOutput.length > 500) {
-        return newOutput.slice(-500);
-      }
-      return newOutput;
+      // Limit log history to last 100 lines to prevent DOM lag
+      // 500 lines of complex text was causing React reconciliation issues
+      const combined = [...prev, ...newMessages];
+      return combined.slice(-100);
     });
 
     lastFlushTime.current = Date.now();
@@ -888,7 +840,11 @@ export default function App() {
                   <Typography variant="caption" color="gray">TAKE PROFIT</Typography>
                   <Typography variant="body2">${selectedTrade.take_profit?.toFixed(2)}</Typography>
                 </Grid>
-                <Grid item xs={12} md={6}>
+                <Grid item xs={6} md={3}>
+                  <Typography variant="caption" color="gray">COMMISSION</Typography>
+                  <Typography variant="body2">${selectedTrade.commission?.toFixed(2) || '0.00'}</Typography>
+                </Grid>
+                <Grid item xs={12} md={3}>
                   <Typography variant="caption" color="gray">EXIT REASON</Typography>
                   <Typography variant="body2">{selectedTrade.exit_reason}</Typography>
                 </Grid>
@@ -1076,18 +1032,7 @@ export default function App() {
                         />
                       </MuiTooltip>
                     </Grid>
-                    <Grid item xs={12} md={3}>
-                      <MuiTooltip title={TOOLTIP_HINTS["max_positions"]} arrow placement="top">
-                        <TextField
-                          label="Max Positions"
-                          type="number"
-                          value={isNaN(config.max_positions) ? "" : config.max_positions}
-                          onChange={e => handleConfigChange("max_positions", parseFloat(e.target.value))}
-                          disabled={isConfigDisabled}
-                          fullWidth
-                        />
-                      </MuiTooltip>
-                    </Grid>
+
                     <Grid item xs={12} md={4}>
                       <MuiTooltip title={TOOLTIP_HINTS["symbol"]} arrow placement="top">
                         <TextField
@@ -1196,30 +1141,91 @@ export default function App() {
                         />
                       </MuiTooltip>
                     </Grid>
+
+                    {/* Render Strategy Specific General Settings (Merged) */}
+                    {generalStrategyKeys.map((key) => {
+                      const strategy = strategies.find(s => s.name === selectedStrategy);
+                      const schema = strategy?.config_schema?.[key];
+                      if (!schema) return null; // Or logic to show even if not in schema? Ideally schema drives it.
+
+                      // Keep isDisabled logic duplicated for now or simplify.
+                      // Most of these keys don't have complex dependencies in the current logic block 
+                      // (dependencies were mostly for Filters which are in dynamic sections).
+                      return (
+                        <StrategyField
+                          key={key}
+                          fieldKey={key}
+                          schema={schema}
+                          value={(strategyConfig as any)[key]}
+                          label={key.replace(/_/g, " ").replace(/\b\w/g, (l: string) => l.toUpperCase())}
+                          tooltip={TOOLTIP_HINTS[key] || "No description available"}
+                          isDisabled={isConfigDisabled}
+                          onChange={handleStrategyConfigChange}
+                        />
+                      );
+                    })}
+
                   </Grid>
                 </AccordionDetails>
               </Accordion>
 
-              {Object.keys(strategyConfig).length > 0 && (
-                <>
-                  {strategySections.map(section => {
-                    const keysInSection = section.keys.filter(k => strategyConfig.hasOwnProperty(k));
-                    if (keysInSection.length === 0) return null;
-                    return (
-                      <Accordion key={section.title}>
-                        <AccordionSummary expandIcon={<ExpandMore />}>
-                          <Typography variant="h6">{section.title}</Typography>
-                        </AccordionSummary>
-                        <AccordionDetails>
-                          <Grid container spacing={2}>
-                            {keysInSection.map(key => renderStrategyField(key))}
-                          </Grid>
-                        </AccordionDetails>
-                      </Accordion>
-                    );
-                  })}
-                </>
-              )}
+              {/* Dynamic Strategy Config */}
+              {strategySections.map((section) => {
+                const strategy = strategies.find(s => s.name === selectedStrategy);
+                if (!strategy) return null;
+
+                const hasKeys = section.keys.some(k => strategy.config_schema && k in strategy.config_schema);
+                if (!hasKeys) return null;
+
+                return (
+                  <Accordion key={section.title}>
+                    <AccordionSummary expandIcon={<ExpandMore />}>
+                      <Typography variant="h6">{section.title}</Typography>
+                    </AccordionSummary>
+                    <AccordionDetails>
+                      <Grid container spacing={2}>
+                        {section.keys.map((key) => {
+                          const schema = strategy.config_schema?.[key];
+                          if (!schema) return null;
+
+                          let isDisabled = isConfigDisabled;
+                          if (!isDisabled) {
+                            if (["rsi_period", "rsi_overbought", "rsi_oversold"].includes(key)) {
+                              const useRsi = (strategyConfig as any)["use_rsi_filter"];
+                              if (useRsi === false) isDisabled = true;
+                            }
+                            if (["rsi_momentum_threshold"].includes(key)) {
+                              const useMom = (strategyConfig as any)["use_rsi_momentum"];
+                              if (useMom === false) isDisabled = true;
+                            }
+                            if (key === "trend_ema_period") {
+                              const useTrend = (strategyConfig as any)["use_trend_filter"];
+                              if (useTrend === false) isDisabled = true;
+                            }
+                            if (["adx_period", "adx_threshold"].includes(key)) {
+                              const useAdx = (strategyConfig as any)["use_adx_filter"];
+                              if (useAdx === false) isDisabled = true;
+                            }
+                          }
+
+                          return (
+                            <StrategyField
+                              key={key}
+                              fieldKey={key}
+                              schema={schema}
+                              value={(strategyConfig as any)[key]}
+                              label={key.replace(/_/g, " ").replace(/\b\w/g, (l: string) => l.toUpperCase())}
+                              tooltip={TOOLTIP_HINTS[key] || "No description available"}
+                              isDisabled={isDisabled}
+                              onChange={handleStrategyConfigChange}
+                            />
+                          );
+                        })}
+                      </Grid>
+                    </AccordionDetails>
+                  </Accordion>
+                );
+              })}
             </CardContent>
           </Card>
         </Grid>

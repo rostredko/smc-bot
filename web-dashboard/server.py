@@ -21,9 +21,8 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from engine.backtest_engine import BacktestEngine
-from strategies.smc_strategy import SMCStrategy
-from strategies.simple_test_strategy import SimpleTestStrategy
+from engine.bt_backtest_engine import BTBacktestEngine
+from strategies.bt_price_action import PriceActionStrategy
 
 
 # Store original stdout/stderr at module level for use in broadcast functions
@@ -38,6 +37,16 @@ RESULTS_DIR = str(BASE_DIR / "results")
 # Ensure directories exist
 os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(RESULTS_DIR, exist_ok=True)
+
+import logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(original_stdout) # Log to original stdout to avoid capture loops
+    ]
+)
+logger = logging.getLogger("server")
 
 # FastAPI app
 app = FastAPI(
@@ -236,30 +245,35 @@ def get_strategy_config_schema(strategy_name: str):
             "rsi_period": {"type": "number", "default": 14},
             "rsi_threshold": {"type": "number", "default": 30}
         },
-        "price_action_strategy": {
-            "primary_timeframe": {"type": "string", "default": "4h"},
-            "min_range_factor": {"type": "number", "default": 0.8},
+        "bt_price_action": {
+            # Pattern Settingsical Entry Filters
             "use_trend_filter": {"type": "boolean", "default": True},
-            "trend_ema_period": {"type": "number", "default": 50},
+            "trend_ema_period": {"type": "number", "default": 200},
             
-            "use_rsi_filter": {"type": "boolean", "default": True},
+            "use_rsi_filter": {"type": "boolean", "default": False},
             "rsi_period": {"type": "number", "default": 14},
             "rsi_overbought": {"type": "number", "default": 70},
             "rsi_oversold": {"type": "number", "default": 30},
-
+            
             "use_rsi_momentum": {"type": "boolean", "default": False},
-            "rsi_momentum_threshold": {"type": "number", "default": 50},
-
+            "rsi_momentum_threshold": {"type": "number", "default": 60},
+            
             "use_adx_filter": {"type": "boolean", "default": False},
             "adx_period": {"type": "number", "default": 14},
-            "adx_threshold": {"type": "number", "default": 25},
-
-            "risk_reward_ratio": {"type": "number", "default": 2.5},
-            "sl_buffer_atr": {"type": "number", "default": 0.5},
+            "adx_threshold": {"type": "number", "default": 21},
+            
+            # Pattern Settings
+            "min_range_factor": {"type": "number", "default": 0.8},
             "min_wick_to_range": {"type": "number", "default": 0.6},
-            "max_body_to_range": {"type": "number", "default": 0.3}
+            "max_body_to_range": {"type": "number", "default": 0.3},
+
+            "risk_reward_ratio": {"type": "number", "default": 2.0},
+            "sl_buffer_atr": {"type": "number", "default": 0.5}
         }
     }
+    
+    # Backward compatibility for legacy config name
+    default_schemas["price_action_strategy"] = default_schemas["bt_price_action"]
     
     schema = default_schemas.get(strategy_name, {})
     strategy_schema_cache[strategy_name] = schema
@@ -312,7 +326,7 @@ async def get_config():
             "initial_capital": config.get("account", {}).get("initial_capital", 10000),
             "risk_per_trade": config.get("account", {}).get("risk_per_trade", 2.0),
             "max_drawdown": config.get("account", {}).get("max_drawdown", 15.0),
-            "max_positions": config.get("account", {}).get("max_positions", 3),
+            "max_positions": config.get("account", {}).get("max_positions", 1),
             "leverage": config.get("account", {}).get("leverage", 10.0),
             "symbol": config.get("trading", {}).get("symbol", "BTC/USDT"),
             "timeframes": config.get("trading", {}).get("timeframes", ["4h", "15m"]),
@@ -407,6 +421,13 @@ async def start_backtest(request: BacktestRequest, background_tasks: BackgroundT
     if run_id in running_backtests:
         raise HTTPException(status_code=400, detail=f"Backtest {run_id} is already running")
     
+    # Memory Cleanup: Limit running_backtests to last 20 items to prevent leaks
+    if len(running_backtests) > 20:
+        keys_to_remove = list(running_backtests.keys())[:-20]
+        for k in keys_to_remove:
+            if k in running_backtests:
+                del running_backtests[k]
+
     # Initialize status
     running_backtests[run_id] = BacktestStatus(
         run_id=run_id,
@@ -638,16 +659,9 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
         # The strategy uses 'high_timeframe' and 'low_timeframe' keys, while engine uses 'timeframes' list
         # CRITICAL: Sync dashboard timeframes with strategy config
         # The strategy uses 'high_timeframe' and 'low_timeframe' keys, while engine uses 'timeframes' list
-        if len(engine_config['timeframes']) >= 2:
-            engine_config['strategy_config']['high_timeframe'] = engine_config['timeframes'][0]
-            engine_config['strategy_config']['low_timeframe'] = engine_config['timeframes'][1]
-            # Map primary_timeframe for PriceActionStrategy
-            engine_config['strategy_config']['primary_timeframe'] = engine_config['timeframes'][0]
-        elif len(engine_config['timeframes']) == 1:
-            # Fallback if only one provided
-            engine_config['strategy_config']['high_timeframe'] = engine_config['timeframes'][0]
-            engine_config['strategy_config']['low_timeframe'] = engine_config['timeframes'][0]
-            engine_config['strategy_config']['primary_timeframe'] = engine_config['timeframes'][0]
+        if len(engine_config['timeframes']) >= 1:
+             # Just ensure the engine has timeframes set (already done via 'timeframes' key)
+             pass
         
         
         # Log configuration details
@@ -661,12 +675,9 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
         await broadcast_message(f"[{run_id}] Initial Capital: ${engine_config['initial_capital']:,.2f}\n")
         await broadcast_message(f"[{run_id}] Risk Per Trade: {engine_config['risk_per_trade']}%\n")
         await broadcast_message(f"[{run_id}] Max Drawdown: {engine_config['max_drawdown']}%\n")
-        await broadcast_message(f"[{run_id}] Max Positions: {engine_config['max_positions']}\n")
         await broadcast_message(f"[{run_id}] Leverage: {engine_config['leverage']}x\n")
-        await broadcast_message(f"[{run_id}] Min Risk/Reward: {engine_config['min_risk_reward']}\n")
         await broadcast_message(f"[{run_id}] Trailing Stop Distance: {engine_config['trailing_stop_distance']}\n")
         await broadcast_message(f"[{run_id}] Breakeven Trigger (R): {engine_config['breakeven_trigger_r']}\n")
-        await broadcast_message(f"[{run_id}] Max Total Risk: {engine_config['max_total_risk_percent']}%\n")
         await broadcast_message(f"[{run_id}] Dynamic Position Sizing: {engine_config['dynamic_position_sizing']}\n")
         if engine_config['strategy_config']:
             await broadcast_message(f"[{run_id}] Strategy Config: {engine_config['strategy_config']}\n")
@@ -691,17 +702,29 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
             def flush(self):
                 pass
         
-        # Redirect stdout to capture print statements
+        # Redirect stdout and stderr to capture all output
+        original_stdout = sys.stdout
+        original_stderr = sys.stderr
         websocket_stdout = WebSocketStdout(run_id)
         sys.stdout = websocket_stdout
+        sys.stderr = websocket_stdout
         
         try:
             # Create engine
             await broadcast_message(f"[{run_id}] Creating engine instance...\n")
-            engine = BacktestEngine(engine_config)
+            engine = BTBacktestEngine(engine_config)
             
-            # Clear any previous logs to start fresh
-            engine.logger.logs = []
+            # Add Strategy
+            # Use 'price_action' or default to PriceActionStrategy class
+            # We only have one strategy for now in BT migration
+            st_config = engine_config.get('strategy_config', {})
+            
+            # Inject general settings that are actually strategy parameters
+            # These are defined at the top level in the UI but needed by the strategy
+            st_config['trailing_stop_distance'] = engine_config.get('trailing_stop_distance', 0.0)
+            st_config['breakeven_trigger_r'] = engine_config.get('breakeven_trigger_r', 0.0)
+            
+            engine.add_strategy(PriceActionStrategy, **st_config)
             
             # Store engine reference for cancellation support
             running_backtests[run_id].engine = engine
@@ -711,7 +734,6 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
             # Update status
             running_backtests[run_id].message = "Loading data..."
             running_backtests[run_id].progress = 30.0
-            await broadcast_message(f"[{run_id}] Loading data...\n")
             
             # Check if cancellation was requested
             if running_backtests[run_id].should_cancel:
@@ -719,92 +741,68 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
                 running_backtests[run_id].message = "Backtest cancelled"
                 await broadcast_message(f"[{run_id}] Backtest cancelled by user\n")
                 return
-            
-            # Load data
-            await broadcast_message(f"[{run_id}] Starting data load...\n")
-            engine.load_data()
-            await broadcast_message(f"[{run_id}] ✅ Data loaded\n")
-            
-            # Check if cancellation was requested
-            if running_backtests[run_id].should_cancel:
-                running_backtests[run_id].status = "cancelled"
-                running_backtests[run_id].message = "Backtest cancelled"
-                await broadcast_message(f"[{run_id}] Backtest cancelled by user\n")
-                return
-            
-            # Update status
-            running_backtests[run_id].message = "Running backtest..."
-            running_backtests[run_id].progress = 50.0
-            await broadcast_message(f"[{run_id}] Running backtest...\n")
             
             # Run backtest
             await broadcast_message(f"[{run_id}] Starting engine.run_backtest()...\n")
             
-            # Check for cancellation before running
-            if running_backtests[run_id].should_cancel:
-                running_backtests[run_id].status = "cancelled"
-                running_backtests[run_id].message = "Backtest cancelled"
-                await broadcast_message(f"[{run_id}] ❌ Backtest cancelled before execution\n")
-                return
-            
-            # Run backtest in a separate thread to prevent blocking the async loop
+            # Run backtest in a separate thread
             loop = asyncio.get_event_loop()
             metrics = await loop.run_in_executor(None, engine.run_backtest)
             
-            # Check if backtest was cancelled
-            if engine.should_cancel:
-                await broadcast_message(f"[{run_id}] ⏹️ Backtest cancelled by user\n")
-                await broadcast_message(f"[{run_id}] 📊 Intermediate metrics calculated\n")
-                # Use intermediate metrics up to cancellation point
-            else:
-                await broadcast_message(f"[{run_id}] ✅ engine.run_backtest() completed\n")
+            await broadcast_message(f"[{run_id}] ✅ engine.run_backtest() completed\n")
             
-            # Add signals count to metrics
-            metrics['signals_generated'] = websocket_stdout.signals_count # Use the counter from the custom stdout
+            # Add signals count to metrics (Backtrader doesn't expose this easily without custom logic, 
+            # but we can try to guess or use the stdout count we captured)
+            metrics['signals_generated'] = websocket_stdout.signals_count 
             
-            # Convert Position objects to dictionaries for JSON serialization
+            # Convert Dictionary trades to expected format
             trades_data = []
             for trade in engine.closed_trades:
-                # Calculate PnL percentage
-                pnl_percent = 0
-                if trade.entry_price and trade.original_size:
-                    pnl_percent = (trade.realized_pnl / (trade.entry_price * trade.original_size)) * 100
+                entry_time = datetime.fromisoformat(trade['entry_time']) if trade['entry_time'] else None
+                exit_time = datetime.fromisoformat(trade['exit_time']) if trade['exit_time'] else None
                 
                 # Format duration string (remove '0 days ' artifact)
                 duration_str = None
-                if trade.exit_time and trade.entry_time:
-                    diff = trade.exit_time - trade.entry_time
+                if exit_time and entry_time:
+                    diff = exit_time - entry_time
                     duration_str = str(diff).replace("0 days ", "")
 
                 trade_dict = {
-                    'id': trade.id,
-                    'direction': trade.direction,
-                    'entry_price': trade.entry_price,
-                    'exit_price': trade.exit_price,
-                    'size': trade.original_size, # Use original_size as current size is 0 for closed trades
-                    'pnl': trade.realized_pnl,
-                    'pnl_percent': pnl_percent,
-                    'entry_time': trade.entry_time.isoformat() if trade.entry_time else None,
-                    'exit_time': trade.exit_time.isoformat() if trade.exit_time else None,
+                    'id': trade['id'],
+                    'direction': trade['direction'],
+                    'entry_price': trade['entry_price'],
+                    'exit_price': trade['exit_price'],
+                    'size': trade['size'],
+                    'pnl': trade['realized_pnl'],
+                    'pnl_percent': (trade['realized_pnl'] / (trade['entry_price'] * trade['size'])) * 100 if trade['entry_price'] and trade['size'] else 0,
+                    'entry_time': trade['entry_time'],
+                    'exit_time': trade['exit_time'],
                     'duration': duration_str,
-                    'status': 'CLOSED' if trade.is_closed else 'OPEN',
-                    'stop_loss': trade.stop_loss,
-                    'take_profit': trade.take_profit,
-                    'realized_pnl': trade.realized_pnl,
-                    'exit_reason': trade.exit_reason,
-                    'reason': trade.reason,
-                    'metadata': trade.metadata if hasattr(trade, 'metadata') else {}
+                    'status': 'CLOSED',
+                    'stop_loss': trade['stop_loss'],
+                    'take_profit': trade['take_profit'],
+                    'realized_pnl': trade['realized_pnl'],
+                    'exit_reason': trade.get('exit_reason', 'Unknown'),
+                    'commission': trade.get('commission', 0),
+                    'reason': trade['reason'],
+                    'metadata': {}
                 }
                 trades_data.append(trade_dict)
             
-            # Convert equity curve to serializable format
+            # Convert equity curve to serializable format with downsampling
             equity_data = []
-            for point in engine.equity_curve:
-                equity_dict = {
-                    'date': point['timestamp'].isoformat() if hasattr(point['timestamp'], 'isoformat') else str(point['timestamp']),
-                    'equity': point['equity']
-                }
-                equity_data.append(equity_dict)
+            
+            # Downsample to max 100 points
+            total_points = len(engine.equity_curve)
+            step = max(1, int(total_points / 100))
+            
+            for i, point in enumerate(engine.equity_curve):
+                if i % step == 0 or i == total_points - 1:
+                    equity_dict = {
+                        'date': point['timestamp'].isoformat() if hasattr(point['timestamp'], 'isoformat') else str(point['timestamp']),
+                        'equity': point['equity']
+                    }
+                    equity_data.append(equity_dict)
             
             # Map metrics from PerformanceReporter to frontend format
             # PerformanceReporter uses: win_count, loss_count, total_pnl
@@ -821,9 +819,12 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
                 'avg_win': metrics.get('avg_win', 0),
                 'avg_loss': metrics.get('avg_loss', 0),
                 'initial_capital': engine_config.get('initial_capital', 10000),
+                'final_capital': metrics.get('final_capital', 0),
                 'signals_generated': websocket_stdout.signals_count, # Use the counter from the custom stdout
                 'equity_curve': equity_data,
-                'trades': trades_data
+                'trades': trades_data,
+                'strategy': engine_config.get('strategy', 'Unknown'),
+                'configuration': engine_config
             }
             
             # Update metrics with mapped values
@@ -837,25 +838,77 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
             running_backtests[run_id].progress = 100.0
             
             # Update status AFTER results are set
-            if engine.should_cancel:
-                running_backtests[run_id].status = "cancelled"
-                running_backtests[run_id].message = "Backtest cancelled"
-            else:
-                running_backtests[run_id].status = "completed"
-                running_backtests[run_id].message = "Backtest completed successfully"
+            # Status will be updated to completed after broadcasting results
+            pass
             
             # Update status
             running_backtests[run_id].message = "Generating report..."
             await broadcast_message(f"[{run_id}] Generating report...\n")
             
-            # Save results
+            # Save results first to get the path
             result_file = os.path.join(RESULTS_DIR, f"{run_id}.json")
-            with open(result_file, 'w') as f:
-                json.dump(metrics, f, indent=2, default=str)
-            await broadcast_message(f"[{run_id}] ✅ Results saved to {result_file}\n")
+            try:
+                # logger.info(f"[{run_id}] Saving results to {result_file}...")
+                with open(result_file, 'w') as f:
+                    json.dump(metrics, f, indent=2, default=str)
+                await broadcast_message(f"[{run_id}] ✅ Results saved to {result_file}\n")
+                await asyncio.sleep(0.1) # Yield to event loop
+            except Exception as e:
+                import traceback
+                logger.error(f"Error saving results: {e}\n{traceback.format_exc()}")
+                await broadcast_message(f"[{run_id}] ⚠️ Error saving results: {str(e)}\n")
             
-            # All data (metrics, trades, logs) is already contained in the results file
-            # No need for separate smc_spot_*.json files
+            # Broadcast results summary to logs
+            try:
+                await broadcast_message(f"[{run_id}] Generating detailed report...\n")  
+                
+                # Safe calculations for summary
+                init_cap = mapped_metrics.get('initial_capital', 1)
+                if init_cap == 0: init_cap = 1 # Avoid division by zero
+                
+                total_pnl = mapped_metrics.get('total_pnl', 0)
+                
+                return_pct = (total_pnl / init_cap) * 100
+                
+                summary = (
+                    f"============================================================\n"
+                    f"BACKTEST RESULTS SUMMARY\n"
+                    f"============================================================\n"
+                    f"Final Balance:    ${mapped_metrics.get('final_capital', 0):.2f}\n"
+                    f"Total PnL:        ${total_pnl:.2f}\n"
+                    f"Return:           {return_pct:.2f}%\n"
+                    f"Max Drawdown:     {mapped_metrics.get('max_drawdown', 0):.2f}%\n"
+                    f"Win Rate:         {mapped_metrics.get('win_rate', 0) * 100:.2f}%\n"
+                    f"Profit Factor:    {mapped_metrics.get('profit_factor', 0):.2f}\n"
+                    f"Total Trades:     {mapped_metrics.get('total_trades', 0)}\n"
+                    f"  - Winning:      {metrics.get('win_count', 0)}\n"
+                    f"  - Losing:       {metrics.get('loss_count', 0)}\n"
+                    f"Sharpe Ratio:     {mapped_metrics['sharpe_ratio']:.2f}\n"
+                    f"============================================================"
+                )
+                
+                # Use broadcast_message directly for reliability
+                # Frontend handles newlines in a single message correctly
+                await broadcast_message(f"[{run_id}] Backtest Summary:\n{summary}\n")
+                
+                # Also log to file for debugging
+                logger.info(f"[{run_id}] Backtest Summary:\n{summary}")
+
+                # Allow extended time for logs to flush to WebSocket BEFORE marking as completed
+                await broadcast_message(f"[{run_id}] Report generated. Finalizing...\n")
+                await asyncio.sleep(2.0)
+                
+                # Update status to completed FINAL step
+                if not engine.should_cancel:
+                     running_backtests[run_id].status = "completed"
+                     running_backtests[run_id].message = "Backtest completed successfully"
+                     
+            except Exception as e:
+                import traceback
+                error_trace = traceback.format_exc()
+                print(f"CRITICAL ERROR generating report: {e}\n{error_trace}") # Print to stdout
+                logger.error(f"Error generating report summary: {e}\n{error_trace}")
+                await broadcast_message(f"[{run_id}] Error generating report summary: {str(e)}\n")
         
         finally:
             # Restore original stdout

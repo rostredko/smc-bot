@@ -7,36 +7,34 @@ Trading bot for cryptocurrency spot trading using Smart Money Concepts (SMC) str
 
 ## ENGINE MODULE
 
-### 1. backtest_engine.py
-
-#### Class: BacktestEngine
-Main coordinator for backtesting simulation.
+### 1. base_engine.py
+#### Class: BaseEngine (ABC)
+Abstract base class for Backtrader-based engines.
 
 **__init__(self, config: Dict[str, Any])**
-- Initializes backtest engine with configuration
-- Sets up DataLoader, RiskManager, TradeSimulator, Logger, PerformanceReporter
-- Loads strategy module dynamically
+- Initializes Cerebro, Broker, and Sizers.
 
 **Methods:**
-- `_load_strategy()` - Dynamically loads strategy class from strategies module
-- `load_data()` - Fetches historical data for all required timeframes
-- `run_backtest()` - Main simulation loop that processes each bar
-- `_prepare_market_data(current_time: pd.Timestamp) -> Dict[str, pd.DataFrame]` - Prepares market data snapshot up to current time
-- `_calculate_risk_reward_ratio(entry_price, stop_loss, take_profit, direction) -> float` - Calculates R:R ratio
-- `_execute_signal(signal, current_price, current_time)` - Processes new trade signal, validates risk/reward, creates position
-- `_setup_laddered_exits(position)` - Sets up partial TP levels (TP1: 50%, TP2: 30%, Runner: 20%)
-- `_update_positions(current_price, current_time)` - Updates all open positions, checks SL/TP hits
-- `_is_stop_hit(position, current_price) -> bool` - Checks if stop loss triggered
-- `_check_take_profits(position, current_price, current_time) -> bool` - Handles laddered TP exits
-- `_partial_exit(position, exit_size, exit_price, current_time, reason)` - Executes partial position exit
-- `_update_trailing_stop(position, current_price)` - Updates trailing stop for runner position
-- `_close_position(position, exit_price, current_time, reason)` - Closes position completely
-- `_close_remaining_positions()` - Closes all positions at end of backtest
-- `_update_equity_curve(current_time)` - Updates equity curve with unrealized PnL
-- `_generate_final_report() -> Dict` - Generates performance metrics
+- `add_data()`: Abstract method to add data feeds.
+- `run()`: Runs Cerebro.
+- `_setup_broker()`: Configures broker (cash, commission).
+- `_setup_sizers()`: Configures position sizing.
 
-**Function:**
-- `run_backtest(config_file: str)` - Main entry point to run backtest from config file
+### 2. bt_backtest_engine.py
+#### Class: BTBacktestEngine (extends BaseEngine)
+Concrete implementation for backtesting.
+
+**Methods:**
+- `run_backtest()`: Main entry point. Loads data, adds analyzers, runs strategy, returns metrics.
+- `add_data()`: Uses DataLoader to fetch and add feeds to Cerebro.
+
+### 3. bt_live_engine.py
+#### Class: BTLiveEngine (extends BaseEngine)
+Concrete implementation for live trading (Stage 2 placeholder/skeleton).
+
+### 4. bt_analyzers.py
+#### Class: TradeListAnalyzer
+Custom Backtrader analyzer to capture detailed trade history in a format compatible with the web dashboard.
 
 ---
 
@@ -45,12 +43,12 @@ Main coordinator for backtesting simulation.
 #### Class: DataLoader
 Fetches and caches historical market data via ccxt.
 
-**__init__(self, exchange_name: str = "binance", cache_dir: str = "data_cache")**
-- Initializes exchange connection via ccxt
+**__init__(self, exchange_name: str = "binance", exchange_type: str = "future", cache_dir: str = "data_cache")**
+- Initializes exchange connection via ccxt (supports spot/future/swap)
 - Sets up rate limiting
 
 **Methods:**
-- `_initialize_exchange() -> ccxt.Exchange` - Creates and tests exchange connection
+- `_initialize_exchange() -> ccxt.Exchange` - Creates and tests exchange connection (sets defaultType)
 - `fetch_ohlcv(symbol, timeframe, start_date, end_date) -> pd.DataFrame` - Fetches raw OHLCV data with caching
 - `get_data(symbol, timeframe, start_date, end_date) -> pd.DataFrame` - High-level method to get formatted data with indicators
 - `get_data_multi(symbol, timeframes, start_date, end_date) -> Dict[str, pd.DataFrame]` - Fetches multiple timeframes
@@ -66,41 +64,9 @@ Fetches and caches historical market data via ccxt.
 
 ---
 
-### 3. live_trading.py
-
-#### Class: LiveTradingConfig (dataclass)
-Configuration for live trading.
-
-**Fields:**
-- exchange_name, api_key, secret, sandbox
-- symbol, timeframes, initial_capital, risk_per_trade, max_drawdown, max_positions, leverage
-- strategy_config, poll_interval, slippage, commission
-
-#### Class: LiveTradingEngine
-Live trading engine for real-time execution.
-
-**__init__(self, config: LiveTradingConfig)**
-- Initializes exchange connection
-- Sets up RiskManager and Strategy
-
-**Methods:**
-- `_init_exchange()` - Initializes exchange connection with API keys
-- `start_trading()` - Starts main trading loop
-- `stop_trading()` - Stops trading and closes all positions
-- `_trading_cycle()` - Executes one trading cycle (update data, generate signals, execute trades)
-- `_fetch_market_data() -> Optional[Dict[str, pd.DataFrame]]` - Fetches real-time market data
-- `_update_positions(market_data)` - Updates all open positions with current prices
-- `_should_close_position(position, current_price) -> bool` - Checks if position should be closed
-- `_can_open_position() -> bool` - Checks if new position can be opened
-- `_execute_signal(signal, market_data)` - Executes trading signal
-- `_execute_trade(position)` - Executes actual trade on exchange (paper trading)
-- `_close_position(position, reason)` - Closes position and updates statistics
-- `_get_current_price() -> float` - Gets current market price from exchange
-- `_log_status()` - Logs current trading status
-- `get_performance_stats() -> Dict[str, Any]` - Gets performance statistics
-
-**Function:**
-- `create_live_trading_config_from_file(config_file: str) -> LiveTradingConfig` - Creates config from JSON file
+### 5. data_loader.py
+# (Remains mostly same, adapter logic added in engine)
+# ...
 
 ---
 
@@ -169,88 +135,7 @@ Calculates comprehensive performance metrics.
 
 ---
 
-### 6. position.py
-
-#### Class: Position
-Represents a trading position with laddered exits and trailing stops.
-
-**__init__(self, id, entry_price, size, stop_loss, take_profit=None, entry_time=None, reason="", direction="LONG", ladder_exit_enabled=True, trailing_stop_enabled=True, breakeven_move_enabled=True)**
-- Initializes spot position with all exit management flags
-
-**Methods:**
-- `get_unrealized_pnl(current_price=None) -> float` - Calculates unrealized PnL
-- `get_total_pnl(current_price=None) -> float` - Gets total PnL (realized + unrealized)
-- `is_profitable(current_price=None) -> bool` - Checks if position is profitable
-- `is_stop_hit(current_price) -> bool` - Checks if stop loss hit
-- `is_take_profit_hit(current_price) -> bool` - Checks if any TP level hit
-- `get_next_take_profit() -> Optional[Dict]` - Gets next un-hit TP level
-- `hit_take_profit(tp_price) -> float` - Marks TP as hit, returns exit size
-- `partial_exit(exit_size, exit_price, reason)` - Executes partial exit
-- `close_position(exit_price, reason)` - Closes entire position
-- `update_trailing_stop(current_price, trailing_distance=0.02)` - Updates trailing stop
-- `move_stop_to_breakeven()` - Moves stop to entry price
-- `move_stop_to_profit(profit_price)` - Moves stop to profitable level
-- `check_ladder_exits(current_price) -> List[Dict]` - Checks for ladder exit opportunities
-- `activate_trailing_stop()` - Activates trailing stop
-- `get_position_summary() -> Dict` - Gets position summary
-- `get_performance_metrics() -> Dict` - Gets performance metrics
-- `_calculate_exit_efficiency() -> float` - Calculates exit efficiency
-
-#### Class: SpotTradeSimulator
-Simulates spot trade execution and manages position lifecycle.
-
-**__init__(self)**
-- Initializes with cash_usdt and asset_qty balances
-
-**Methods:**
-- `create_position(entry_price, size, stop_loss, take_profit=None, reason="", ladder_exit_enabled=True, trailing_stop_enabled=True, breakeven_move_enabled=True, take_profit_levels=None) -> Position` - Creates new position
-- `update_positions(current_price, current_time)` - Updates positions and handles ladder exits
-- `_execute_partial_exit(position, instruction, current_price)` - Executes partial exit
-- `close_position(position, exit_price, reason)` - Closes position completely
-- `get_open_positions() -> List[Position]` - Gets all open positions
-- `get_closed_positions() -> List[Position]` - Gets all closed positions
-- `get_position_by_id(position_id) -> Optional[Position]` - Gets position by ID
-- `get_total_exposure() -> float` - Gets total exposure
-- `get_total_equity(current_price) -> float` - Gets total equity (cash + asset value)
-- `get_total_unrealized_pnl(current_price) -> float` - Gets total unrealized PnL
-- `get_account_summary(current_price) -> Dict` - Gets account summary
-
----
-
-### 7. risk_manager.py
-
-#### Class: SpotRiskManager
-Risk manager optimized for spot crypto trading.
-
-**__init__(self, initial_capital, risk_per_trade=0.5, max_drawdown=15.0, max_positions=1, max_consecutive_losses=5, daily_loss_limit=3.0)**
-- Initializes with risk parameters and exchange constraints
-
-**Methods:**
-- `get_equity(current_price) -> float` - Calculates total equity (cash + asset value)
-- `can_open_position(entry_price, stop_loss, current_bar_time=None, current_price=None) -> tuple[bool, str]` - Checks if position can be opened (cooldown, drawdown, consecutive losses checks)
-- `calculate_position_size(entry_price, stop_loss) -> float` - Calculates position size in BTC based on risk
-- `_floor_to_step(qty, step_size) -> float` - Rounds quantity to step size
-- `calculate_current_drawdown(current_equity) -> float` - Calculates drawdown from peak
-- `update_balance(pnl, position_direction=None, exit_time=None)` - Updates balance after trade close, tracks consecutive losses
-- `add_position(position)` - Adds position to tracking, updates balances
-- `remove_position(position)` - Removes position from tracking
-- `get_risk_metrics(current_price=50000) -> Dict` - Gets risk metrics
-- `reset_daily_metrics()` - Resets daily tracking
-- `validate_risk_reward_ratio(entry_price, stop_loss, take_profit, min_risk_reward) -> tuple[bool, str]` - Validates R:R ratio
-- `update_peak_equity(current_price)` - Updates peak equity with current price
-- `_calculate_total_potential_risk() -> float` - Calculates total potential risk from all positions
-
-#### Class: PositionSizer
-Position sizing calculator for spot trading.
-
-**__init__(self, cash_usdt, min_qty=0.00001, step_size=0.00001, min_notional=10.0, tick_size=0.01, maker_fee=0.0001, taker_fee=0.0004, slippage_bp=1)**
-- Initializes with exchange constraints
-
-**Methods:**
-- `calculate_size(entry_price, stop_loss, risk_per_trade_pct=0.5) -> Dict` - Calculates position size with detailed breakdown
-- `_floor_to_step(qty, step_size) -> float` - Rounds quantity to step size
-- `calculate_exit_fees(qty, exit_price) -> float` - Calculates exit fees
-- `calculate_total_fees(qty, entry_price, exit_price) -> float` - Calculates total round-trip fees
+# Removed legacy Position and RiskManager classes (functionality moved to Backtrader internals).
 
 ---
 
@@ -260,42 +145,19 @@ Position sizing calculator for spot trading.
 
 Contains trading strategies and analysis logic.
 
-- **`base_strategy.py`**: Abstract base class defining the strategy interface.
-- **`price_action_strategy.py`**: **(PRIMARY)** Production-ready strategy based on Trend Following, EMA, and RSI logic.
-- **`smc_strategy.py`**: Legacy strategy implementing Smart Money Concepts.
-- **`smc_analysis.py`**: Library of SMC analysis components (Market Structure, Order Blocks, FVGs).
-- **`simple_test_strategy.py`**: Minimal strategy for engine testing.
+- **`bt_price_action.py`**: **(PRIMARY)** Backtrader implementation of Price Action Strategy.
+- **`smc_analysis.py`**: Library of SMC analysis components (Reuse attempted in BT or pending migration).
 
-#### Class: StrategyBase (ABC)
-Abstract base class for trading strategies.
+#### Class: PriceActionStrategy (extends bt.Strategy)
+Backtrader strategy using EMA, RSI, and candlestick patterns.
 
-**__init__(self, config: Optional[Dict] = None)**
-- Initializes strategy with configuration
-- Sets up SMC analyzers (MarketStructureAnalyzer, OrderBlockDetector, FairValueGapDetector, LiquidityZoneMapper)
+**params:**
+- trend_ema_period, rsi_period, etc.
 
 **Methods:**
-- `generate_signals(market_data: Dict[str, pd.DataFrame]) -> List[Dict[str, Any]]` - Abstract method to generate signals
-- `on_trade_exit(position) -> None` - Callback when trade is closed
-- `get_strategy_info() -> Dict[str, Any]` - Gets strategy information
-- `reset_state()` - Resets strategy state
-
----
-
-### 2. simple_test_strategy.py
-
-#### Class: SimpleTestStrategy (extends StrategyBase)
-Simple test strategy for engine validation.
-
-**__init__(self, config: Optional[Dict] = None)**
-- Initializes with signal_frequency and risk_reward_ratio
-
-**Methods:**
-- `generate_signals(market_data) -> List[Dict[str, Any]]` - Generates simple alternating signals every N bars
-- `_get_timeframe_minutes(timeframe) -> int` - Converts timeframe to minutes
-- `_create_long_signal(df, current_price) -> Dict[str, Any]` - Creates long signal
-- `_create_short_signal(df, current_price) -> Dict[str, Any]` - Creates short signal
-- `get_strategy_info() -> Dict[str, Any]` - Gets strategy info with bar count
-
+- `next()`: Main strategy logic executed per bar.
+- `_is_bullish_pinbar()`: Pattern detection.
+- `_enter_long()`: Executing trades using `buy_bracket`.
 ---
 
 ### 3. smc_strategy.py

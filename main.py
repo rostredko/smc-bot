@@ -15,7 +15,9 @@ from typing import Dict, Any, Optional
 engine_dir = Path(__file__).parent / "engine"
 sys.path.insert(0, str(engine_dir))
 
-from engine.backtest_engine import BacktestEngine
+from engine.bt_backtest_engine import BTBacktestEngine
+from engine.bt_live_engine import BTLiveEngine
+from strategies.bt_price_action import PriceActionStrategy
 
 
 def create_default_config() -> Dict[str, Any]:
@@ -29,28 +31,20 @@ def create_default_config() -> Dict[str, Any]:
         "leverage": 10.0,  # 10x leverage
         # Trading pair and timeframes
         "symbol": "BTC/USDT",
-        "timeframes": ["4h", "15m"],
+        "timeframes": ["4h"], # Backtrader works best with single timeframe or properly aligned ones. Start with 1.
         "exchange": "binance",
         # Backtest period
         "start_date": "2023-01-01",
         "end_date": "2023-12-31",
         # Strategy settings
-        "strategy": "smc_strategy",
+        "strategy": "price_action",
         "strategy_config": {
-            "high_timeframe": "4h",
-            "low_timeframe": "15m",
-            "min_zone_strength": 0.6,
-            "volume_threshold": 1.2,
-            "max_zones": 5,
-            "confluence_required": True,
-            "risk_reward_ratio": 3.0,
+            "trend_ema_period": 50,
+            "rsi_period": 14,
+            "risk_reward_ratio": 2.5,
         },
         # Risk management
         "min_risk_reward": 3.0,  # Minimum 1:3 R:R
-        "trailing_stop_distance": 0.02,  # 2% trailing distance
-        # Execution settings
-        "slippage": 0.0001,  # 0.01% slippage
-        "commission": 0.0004,  # 0.04% commission (Binance taker)
         # Logging
         "log_level": "INFO",
         "export_logs": True,
@@ -81,46 +75,30 @@ def load_config_from_json(config_file: str) -> Dict[str, Any]:
             strategy_name = strategy_conf
         else:
             strategy_name = strategy_conf.get("name", "")
-        if not strategy_name or strategy_name.strip() == "":
-            print("❌ No strategy specified in configuration file")
-            print("💡 Please specify a strategy in config.json:")
-            print('   "strategy": { "name": "smc_strategy" }')
-            return None
+        
+        # Default to Price Action if not specified/legacy
+        if not strategy_name:
+             strategy_name = "price_action"
 
         config = {
             # Account settings (try nested first, then flat)
             "initial_capital": json_config.get("account", {}).get("initial_capital", json_config.get("initial_capital", 10000)),
             "risk_per_trade": json_config.get("account", {}).get("risk_per_trade", json_config.get("risk_per_trade", 2.0)),
-            "max_drawdown": json_config.get("account", {}).get("max_drawdown", json_config.get("max_drawdown", 15.0)),
-            "max_positions": json_config.get("account", {}).get("max_positions", json_config.get("max_positions", 3)),
-            "leverage": json_config.get("account", {}).get("leverage", json_config.get("leverage", 10.0)),
+            "commission": json_config.get("trading", {}).get("commission", json_config.get("commission", 0.0004)),
+            
             # Trading settings (try nested first, then flat)
             "symbol": json_config.get("trading", {}).get("symbol", json_config.get("symbol", "BTC/USDT")),
             "timeframes": json_config.get("trading", {}).get("timeframes", json_config.get("timeframes", ["4h", "15m"])),
             "exchange": json_config.get("trading", {}).get("exchange", json_config.get("exchange", "binance")),
-            "slippage": json_config.get("trading", {}).get("slippage", json_config.get("slippage", 0.0001)),
-            "commission": json_config.get("trading", {}).get("commission", json_config.get("commission", 0.0004)),
+            
             # Period settings (try nested first, then flat)
             "start_date": json_config.get("period", {}).get("start_date", json_config.get("start_date", "2023-01-01")),
             "end_date": json_config.get("period", {}).get("end_date", json_config.get("end_date", "2023-12-31")),
+            
             # Strategy settings
             "strategy": strategy_name,
             "strategy_config": (json_config.get("strategy", {}) if isinstance(json_config.get("strategy"), dict) else {}).get("config", json_config.get("strategy_config", {})),
-            # Risk management (try nested first, then flat)
-            "min_risk_reward": json_config.get("risk_management", {}).get("min_risk_reward", json_config.get("min_risk_reward", 3.0)),
-            "trailing_stop_distance": json_config.get("risk_management", {}).get(
-                "trailing_stop_distance", json_config.get("trailing_stop_distance", 0.02)
-            ),
-            "breakeven_trigger_r": json_config.get("risk_management", {}).get(
-                "breakeven_trigger_r", json_config.get("breakeven_trigger_r", 1.0)
-            ),
-            # Logging settings (try nested first, then flat)
-            "log_level": json_config.get("logging", {}).get("level", json_config.get("log_level", "INFO")),
-            "export_logs": json_config.get("logging", {}).get("export_logs", json_config.get("export_logs", True)),
-            "log_file": json_config.get("logging", {}).get("log_file", json_config.get("log_file", "results/backtest_logs.json")),
-            "detailed_signals": json_config.get("logging", {}).get("detailed_signals", True),
-            "detailed_trades": json_config.get("logging", {}).get("detailed_trades", True),
-            "market_analysis": json_config.get("logging", {}).get("market_analysis", True),
+            
             # Output settings
             "save_results": json_config.get("output", {}).get("save_results", True),
             "results_file": json_config.get("output", {}).get("results_file", "results/backtest_results.json"),
@@ -170,23 +148,16 @@ def run_backtest_from_config(config_file: str, config_name: Optional[str] = None
     print(f"   Strategy: {config['strategy']}")
     print(f"   Symbol: {config['symbol']}")
     print(f"   Period: {config['start_date']} to {config['end_date']}")
-    print(f"   Timeframes: {', '.join(config['timeframes'])}")
     print(f"   Capital: ${config['initial_capital']:,}")
-    print(f"   Risk per trade: {config['risk_per_trade']}%")
-    print(f"   Risk/Reward ratio: {config.get('risk_management', {}).get('min_risk_reward', 3.0)}")
-    print(f"   Logging level: {config['log_level']}")
 
     try:
         # Create and run the backtest engine
-        engine = BacktestEngine(config)
-        engine.load_data()
+        engine = BTBacktestEngine(config)
+        
+        # Add Strategy (Currently only supports PriceAction)
+        engine.add_strategy(PriceActionStrategy, **config.get('strategy_config', {}))
+        
         metrics = engine.run_backtest()
-
-        # Export logs if requested
-        if config.get("export_logs", False):
-            log_file = config.get("log_file", f"{config_name}_logs.json")
-            engine.logger.export_logs(log_file)
-            print(f"\n📝 Logs exported to: {log_file}")
 
         # Save results if requested
         if config.get("save_results", False):
@@ -222,26 +193,9 @@ def save_results(metrics: Dict[str, Any], filename: str):
 def export_trades(trades: list, filename: str):
     """Export trade history to JSON file."""
     try:
-        trades_data = []
-        for trade in trades:
-            trade_dict = {
-                "id": trade.id,
-                "direction": trade.direction,
-                "entry_price": trade.entry_price,
-                "exit_price": getattr(trade, "exit_price", None),
-                "size": trade.original_size,
-                "entry_time": trade.entry_time.isoformat() if trade.entry_time else None,
-                "exit_time": trade.exit_time.isoformat() if hasattr(trade, "exit_time") and trade.exit_time else None,
-                "stop_loss": trade.stop_loss,
-                "take_profit": getattr(trade, "take_profit", None),
-                "realized_pnl": trade.realized_pnl,
-                "exit_reason": getattr(trade, "exit_reason", None),
-                "reason": getattr(trade, "reason", None),
-            }
-            trades_data.append(trade_dict)
-
+        # Trades are already a list of dicts from our Analyzer
         with open(filename, "w") as f:
-            json.dump(trades_data, f, indent=2, default=str)
+            json.dump(trades, f, indent=2, default=str)
     except Exception as e:
         print(f"❌ Error exporting trades: {e}")
 
@@ -332,69 +286,30 @@ def run_backtest(config_file: str = "config/config.json"):
 def run_live_trading(config_file_path: str = "config/live_config.json"):
     """Run live trading mode."""
     try:
-        from engine.live_trading import LiveTradingEngine, LiveTradingConfig, create_live_trading_config_from_file
-
-        print("SMC Live Trading Bot")
+        print("SMC Live Trading Bot (Backtrader)")
         print("=" * 50)
-
+        
         # Load configuration
-        config_file = Path(config_file_path)
-        if not config_file.exists():
-            print(f"Configuration file not found: {config_file}")
-            print("Creating default configuration...")
-
-            # Create default config
-            config = LiveTradingConfig(sandbox=True, symbol="BTC/USDT", initial_capital=1000.0, risk_per_trade=2.0)  # Default to sandbox for safety
-        else:
-            print(f"Loading configuration from: {config_file}")
-            config = create_live_trading_config_from_file(str(config_file))
-
-        # Validate configuration
-        if not config.api_key or config.api_key == "YOUR_API_KEY":
-            print("⚠️  WARNING: No API key provided!")
-            print("Please set your Binance API key in the configuration file.")
-            print("For sandbox trading, you can use testnet API keys.")
-            return
-
-        if not config.secret or config.secret == "YOUR_SECRET":
-            print("⚠️  WARNING: No API secret provided!")
-            print("Please set your Binance API secret in the configuration file.")
-            return
-
-        # Display configuration
-        print(f"Exchange: {config.exchange_name}")
-        print(f"Symbol: {config.symbol}")
-        print(f"Sandbox: {config.sandbox}")
-        print(f"Initial Capital: ${config.initial_capital}")
-        print(f"Risk per Trade: {config.risk_per_trade}%")
-        print()
-
-        # Confirm before starting
-        if not config.sandbox:
-            print("⚠️  WARNING: You are about to start LIVE TRADING with real money!")
-            print("Make sure you understand the risks and have tested thoroughly.")
-            confirm = input("Type 'YES' to confirm: ")
-            if confirm != "YES":
-                print("Trading cancelled.")
-                return
-        else:
-            print("✅ Starting in SANDBOX mode (testnet)")
+        config = load_config_from_json(config_file_path)
+        if config is None:
+            # Create default if not exists
+             config = {
+                "account": {"initial_capital": 1000.0, "risk_per_trade": 2.0},
+                "trading": {"symbol": "BTC/USDT", "exchange": "binance", "sandbox": True}
+             }
+             print("⚠️  Config not found, using default.")
 
         # Create and start trading engine
-        engine = LiveTradingEngine(config)
+        engine = BTLiveEngine(config)
 
-        print("Starting live trading...")
-        print("Press Ctrl+C to stop trading")
-        print()
-
-        engine.start_trading()
+        print("Starting live trading engine...")
+        engine.run_live()
 
     except KeyboardInterrupt:
         print("\nTrading stopped by user")
     except Exception as e:
         print(f"❌ Error starting live trading: {e}")
         import traceback
-
         traceback.print_exc()
 
 

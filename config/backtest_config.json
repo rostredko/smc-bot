@@ -3,7 +3,7 @@
     "initial_capital": 10000,
     "risk_per_trade": 2.0,
     "max_drawdown": 30.0,
-    "max_positions": 5,
+    "max_positions": 1,
     "leverage": 10.0
   },
   "trading": {
@@ -18,15 +18,19 @@
     "end_date": "2025-12-31"
   },
   "strategy": {
-    "name": "price_action_strategy",
+    "name": "bt_price_action",
     "config": {
       "use_trend_filter": true,
+      "trend_ema_period": 200,
       "use_rsi_momentum": true,
       "rsi_momentum_threshold": 60,
       "use_adx_filter": true,
       "adx_threshold": 21,
       "risk_reward_ratio": 2.0,
-      "sl_buffer_atr": 0.5
+      "sl_buffer_atr": 0.5,
+      "min_range_factor": 0.8,
+      "min_wick_to_range": 0.6,
+      "max_body_to_range": 0.3
     }
   },
   "trailing_stop_distance": 0.0,

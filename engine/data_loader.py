@@ -16,15 +16,17 @@ class DataLoader:
     Handles OHLCV data fetching, multi-timeframe support, and caching.
     """
 
-    def __init__(self, exchange_name: str = "binance", cache_dir: str = "data_cache"):
+    def __init__(self, exchange_name: str = "binance", exchange_type: str = "future", cache_dir: str = "data_cache"):
         """
         Initialize the data loader.
 
         Args:
             exchange_name: Name of the exchange (e.g., 'binance', 'bybit')
+            exchange_type: Type of market ('spot', 'future', 'swap'). Default 'future'.
             cache_dir: Directory to store cached data
         """
         self.exchange_name = exchange_name
+        self.exchange_type = exchange_type
         self.cache_dir = cache_dir
         self.exchange = self._initialize_exchange()
 
@@ -37,13 +39,16 @@ class DataLoader:
 
     def _initialize_exchange(self) -> ccxt.Exchange:
         """Initialize the ccxt exchange client."""
-        print(f"🔌 Initializing {self.exchange_name} exchange connection...")
+        print(f"🔌 Initializing {self.exchange_name} ({self.exchange_type}) exchange connection...")
         try:
             exchange_class = getattr(ccxt, self.exchange_name)
             exchange = exchange_class(
                 {
                     "rateLimit": 1200,  # Respect rate limits
                     "enableRateLimit": True,
+                    "options": {
+                        "defaultType": self.exchange_type, 
+                    }
                 }
             )
 
@@ -51,7 +56,9 @@ class DataLoader:
             print(f"✅ Connected to {exchange.name}")
             print(f"📊 Exchange info:")
             print(f"   - Rate limit: {exchange.rateLimit}ms")
-            print(f"   - Has futures: {exchange.has.get('futures', False)}")
+            print(f"   - Mode (defaultType): {exchange.options.get('defaultType', 'spot')}")
+            print(f"   - Has swap: {exchange.has.get('swap', False)}")
+            print(f"   - Has future: {exchange.has.get('future', False)}")
             print(f"   - Has spot: {exchange.has.get('spot', False)}")
 
             # Test market loading
