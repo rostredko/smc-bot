@@ -14,12 +14,18 @@ import {
     TableRow,
     Paper,
     IconButton,
-    Collapse
+    Collapse,
+    Button,
+    Stack
 } from '@mui/material';
 import {
     KeyboardArrowDown,
     KeyboardArrowUp,
-    History
+    History,
+    NavigateBefore,
+    NavigateNext,
+    FirstPage,
+    LastPage
 } from '@mui/icons-material';
 
 interface BacktestSummary {
@@ -76,25 +82,44 @@ const STRATEGY_SECTIONS = [
 const BacktestHistoryList: React.FC = () => {
     const [history, setHistory] = useState<BacktestSummary[]>([]);
     const [openRows, setOpenRows] = useState<Record<string, boolean>>({});
+    const [page, setPage] = useState(1);
+    const [pageSize] = useState(10);
+    const [totalPages, setTotalPages] = useState(0);
+    const [totalCount, setTotalCount] = useState(0);
+    const [loading, setLoading] = useState(false);
 
-    const fetchHistory = async () => {
+    const fetchHistory = async (currentPage: number = 1) => {
+        setLoading(true);
         try {
-            const response = await fetch(`${API_BASE}/api/backtest/history`);
+            const response = await fetch(`${API_BASE}/api/backtest/history?page=${currentPage}&page_size=${pageSize}`);
             if (response.ok) {
                 const data = await response.json();
                 setHistory(data.history || []);
+                if (data.pagination) {
+                    setTotalPages(data.pagination.total_pages);
+                    setTotalCount(data.pagination.total_count);
+                    setPage(data.pagination.page);
+                }
+            } else {
+                console.error("Failed to fetch backtest history: HTTP", response.status);
             }
         } catch (error) {
             console.error("Failed to fetch backtest history:", error);
+            // Don't update page state on error to prevent UI mismatch
+        } finally {
+            setLoading(false);
         }
     };
 
     useEffect(() => {
-        fetchHistory();
+        fetchHistory(page);
+    }, [page]);
+
+    useEffect(() => {
         // Poll every 10 seconds to keep updated
-        const interval = setInterval(fetchHistory, 10000);
+        const interval = setInterval(() => fetchHistory(page), 10000);
         return () => clearInterval(interval);
-    }, []);
+    }, [page]);
 
     const toggleRow = (filename: string) => {
         setOpenRows(prev => ({ ...prev, [filename]: !prev[filename] }));
@@ -134,7 +159,7 @@ const BacktestHistoryList: React.FC = () => {
                 title={
                     <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                         <History />
-                        <Typography variant="h6">Recent Backtests (Last 10)</Typography>
+                        <Typography variant="h6">Recent Backtests</Typography>
                     </Box>
                 }
             />
@@ -313,6 +338,51 @@ const BacktestHistoryList: React.FC = () => {
                         </TableBody>
                     </Table>
                 </TableContainer>
+
+                {/* Pagination Controls */}
+                {totalPages > 1 && (
+                    <Stack direction="row" spacing={1} alignItems="center" justifyContent="center" sx={{ mt: 2 }}>
+                        <Button
+                            variant="outlined"
+                            size="small"
+                            startIcon={<FirstPage />}
+                            disabled={page <= 1 || loading}
+                            onClick={() => setPage(1)}
+                        >
+                            First
+                        </Button>
+                        <Button
+                            variant="outlined"
+                            size="small"
+                            startIcon={<NavigateBefore />}
+                            disabled={page <= 1 || loading}
+                            onClick={() => setPage(p => Math.max(1, p - 1))}
+                        >
+                            Previous
+                        </Button>
+                        <Typography variant="body2" color="textSecondary" sx={{ minWidth: '200px', textAlign: 'center' }}>
+                            {loading ? 'Loading...' : `Page ${page} of ${totalPages} (${totalCount} total)`}
+                        </Typography>
+                        <Button
+                            variant="outlined"
+                            size="small"
+                            endIcon={<NavigateNext />}
+                            disabled={page >= totalPages || loading}
+                            onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+                        >
+                            Next
+                        </Button>
+                        <Button
+                            variant="outlined"
+                            size="small"
+                            endIcon={<LastPage />}
+                            disabled={page >= totalPages || loading}
+                            onClick={() => setPage(totalPages)}
+                        >
+                            Last
+                        </Button>
+                    </Stack>
+                )}
             </CardContent>
         </Card>
     );

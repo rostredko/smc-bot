@@ -511,8 +511,8 @@ async def get_result_file(filename: str):
 
 
 @app.get("/api/backtest/history")
-async def get_backtest_history():
-    """Get history of last 10 backtests with summary metrics."""
+async def get_backtest_history(page: int = 1, page_size: int = 10):
+    """Get paginated history of backtests with summary metrics."""
     history = []
     
     if os.path.exists(RESULTS_DIR):
@@ -534,8 +534,24 @@ async def get_backtest_history():
         # Sort by modification time (descending)
         files.sort(key=lambda x: x[1], reverse=True)
         
-        # Process top 10 most recent files
-        for filename, mtime in files[:10]:
+        # Calculate pagination
+        total_count = len(files)
+        total_pages = (total_count + page_size - 1) // page_size  # Ceiling division
+        
+        # Validate page number
+        if page < 1:
+            page = 1
+        if page > total_pages and total_pages > 0:
+            page = total_pages
+            
+        # Calculate offset
+        offset = (page - 1) * page_size
+        
+        # Get files for current page
+        page_files = files[offset:offset + page_size]
+        
+        # Process files for current page
+        for filename, mtime in page_files:
             try:
                 file_path = os.path.join(RESULTS_DIR, filename)
                 with open(file_path, 'r') as f:
@@ -565,8 +581,19 @@ async def get_backtest_history():
             except Exception as e:
                 print(f"Error reading history file {filename}: {e}")
                 continue
+    else:
+        total_count = 0
+        total_pages = 0
                 
-    return {"history": history}
+    return {
+        "history": history,
+        "pagination": {
+            "total_count": total_count,
+            "page": page,
+            "page_size": page_size,
+            "total_pages": total_pages
+        }
+    }
 
 
 @app.delete("/backtest/{run_id}")
