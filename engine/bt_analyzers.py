@@ -107,7 +107,7 @@ class TradeListAnalyzer(bt.Analyzer):
                 "stop_loss": 0,
                 "take_profit": 0,
                 "reason": "Signal", 
-                "exit_reason": "Take Profit" if pnl > 0 else "Stop Loss",
+                "exit_reason": "Unknown", # Will be updated from metadata
                 "commission": pnl - pnlcomm
             }
 
@@ -119,6 +119,14 @@ class TradeListAnalyzer(bt.Analyzer):
                      # If size was 0 from closed trade object, try to get it from metadata
                      if size == 0 and 'size' in info:
                          size = info['size']
+                     
+                     # Update exit reason if available
+                     if 'exit_reason' in info:
+                         trade_record['exit_reason'] = info['exit_reason']
+                     elif trade_record['realized_pnl'] > 0:
+                         trade_record['exit_reason'] = "Take Profit (Approx)"
+                     else:
+                         trade_record['exit_reason'] = "Stop Loss (Approx)"
             
             # Finalize exit price calculation with correct size
             if size != 0:

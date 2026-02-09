@@ -334,7 +334,9 @@ REM Opens: http://localhost:8000
 
 ---
 
-### 3. Live Trading
+### 3. Live Trading (Experimental)
+
+**Note**: This project is primarily a **Backtesting & Research Lab**. Live trading functionality exists but is considered experimental.
 
 Paper trading (sandbox) or real money trading on Binance.
 
@@ -348,7 +350,7 @@ venv\Scripts\activate
 python main.py live --sandbox
 ```
 
-⚠️ **Warning**: Only use real money after extensive testing in sandbox mode!
+⚠️ **Warning**: Only use real money after extensive testing in sandbox mode! The authors accept no responsibility for financial losses.
 
 ---
 
@@ -467,14 +469,17 @@ After each backtest, results are saved to `results/{run_id}.json`:
 #### PriceActionStrategy (Backtrader)
 **File**: `strategies/bt_price_action.py`
 
-Features:
-- Built on **Backtrader** framework
-- Trend Following with EMA filter
-- Momentum analysis using RSI
-- Atomic order execution (Bracket Orders) for guaranteed SL/TP
-- Candlestick pattern detection (Pinbar, Engulfing)
+**Key Features**:
+- **Pattern Recognition**: Detects Pinbars, Engulfing patterns with quality filters (Min Range check).
+- **Trend Filtering**: Uses EMA (200) and ADX to trade only with strong trends.
+- **Momentum Filters**: RSI Momentum logic (Long > 60, Short < 40) to enter on strength.
+- **Risk Management**:
+    - **Dynamic Position Sizing**: Based on Account Risk % and Stop Loss distance.
+    - **Atomic Order Execution**: Uses OCO (One-Cancels-Other) Bracket Orders for guaranteed SL/TP.
+    - **Breakeven & Trailing**: Auto-moves SL to Breakeven and trails price to lock in profits.
+- **Narrative Generation**: Automatically generates human-readable explanations for every trade outcome (e.g., *"Long trade hit Take Profit perfectly..."*).
 
-**Best For**: Price Action traders
+**Best For**: Strategy research, parameter optimization, and educational analysis.
 
 #### SimpleTestStrategy
 **File**: `strategies/simple_test_strategy.py`

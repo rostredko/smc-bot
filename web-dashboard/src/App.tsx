@@ -777,6 +777,66 @@ export default function App() {
                   </Paper>
                 </Grid>
 
+                {/* PnL Calculation Breakdown */}
+                <Grid item xs={12}>
+                  <Paper variant="outlined" sx={{ p: 2, bgcolor: 'rgba(255,255,255,0.05)', borderColor: '#333' }}>
+                    <Typography variant="caption" sx={{ color: '#fff', opacity: 0.7 }} gutterBottom display="block">PnL CALCULATION</Typography>
+
+                    {(() => {
+                      const isLong = selectedTrade.direction === 'LONG';
+                      const exitPrice = selectedTrade.exit_price || 0;
+                      const entryPrice = selectedTrade.entry_price || 0;
+                      const size = selectedTrade.size || 0;
+                      const commission = selectedTrade.commission || 0;
+
+                      const priceDiff = isLong ? (exitPrice - entryPrice) : (entryPrice - exitPrice);
+                      const grossPnl = priceDiff * size;
+                      // netPnl should match selectedTrade.pnl roughly
+
+                      const pnlColor = grossPnl >= 0 ? '#4caf50' : '#f44336';
+
+                      return (
+                        <Box sx={{ fontFamily: 'Monospace', fontSize: '0.9rem', color: '#ccc' }}>
+                          <Box display="flex" justifyContent="space-between" mb={1}>
+                            <span>Formula:</span>
+                            <span style={{ color: '#aaa' }}>
+                              ({isLong ? 'Exit' : 'Entry'} - {isLong ? 'Entry' : 'Exit'}) × Size - Comm
+                            </span>
+                          </Box>
+
+                          <Box display="flex" justifyContent="space-between">
+                            <span>Price Diff:</span>
+                            <span>
+                              ({isLong ? exitPrice.toFixed(2) : entryPrice.toFixed(2)} - {isLong ? entryPrice.toFixed(2) : exitPrice.toFixed(2)}) × {size.toFixed(4)}
+                            </span>
+                          </Box>
+
+                          <Box display="flex" justifyContent="space-between" sx={{ borderBottom: '1px solid #444', pb: 1, mb: 1 }}>
+                            <span>Gross PnL:</span>
+                            <span style={{ color: pnlColor }}>
+                              {grossPnl >= 0 ? '+' : ''}{grossPnl.toFixed(2)}
+                            </span>
+                          </Box>
+
+                          <Box display="flex" justifyContent="space-between">
+                            <span>Commission:</span>
+                            <span style={{ color: '#f44336' }}>
+                              -{commission.toFixed(2)}
+                            </span>
+                          </Box>
+
+                          <Box display="flex" justifyContent="space-between" sx={{ borderTop: '1px solid #555', pt: 1, mt: 1, fontWeight: 'bold' }}>
+                            <span>Net PnL:</span>
+                            <span style={{ color: selectedTrade.pnl >= 0 ? '#4caf50' : '#f44336' }}>
+                              {selectedTrade.pnl >= 0 ? '+' : ''}{selectedTrade.pnl?.toFixed(2)}
+                            </span>
+                          </Box>
+                        </Box>
+                      );
+                    })()}
+                  </Paper>
+                </Grid>
+
                 <Grid item xs={12} md={6}>
                   <Stack spacing={2}>
                     <Box>
@@ -809,7 +869,13 @@ export default function App() {
                       <Typography variant="body1">
                         {(() => {
                           if (!selectedTrade.duration) return 'N/A';
-                          // Parse duration string "HH:MM:SS" or similar
+
+                          // Handle "X days, HH:MM:SS" format from Python timedelta
+                          if (selectedTrade.duration.includes('day')) {
+                            return selectedTrade.duration.split('.')[0]; // Remove microseconds if any
+                          }
+
+                          // Parse duration string "HH:MM:SS"
                           const parts = selectedTrade.duration.split(':');
                           if (parts.length >= 2) {
                             const h = parseInt(parts[0]);
@@ -841,8 +907,27 @@ export default function App() {
                 </Grid>
                 <Grid item xs={12} md={3}>
                   <Typography variant="caption" color="gray">EXIT REASON</Typography>
-                  <Typography variant="body2">{selectedTrade.exit_reason}</Typography>
+                  <Typography variant="body2" sx={{
+                    color: selectedTrade.exit_reason === 'Take Profit' ? '#4caf50' :
+                      selectedTrade.exit_reason === 'Stop Loss' ? '#f44336' : 'white'
+                  }}>
+                    {selectedTrade.exit_reason || 'Unknown'}
+                  </Typography>
                 </Grid>
+
+                {/* Trade Narrative Section */}
+                {selectedTrade.narrative && (
+                  <Grid item xs={12} sx={{ mt: 2 }}>
+                    <Box sx={{ p: 2, bgcolor: 'rgba(255,255,255,0.05)', borderRadius: 1, borderLeft: '3px solid #64b5f6' }}>
+                      <Typography variant="subtitle2" color="#64b5f6" gutterBottom>
+                        TRADE ANALYSIS
+                      </Typography>
+                      <Typography variant="body2" color="#e0e0e0" sx={{ fontStyle: 'italic' }}>
+                        "{selectedTrade.narrative}"
+                      </Typography>
+                    </Box>
+                  </Grid>
+                )}
               </Grid>
             </DialogContent>
             <DialogActions sx={{ borderTop: '1px solid #333', p: 2 }}>

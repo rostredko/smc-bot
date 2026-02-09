@@ -61,6 +61,7 @@ class PriceActionStrategy(bt.Strategy):
         # Order management
         self.order = None
         self.stop_order = None
+        self.tp_order = None # Track TP limit order separate from STOP
         
         # Metadata tracking
         self.trade_map = {}
@@ -69,6 +70,13 @@ class PriceActionStrategy(bt.Strategy):
         
         # Churn prevention
         self.last_entry_bar = -1
+        
+        # Track cancellation reason
+        self.cancel_reason = None
+        
+        # Track active stop reason (e.g. "Stop Loss", "Trailing Stop", "Breakeven")
+        self.stop_reason = "Stop Loss"
+        self.last_exit_reason = "Unknown"
 
     def _calculate_position_size(self, entry_price, stop_loss):
         """
@@ -110,22 +118,101 @@ class PriceActionStrategy(bt.Strategy):
 
     def get_trade_info(self, trade_ref):
         info = self.trade_map.get(trade_ref, {})
-        # print(f"DEBUG: Strategy.get_trade_info({trade_ref}) returning: {info}")
+        # print(f"📖 get_trade_info({trade_ref}) called. Result: {info}")
+        # print(f"📋 Full trade_map: {self.trade_map}")
         return info
 
     def notify_trade(self, trade):
         if trade.justopened:
-            # print(f"DEBUG: Trade OPENED ref={trade.ref}. Pending: {self.pending_metadata}")
-            # Capture size here as it is available when trade opens
             current_size = abs(trade.size)
+            # print(f"🔵 TRADE OPENED: ref={trade.ref}, size={current_size}, pending_metadata={self.pending_metadata}")
             
             if self.pending_metadata:
-                self.pending_metadata['size'] = current_size # Add size to metadata
+                # print(f"DEBUG: Mapping Trade {trade.ref} to metadata: {self.pending_metadata}")
+                self.pending_metadata['size'] = current_size
                 self.trade_map[trade.ref] = self.pending_metadata
-                # self.pending_metadata = None 
+                # print(f"🟢 STORED in trade_map[{trade.ref}]: {self.trade_map[trade.ref]}")
+                self.pending_metadata = None 
             else:
-                # If no pending metadata (shouldn't happen), at least store size
+                print(f"CRITICAL: Trade {trade.ref} opened WITHOUT metadata! Pending is None.")
                 self.trade_map[trade.ref] = {'size': current_size} 
+        
+        elif trade.isclosed:
+            # Calculate metrics for logging
+            pnl = trade.pnl
+            pnl_comm = trade.pnlcomm
+            duration = (trade.dtclose - trade.dtopen)
+            
+            # Get size and calculating percentage
+            entry_price = trade.price
+            stored_info = self.trade_map.get(trade.ref, {})
+            size = stored_info.get('size', 0)
+            if size == 0 and len(trade.history) > 0:
+                 size = trade.history[0].event.size
+            
+            pnl_pct = 0.0
+            if entry_price > 0 and size != 0:
+                 raw_move = pnl / size
+                 pnl_pct = (raw_move / entry_price) * 100
+            
+            print(f"🔴 TRADE CLOSED [#{trade.ref}]: PnL: {pnl:.2f} ({pnl_pct:.2f}%) | Net: {pnl_comm:.2f} | Reason: {self.last_exit_reason} | Duration: {duration}")
+
+            # Generate Narrative
+            narrative = self._generate_trade_narrative(trade, self.last_exit_reason)
+            
+            if trade.ref in self.trade_map:
+                self.trade_map[trade.ref]['exit_reason'] = self.last_exit_reason
+                self.trade_map[trade.ref]['narrative'] = narrative
+            else:
+                self.trade_map[trade.ref] = {
+                    'exit_reason': self.last_exit_reason,
+                    'narrative': narrative
+                }
+
+    def _generate_trade_narrative(self, trade, exit_reason):
+        """
+        Generates a human-readable description of how the trade unfolded.
+        """
+        # Safer direction check using trade attribute
+        direction = "Long" if trade.long else "Short"
+        pnl = trade.pnl # Gross PnL
+        result = "profit" if pnl > 0 else "loss"
+        
+        entry_price = trade.price
+        price_diff_pct = 0.0
+        
+        # Get executed size from our own tracker (most reliable)
+        # Fallback to history if missing (e.g. restart)
+        stored_info = self.trade_map.get(trade.ref, {})
+        size = stored_info.get('size', 0)
+        
+        if size == 0 and len(trade.history) > 0:
+             size = trade.history[0].event.size
+            
+        if entry_price > 0 and size != 0:
+             # PnL = (Exit - Entry) * Size
+             # Price Move = PnL / Size
+             # % Move = (Price Move / Entry) * 100
+             raw_move = pnl / size
+             price_diff_pct = abs((raw_move / entry_price) * 100)
+
+        narrative = ""
+        
+        if exit_reason == "Take Profit":
+            narrative = f"{direction} trade hit the Take Profit target perfectly. Price moved {price_diff_pct:.2f}% in favor, securing a solid win."
+        elif exit_reason == "Stop Loss":
+            narrative = f"{direction} trade hit the Stop Loss. Market moved against confidence immediately, resulting in a controlled loss."
+        elif exit_reason == "Trailing Stop":
+            if pnl > 0:
+                narrative = f"{direction} trade followed the trend successfully. Price moved significantly in favor ({price_diff_pct:.2f}%), and the Trailing Stop locked in profits as the trend reversed."
+            else:
+                narrative = f"{direction} trade was closed by Trailing Stop. Price didn't gain enough momentum, closing with a slight result."
+        elif exit_reason == "Breakeven":
+            narrative = f"{direction} trade moved in favor but then reversed. The position was closed at Breakeven to protect capital."
+        else:
+             narrative = f"{direction} trade closed with {result}. Exit triggered by {exit_reason}."
+             
+        return narrative 
                 
     def notify_order(self, order):
         if order.status in [order.Submitted, order.Accepted]:
@@ -152,16 +239,52 @@ class PriceActionStrategy(bt.Strategy):
 
             if order == self.order:
                  self.order = None # Main order completed
+            
+            # Check Exit Orders
+            is_stop_order = (self.stop_order and order.ref == self.stop_order.ref)
+            is_tp_order = (self.tp_order and order.ref == self.tp_order.ref)
+            
+            if is_stop_order:
+                self.last_exit_reason = self.stop_reason
+                print(f"[{dt_str}] EXIT TRIGGERED by {self.stop_reason} (Price: {order.executed.price:.2f})")
+                
+                # Cleanup sibling TP order if it exists
+                if self.tp_order:
+                    # check status to avoid double cancel?
+                    # print(f"🧹 Cleanup: Cancelling sibling TP order {self.tp_order.ref}")
+                    self.cancel(self.tp_order)
+                    self.tp_order = None
+                self.stop_order = None
+                    
+            elif is_tp_order:
+                self.last_exit_reason = "Take Profit"
+                print(f"[{dt_str}] EXIT TRIGGERED by Take Profit (Price: {order.executed.price:.2f})")
+                
+                # Cleanup sibling Stop order if it exists
+                if self.stop_order:
+                    # print(f"🧹 Cleanup: Cancelling sibling Stop order {self.stop_order.ref}")
+                    self.cancel(self.stop_order)
+                    self.stop_order = None
+                self.tp_order = None
+                
+            elif self.order is None and not is_stop_order and not is_tp_order:
+                # Fallback detection
+                if self.stop_order and order.ref != self.stop_order.ref:
+                     # Could be an untracked TP order from before
+                     pass 
+                # print(f"[{dt_str}] Order Completed. Ref: {order.ref}")
 
         elif order.status in [order.Canceled, order.Margin, order.Rejected]:
             dt_str = self.data.datetime.date(0).isoformat()
             info_str = f" Info: {order.info}" if order.info else ""
             if order.status == order.Canceled:
-                print(f"[{dt_str}] ℹ️ Order Canceled (id={order.ref}){info_str}")
+                reason = self.cancel_reason if self.cancel_reason else "OCO / Broker Internal"
+                # print(f"[{dt_str}] ℹ️ Order Canceled (id={order.ref}) - Reason: {reason}{info_str}")
+                self.cancel_reason = None # Reset
             elif order.status == order.Margin:
-                print(f"[{dt_str}] ⛔ ORDER MARGIN ERROR (id={order.ref}) - Insufficient Cash?{info_str}")
+                print(f"[{dt_str}] ⛔ ORDER MARGIN ERROR - Insufficient Cash?{info_str}")
             else:
-                print(f"[{dt_str}] ⛔ ORDER REJECTED (id={order.ref}){info_str}")
+                print(f"[{dt_str}] ⛔ ORDER REJECTED {info_str}")
             
             # Reset tracking if orders are canceled
             if order == self.stop_order:
@@ -190,9 +313,14 @@ class PriceActionStrategy(bt.Strategy):
                      self._dd_limit_hit = True
                  return 
                  
-        # Trailing Stop & Breakeven
+        # Trailing Stop & Breakeven Logic
         if self.position and self.stop_order:
-             # Breakeven Logic
+             current_sl = self.stop_order.price
+             new_sl = current_sl
+             sl_changed = False
+             new_reason = self.stop_reason
+
+             # 1. Breakeven Check
              if self.params.breakeven_trigger_r > 0 and self.initial_sl is not None:
                  risk = abs(self.position.price - self.initial_sl)
                  if risk > 0:
@@ -203,50 +331,60 @@ class PriceActionStrategy(bt.Strategy):
                          profit = self.position.price - self.close[0]
                      
                      if profit >= (risk * self.params.breakeven_trigger_r):
-                         # Move to Breakeven
-                         # Add a small buffer for commissions? Let's stick to pure entry price for now as per 'Breakeven'
-                         new_sl = self.position.price
-                         
-                         # Check if we need to update
-                         update_needed = False
-                         if self.position.size > 0 and new_sl > self.stop_order.price:
-                             update_needed = True
-                         elif self.position.size < 0 and new_sl < self.stop_order.price:
-                             update_needed = True
-                             
-                         if update_needed:
-                             print(f"[{self.data.datetime.date(0).isoformat()}] BREAKEVEN TRIGGERED: Moving SL to {new_sl:.2f}")
-                             self.cancel(self.stop_order)
-                             if self.position.size > 0:
-                                 self.stop_order = self.sell(price=new_sl, exectype=bt.Order.Stop, size=self.position.size)
-                             else:
-                                 self.stop_order = self.buy(price=new_sl, exectype=bt.Order.Stop, size=abs(self.position.size))
-                             
-                             self.initial_sl = None # Done
-                             
-        # Trailing Stop Logic (runs after or independent of BE)
-        if self.position and self.params.trailing_stop_distance > 0 and self.stop_order:
-             # ... existing trailing logic ...
-             pass
-             
-             if self.position.size > 0: # Long
-                dist = self.close[0] * self.params.trailing_stop_distance
-                new_stop_price = self.close[0] - dist
-                if new_stop_price > self.stop_order.price:
-                    self.cancel(self.stop_order)
-                    self.stop_order = self.sell(price=new_stop_price, exectype=bt.Order.Stop, size=self.position.size)
-                    # print(f"[{self.data.datetime.date(0).isoformat()}] Trailing Stop Moved Up to {new_stop_price:.2f}")
+                         be_price = self.position.price
+                         # Update if BE price is better than current SL
+                         if self.position.size > 0 and be_price > new_sl:
+                             new_sl = be_price
+                             sl_changed = True
+                             new_reason = "Breakeven"
+                             # print(f"[{self.data.datetime.date(0).isoformat()}] Breakeven condition met. Proposed SL: {new_sl:.2f}")
+                             self.initial_sl = None # Mark BE as done
+                         elif self.position.size < 0 and be_price < new_sl:
+                             new_sl = be_price
+                             sl_changed = True
+                             new_reason = "Breakeven"
+                             # print(f"[{self.data.datetime.date(0).isoformat()}] Breakeven condition met. Proposed SL: {new_sl:.2f}")
+                             self.initial_sl = None # Mark BE as done
 
-             elif self.position.size < 0: # Short
-                dist = self.close[0] * self.params.trailing_stop_distance
-                new_stop_price = self.close[0] + dist
-                if new_stop_price < self.stop_order.price:
-                    self.cancel(self.stop_order)
-                    self.stop_order = self.buy(price=new_stop_price, exectype=bt.Order.Stop, size=abs(self.position.size))
-                    # print(f"[{self.data.datetime.date(0).isoformat()}] Trailing Stop Moved Down to {new_stop_price:.2f}")
+             # 2. Trailing Stop Check (Can overwrite BE if stricter)
+             if self.params.trailing_stop_distance > 0:
+                 if self.position.size > 0: # Long
+                    dist = self.close[0] * self.params.trailing_stop_distance
+                    trail_price = self.close[0] - dist
+                    if trail_price > new_sl:
+                        new_sl = trail_price
+                        sl_changed = True
+                        new_reason = "Trailing Stop"
+                        # print(f"[{self.data.datetime.date(0).isoformat()}] Trailing condition met. Proposed SL: {new_sl:.2f}")
+
+                 elif self.position.size < 0: # Short
+                    dist = self.close[0] * self.params.trailing_stop_distance
+                    trail_price = self.close[0] + dist
+                    if trail_price < new_sl:
+                        new_sl = trail_price
+                        sl_changed = True
+                        new_reason = "Trailing Stop"
+                        # print(f"[{self.data.datetime.date(0).isoformat()}] Trailing condition met. Proposed SL: {new_sl:.2f}")
+
+             # 3. Execute Single Update if needed
+             if sl_changed:
+                 print(f"[{self.data.datetime.date(0).isoformat()}] STOP UPDATE: {new_reason} -> {new_sl:.2f}")
+                 self.cancel_reason = f"{new_reason} Update"
+                 self.cancel(self.stop_order)
+                 self.stop_reason = new_reason
+                 
+                 if self.position.size > 0:
+                     self.stop_order = self.sell(price=new_sl, exectype=bt.Order.Stop, size=self.position.size)
+                 else:
+                     self.stop_order = self.buy(price=new_sl, exectype=bt.Order.Stop, size=abs(self.position.size))
+                 
+                 # print(f"    -> New Stop Created. Ref (approx): {self.stop_order.ref}")
 
 
         # 1. Pattern Detection
+        if self.position:
+            return
+
         if self._is_bullish_pinbar():
             if self._check_filters_long():
                 self._enter_long("Bullish Pinbar")
@@ -287,6 +425,7 @@ class PriceActionStrategy(bt.Strategy):
             'take_profit': tp_price
         }
         self.initial_sl = sl_price
+        self.stop_reason = "Stop Loss" # Reset stop reason for new trade
 
         # Use bracket order for atomic execution assurance
         orders = self.buy_bracket(
@@ -299,11 +438,12 @@ class PriceActionStrategy(bt.Strategy):
         
         # Handle potential nested list return from bracket order
         if len(orders) > 0 and isinstance(orders[0], list):
-             self.order = orders[0][0]
-             self.stop_order = orders[0][1]
-        else:
-             self.order = orders[0]
-             self.stop_order = orders[1]
+             orders = orders[0]
+        
+        # Expecting [Main, Stop, Limit] from bracket
+        self.order = orders[0]
+        self.stop_order = orders[1]
+        self.tp_order = orders[2] if len(orders) > 2 else None
              
         # Add metadata to the main order for the analyzer to pick up
         self.order.addinfo(
@@ -334,6 +474,7 @@ class PriceActionStrategy(bt.Strategy):
             'take_profit': tp_price
         }
         self.initial_sl = sl_price
+        self.stop_reason = "Stop Loss" # Reset stop reason for new trade
         
         orders = self.sell_bracket(
             price=self.close[0], 
@@ -345,11 +486,12 @@ class PriceActionStrategy(bt.Strategy):
         
         # Handle potential nested list return from bracket order
         if len(orders) > 0 and isinstance(orders[0], list):
-             self.order = orders[0][0]
-             self.stop_order = orders[0][1]
-        else:
-             self.order = orders[0]
-             self.stop_order = orders[1]
+             orders = orders[0]
+        
+        # Expecting [Main, Stop, Limit] from bracket
+        self.order = orders[0]
+        self.stop_order = orders[1]
+        self.tp_order = orders[2] if len(orders) > 2 else None
 
         # Add metadata to the main order for the analyzer to pick up
         self.order.addinfo(
@@ -365,6 +507,9 @@ class PriceActionStrategy(bt.Strategy):
         rng = self.high[0] - self.low[0]
         if rng == 0: return False
         
+        # Check if bar size is significant enough
+        if rng < (self.atr[0] * self.params.min_range_factor): return False
+        
         lower_wick = min(self.open[0], self.close[0]) - self.low[0]
         
         return (
@@ -377,6 +522,9 @@ class PriceActionStrategy(bt.Strategy):
         rng = self.high[0] - self.low[0]
         if rng == 0: return False
         
+        # Check if bar size is significant enough
+        if rng < (self.atr[0] * self.params.min_range_factor): return False
+        
         upper_wick = self.high[0] - max(self.open[0], self.close[0])
         
         return (
@@ -386,6 +534,10 @@ class PriceActionStrategy(bt.Strategy):
 
     def _is_bullish_engulfing(self):
         # Prev red, curr green, curr body covers prev body
+        rng = self.high[0] - self.low[0]
+        # Check if bar size is significant enough
+        if rng < (self.atr[0] * self.params.min_range_factor): return False
+        
         if self.close[-1] < self.open[-1] and self.close[0] > self.open[0]:
             return (
                 self.close[0] >= self.open[-1] and 
@@ -395,6 +547,10 @@ class PriceActionStrategy(bt.Strategy):
 
     def _is_bearish_engulfing(self):
         # Prev green, curr red, curr body covers prev body
+        rng = self.high[0] - self.low[0]
+        # Check if bar size is significant enough
+        if rng < (self.atr[0] * self.params.min_range_factor): return False
+        
         if self.close[-1] > self.open[-1] and self.close[0] < self.open[0]:
              return (
                 self.close[0] <= self.open[-1] and 
@@ -413,8 +569,9 @@ class PriceActionStrategy(bt.Strategy):
             if self.rsi[0] > self.params.rsi_overbought: return False
 
         if self.params.use_rsi_momentum:
-            # RSI should be above 50 for bullish momentum
-            if self.rsi[0] < 50: return False
+            # RSI should be above threshold for bullish momentum
+            # Default threshold 60 means we want strong momentum > 60
+            if self.rsi[0] < self.params.rsi_momentum_threshold: return False
 
         if self.params.use_adx_filter:
             if self.adx[0] < self.params.adx_threshold: return False
@@ -432,8 +589,11 @@ class PriceActionStrategy(bt.Strategy):
             if self.rsi[0] < self.params.rsi_oversold: return False
 
         if self.params.use_rsi_momentum:
-            # RSI should be below 50 for bearish momentum
-            if self.rsi[0] > 50: return False
+            # RSI should be below (100 - threshold) for bearish momentum
+            # e.g. if threshold is 60, we want RSI < 40 for strong bearish momentum
+            # detailed logic: 100 - 60 = 40.
+            bearish_threshold = 100 - self.params.rsi_momentum_threshold
+            if self.rsi[0] > bearish_threshold: return False
 
         if self.params.use_adx_filter:
             if self.adx[0] < self.params.adx_threshold: return False

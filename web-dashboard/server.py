@@ -685,7 +685,7 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
             'slippage_bp': config.get('slippage_bp', 0.0),
             'log_level': 'INFO',
             'export_logs': True,
-            'log_file': 'results/backtest_logs.json',
+            'log_file': os.path.join(RESULTS_DIR, 'backtest_logs.json'),
             'detailed_signals': True,
             'detailed_trades': True,
             'market_analysis': True,
@@ -732,6 +732,10 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
             
             def write(self, text: str):
                 if text.strip():  # Only send non-empty lines
+                    # Echo to original stdout so we can see it in terminal/logs
+                    original_stdout.write(text + '\n')
+                    original_stdout.flush()
+                    
                     # Count signals from log messages
                     if "SIGNAL GENERATED:" in text:
                         self.signals_count += 1
@@ -740,7 +744,7 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
                     log_queue.put(msg)
             
             def flush(self):
-                pass
+                original_stdout.flush()
         
         # Redirect stdout and stderr to capture all output
         original_stdout = sys.stdout
@@ -833,6 +837,7 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
                         'exit_reason': trade.get('exit_reason', 'Unknown'),
                         'commission': trade.get('commission', 0),
                         'reason': trade.get('reason', 'Unknown'), # Use .get() for safety
+                        'narrative': trade.get('narrative', None), # Add Narrative field
                         'metadata': {}
                     }
                     trades_data.append(trade_dict)
@@ -903,7 +908,7 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
                 with open(result_file, 'w') as f:
                     json.dump(metrics, f, indent=2, default=str)
                 await broadcast_message(f"[{run_id}] ✅ Results saved to {result_file}\n")
-                print(f"DEBUG: Results saved. Proceeding to report generation for {run_id}")
+                # print(f"DEBUG: Results saved. Proceeding to report generation for {run_id}")
                 await asyncio.sleep(0.5) # Increased sleep to ensure flush
             except Exception as e:
                 import traceback
