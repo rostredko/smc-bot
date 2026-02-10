@@ -16,7 +16,12 @@ import {
     IconButton,
     Collapse,
     Button,
-    Stack
+    Stack,
+    Dialog,
+    DialogTitle,
+    DialogContent,
+    DialogContentText,
+    DialogActions
 } from '@mui/material';
 import {
     KeyboardArrowDown,
@@ -25,7 +30,8 @@ import {
     NavigateBefore,
     NavigateNext,
     FirstPage,
-    LastPage
+    LastPage,
+    DeleteOutline
 } from '@mui/icons-material';
 
 interface BacktestSummary {
@@ -154,6 +160,42 @@ const BacktestHistoryList: React.FC = () => {
         return undefined;
     };
 
+    const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+    const [itemToDelete, setItemToDelete] = useState<string | null>(null);
+
+    const handleDeleteClick = (e: React.MouseEvent, filename: string) => {
+        e.stopPropagation(); // Prevent row expansion
+        setItemToDelete(filename);
+        setDeleteDialogOpen(true);
+    };
+
+    const handleDeleteCancel = () => {
+        setDeleteDialogOpen(false);
+        setItemToDelete(null);
+    };
+
+    const handleDeleteConfirm = async () => {
+        if (!itemToDelete) return;
+
+        try {
+            const response = await fetch(`${API_BASE}/api/backtest/history/${itemToDelete}`, {
+                method: 'DELETE',
+            });
+
+            if (response.ok) {
+                // Refresh list
+                fetchHistory(page);
+            } else {
+                console.error("Failed to delete backtest:", response.status);
+            }
+        } catch (error) {
+            console.error("Error deleting backtest:", error);
+        } finally {
+            setDeleteDialogOpen(false);
+            setItemToDelete(null);
+        }
+    };
+
     return (
         <Card sx={{ mt: 3 }}>
             <CardHeader
@@ -176,12 +218,13 @@ const BacktestHistoryList: React.FC = () => {
                                 <TableCell>PnL</TableCell>
                                 <TableCell align="right">Win Rate</TableCell>
                                 <TableCell align="right">Drawdown</TableCell>
+                                <TableCell align="center">Actions</TableCell>
                             </TableRow>
                         </TableHead>
                         <TableBody>
                             {history.length === 0 ? (
                                 <TableRow>
-                                    <TableCell colSpan={7} align="center">
+                                    <TableCell colSpan={8} align="center">
                                         <Typography color="textSecondary" sx={{ py: 2 }}>
                                             No history found
                                         </Typography>
@@ -236,9 +279,20 @@ const BacktestHistoryList: React.FC = () => {
                                                 <TableCell>{formatPnL(item.total_pnl, item.initial_capital)}</TableCell>
                                                 <TableCell align="right">{(item.win_rate * 100).toFixed(1)}%</TableCell>
                                                 <TableCell align="right" sx={{ color: 'red' }}>{item.max_drawdown.toFixed(2)}%</TableCell>
+                                                <TableCell align="center">
+                                                    <IconButton
+                                                        aria-label="delete"
+                                                        size="small"
+                                                        onClick={(e) => handleDeleteClick(e, item.filename)}
+                                                        color="default"
+                                                        sx={{ '&:hover': { color: 'error.main' } }}
+                                                    >
+                                                        <DeleteOutline fontSize="small" />
+                                                    </IconButton>
+                                                </TableCell>
                                             </TableRow>
                                             <TableRow>
-                                                <TableCell style={{ paddingBottom: 0, paddingTop: 0 }} colSpan={7}>
+                                                <TableCell style={{ paddingBottom: 0, paddingTop: 0 }} colSpan={8}>
                                                     <Collapse in={openRows[item.filename]} timeout="auto" unmountOnExit>
                                                         <Box sx={{ margin: 2 }}>
                                                             <Box sx={{ display: 'flex', gap: 4, mb: 2, flexWrap: 'wrap' }}>
@@ -384,6 +438,29 @@ const BacktestHistoryList: React.FC = () => {
                         </Button>
                     </Stack>
                 )}
+
+                {/* Delete Confirmation Dialog */}
+                <Dialog
+                    open={deleteDialogOpen}
+                    onClose={handleDeleteCancel}
+                    aria-labelledby="alert-dialog-title"
+                    aria-describedby="alert-dialog-description"
+                >
+                    <DialogTitle id="alert-dialog-title">
+                        {"Confirm Deletion"}
+                    </DialogTitle>
+                    <DialogContent>
+                        <DialogContentText id="alert-dialog-description">
+                            Are you sure you want to delete this backtest result? This action cannot be undone.
+                        </DialogContentText>
+                    </DialogContent>
+                    <DialogActions>
+                        <Button onClick={handleDeleteCancel}>Cancel</Button>
+                        <Button onClick={handleDeleteConfirm} color="error" autoFocus>
+                            Delete
+                        </Button>
+                    </DialogActions>
+                </Dialog>
             </CardContent>
         </Card>
     );

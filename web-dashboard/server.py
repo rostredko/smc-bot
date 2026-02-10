@@ -615,6 +615,39 @@ async def cancel_backtest(run_id: str):
     return {"message": "Backtest cancellation requested"}
 
 
+@app.delete("/api/backtest/history/{filename}")
+async def delete_backtest_result(filename: str):
+    """Delete a specific backtest result file."""
+    # Security check: ensure filename contains only safe characters
+    if not filename.endswith(".json") or "/" in filename or "\\" in filename:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+        
+    file_path = os.path.join(RESULTS_DIR, filename)
+    
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="File not found")
+        
+    try:
+        os.remove(file_path)
+        
+        # Also try to remove the corresponding trades file if it exists
+        # Pattern: backtest_TIMESTAMP_results.json -> backtest_TIMESTAMP_trades.json
+        if "_results.json" in filename:
+            trades_file = filename.replace("_results.json", "_trades.json")
+            trades_path = os.path.join(RESULTS_DIR, trades_file)
+            if os.path.exists(trades_path):
+                os.remove(trades_path)
+                
+        # Also try to remove logs file
+        # Pattern: backtest_TIMESTAMP_results.json -> backtest_TIMESTAMP_logs.json (sometimes)
+        # But commonly logs are just backtest_logs.json (overwritten) or separate. 
+        # For now, we just delete the main result file and trades file.
+        
+        return {"message": f"Successfully deleted {filename}"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error deleting file: {str(e)}")
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     """WebSocket endpoint for real-time console output."""

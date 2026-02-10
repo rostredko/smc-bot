@@ -7,16 +7,12 @@ from fastapi.testclient import TestClient
 # Add web-dashboard to path to import server.py
 # We need to go up one level from tests, then into web-dashboard
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.append(os.path.join(PROJECT_ROOT, 'web-dashboard'))
-
-# Also add project root so server can import engine
-sys.path.append(PROJECT_ROOT)
+sys.path.insert(0, os.path.join(PROJECT_ROOT, 'web-dashboard'))
+sys.path.insert(0, PROJECT_ROOT)
 
 try:
     from server import app
 except ImportError:
-    # If standard import fails (due to module naming), we might need to skip
-    # or use direct loading. For now, assuming this works.
     print("Failed to import server from web-dashboard")
     app = None
 
