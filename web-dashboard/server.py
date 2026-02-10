@@ -90,6 +90,8 @@ class BacktestConfig(BaseModel):
     dynamic_position_sizing: bool = True
     taker_fee: float = 0.04  # Default 0.04%
     slippage_bp: float = 0.0 # Default 0 basis points
+    exchange: str = "binance"
+    exchange_type: str = "future"
 
 
 class BacktestRequest(BaseModel):
@@ -997,6 +999,95 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
         await broadcast_message(f"[{run_id}] ERROR: {str(e)}\n")
 
 
+
+import ccxt
+
+# Global cache for symbols
+# structure: { "data": ["BTC/USDT", ...], "timestamp": 1234567890.0 }
+SYMBOLS_CACHE = {
+    "data": [],
+    "timestamp": 0.0
+}
+CACHE_DURATION_SECONDS = 300 # 5 minutes
+
+@app.get("/api/symbols/top")
+async def get_top_symbols(limit: int = 10):
+    """
+    Fetch top symbols by 24h quote volume from Binance.
+    Cached for 5 minutes.
+    """
+    global SYMBOLS_CACHE
+    now = datetime.now().timestamp()
+    
+    # Check cache
+    if SYMBOLS_CACHE["data"] and (now - SYMBOLS_CACHE["timestamp"] < CACHE_DURATION_SECONDS):
+        return {"symbols": SYMBOLS_CACHE["data"][:limit]}
+
+    try:
+        # Run synchronous ccxt code in a thread to avoid blocking loop
+        def fetch_from_exchange():
+            exchange = ccxt.binance({'enableRateLimit': True})
+            tickers = exchange.fetch_tickers()
+            
+            # Filter and sort
+            valid_pairs = []
+            # Filter and sort
+            valid_pairs = []
+            
+            # Symbols to exclude (Stablecoins, Fiat pairs, Special tokens)
+            EXCLUDED_PATTERNS = ['UP/', 'DOWN/', 'BEAR/', 'BULL/']
+            EXCLUDED_EXACT = [
+                'USDC/USDT', 'FDUSD/USDT', 'TUSD/USDT', 'USDP/USDT', 'BUSD/USDT', 
+                'DAI/USDT', 'EUR/USDT', 'GBP/USDT', 'PAXG/USDT', 'WBTC/USDT',
+                'USTC/USDT', 'USD1/USDT', 'ZAMA/USDT', 'USDE/USDT'
+            ]
+            
+            for symbol, ticker in tickers.items():
+                if not symbol.endswith('/USDT'):
+                    continue
+                    
+                # Check exclusions
+                if symbol in EXCLUDED_EXACT:
+                    continue
+                    
+                is_excluded = False
+                for pattern in EXCLUDED_PATTERNS:
+                    if pattern in symbol:
+                        is_excluded = True
+                        break
+                if is_excluded:
+                    continue
+
+                quote_vol = ticker.get('quoteVolume', 0)
+                if quote_vol:
+                     valid_pairs.append((symbol, quote_vol))
+            
+            # Sort by volume desc
+            valid_pairs.sort(key=lambda x: x[1], reverse=True)
+            
+            return [p[0] for p in valid_pairs[:50]] # Keep top 50 in cache
+
+        # Execute in threadpool
+        loop = asyncio.get_event_loop()
+        top_symbols = await loop.run_in_executor(None, fetch_from_exchange)
+        
+        # Update cache
+        SYMBOLS_CACHE = {
+            "data": top_symbols,
+            "timestamp": now
+        }
+        
+        return {"symbols": top_symbols[:limit]}
+        
+    except Exception as e:
+        logger.error(f"Error fetching top symbols: {e}")
+        # Return fallback if cache empty, or old cache if available
+        if SYMBOLS_CACHE["data"]:
+             return {"symbols": SYMBOLS_CACHE["data"][:limit]}
+        return {"symbols": ["BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT"]}
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
+
+

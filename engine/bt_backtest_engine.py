@@ -78,6 +78,9 @@ class BTBacktestEngine(BaseEngine):
         self.cerebro.addanalyzer(bt.analyzers.SQN, _name='sqn')
         self.cerebro.addanalyzer(TradeListAnalyzer, _name='tradelist')
         self.cerebro.addanalyzer(EquityCurveAnalyzer, _name='equity')
+        
+        # Add Observers for live strategy feedback (stats)
+        self.cerebro.addobserver(bt.observers.DrawDown)
 
         print("Starting Backtrader backtest...")
         results = self.run()

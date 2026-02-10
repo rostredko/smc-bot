@@ -35,7 +35,8 @@ import {
   DialogContent,
   DialogActions,
   Divider,
-  Stack
+  Stack,
+  Autocomplete
 } from "@mui/material";
 import {
   PlayArrow,
@@ -215,7 +216,7 @@ const DEFAULT_CONFIG: BacktestConfig = {
 };
 
 // Validation helper outside component (pure function)
-const validateBacktestConfig = (config: BacktestConfig): Record<string, string> => {
+const validateBacktestConfig = (config: BacktestConfig, availableSymbols: string[] = []): Record<string, string> => {
   const newErrors: Record<string, string> = {};
   const timeframeRegex = /^\d+[mhdwM]$/;
 
@@ -226,6 +227,11 @@ const validateBacktestConfig = (config: BacktestConfig): Record<string, string> 
     newErrors['timeframe_primary'] = "Required";
   } else if (!timeframeRegex.test(tfPrimary)) {
     newErrors['timeframe_primary'] = "Invalid (e.g. 4h)";
+  }
+
+  const tfSecondary = config.timeframes && config.timeframes[1] !== undefined ? config.timeframes[1].trim() : "";
+  if (tfSecondary && !timeframeRegex.test(tfSecondary)) {
+    newErrors['timeframe_secondary'] = "Invalid (e.g. 15m)";
   }
 
   // 2. Numeric validation
@@ -253,6 +259,8 @@ const validateBacktestConfig = (config: BacktestConfig): Record<string, string> 
   // Symbol validation
   if (!config.symbol || !config.symbol.trim()) {
     newErrors['symbol'] = "Required";
+  } else if (availableSymbols.length > 0 && !availableSymbols.includes(config.symbol)) {
+    newErrors['symbol'] = "Invalid symbol. Select from dropdown.";
   }
 
   return newErrors;
@@ -409,6 +417,26 @@ export default function App() {
     };
   }, [connectWebSocket]);
 
+  // Top Symbols Fetch
+  const [topSymbols, setTopSymbols] = useState<string[]>([]);
+  useEffect(() => {
+    const fetchTopSymbols = async () => {
+      try {
+        // Use API_BASE constant
+        const response = await fetch(`${API_BASE}/api/symbols/top`);
+        if (response.ok) {
+          const data = await response.json();
+          if (data.symbols) {
+            setTopSymbols(data.symbols);
+          }
+        }
+      } catch (error) {
+        console.error("Error fetching top symbols:", error);
+      }
+    };
+    fetchTopSymbols();
+  }, []);
+
   // Poll for backtest status when running
   useEffect(() => {
     if (isRunning && backtestStatus?.run_id) {
@@ -491,7 +519,7 @@ export default function App() {
 
   const startBacktest = async () => {
     // Run validation immediately
-    const newErrors = validateBacktestConfig(config);
+    const newErrors = validateBacktestConfig(config, topSymbols);
     if (Object.keys(newErrors).length > 0) {
       setErrors(newErrors);
       return;
@@ -1115,35 +1143,63 @@ export default function App() {
 
                     <Grid item xs={12} md={4}>
                       <MuiTooltip title={TOOLTIP_HINTS["symbol"]} arrow placement="top">
-                        <TextField
-                          label="Symbol"
-                          required
+                        <Autocomplete
+                          freeSolo
+                          options={topSymbols}
                           value={config.symbol}
-                          onChange={e => handleConfigChange("symbol", e.target.value)}
+                          onChange={(_, newValue) => {
+                            if (newValue) handleConfigChange("symbol", newValue);
+                          }}
+                          onInputChange={(_, newInputValue) => {
+                            handleConfigChange("symbol", newInputValue);
+                          }}
                           disabled={isConfigDisabled}
-                          fullWidth
-                          error={!!errors.symbol}
-                          helperText={errors.symbol}
-
+                          renderInput={(params) => (
+                            <TextField
+                              {...params}
+                              label="Symbol"
+                              required
+                              fullWidth
+                              error={!!errors.symbol}
+                              helperText={errors.symbol}
+                            />
+                          )}
                         />
                       </MuiTooltip>
                     </Grid>
 
-                    <Grid item xs={12} md={4}>
+                    <Grid item xs={12} md={2}>
                       <MuiTooltip title={TOOLTIP_HINTS["timeframe_primary"]} arrow placement="top">
                         <TextField
-                          label="Timeframe"
+                          label="Analysis Timeframe (High)"
                           required
                           value={config.timeframes && config.timeframes[0] ? config.timeframes[0] : ""}
                           onChange={e => {
                             const val = e.target.value;
-                            handleConfigChange("timeframes", [val]);
+                            const currentSecondary = config.timeframes && config.timeframes[1] ? config.timeframes[1] : "";
+                            handleConfigChange("timeframes", currentSecondary ? [val, currentSecondary] : [val]);
                           }}
                           disabled={isConfigDisabled}
                           fullWidth
                           error={!!errors.timeframe_primary}
                           helperText={errors.timeframe_primary}
-
+                        />
+                      </MuiTooltip>
+                    </Grid>
+                    <Grid item xs={12} md={2}>
+                      <MuiTooltip title="The lower timeframe used for execution and finer granularity (e.g. 15m)" arrow placement="top">
+                        <TextField
+                          label="Execution Timeframe (Low)"
+                          value={config.timeframes && config.timeframes[1] ? config.timeframes[1] : ""}
+                          onChange={e => {
+                            const val = e.target.value;
+                            const currentPrimary = config.timeframes && config.timeframes[0] ? config.timeframes[0] : "4h";
+                            handleConfigChange("timeframes", val ? [currentPrimary, val] : [currentPrimary]);
+                          }}
+                          disabled={isConfigDisabled}
+                          fullWidth
+                          error={!!errors.timeframe_secondary}
+                          helperText={errors.timeframe_secondary}
                         />
                       </MuiTooltip>
                     </Grid>

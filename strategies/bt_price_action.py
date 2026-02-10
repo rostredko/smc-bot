@@ -77,6 +77,22 @@ class PriceActionStrategy(bt.Strategy):
         # Track active stop reason (e.g. "Stop Loss", "Trailing Stop", "Breakeven")
         self.stop_reason = "Stop Loss"
         self.last_exit_reason = "Unknown"
+        
+        # Local trade ID counter for clean logging
+        self.trade_id_map = {}
+        self.next_trade_id = 1
+
+    def _calculate_position_size(self, entry_price, stop_loss):
+        # ... (logic remains same, omitted for brevity if not replacing entire block)
+        # Actually I need to be careful with replace_file_content scope.
+        # I will do two separate replaces or one big one if contiguous.
+        # This tool call is for __init__ end and _calculate_position_size start?
+        # Use separate calls for safety.
+        pass
+
+# Wait, I cannot use 'pass' in ReplacementContent effectively if I want to just append to __init__.
+# I will rewrite the end of __init__ properly.
+
 
     def _calculate_position_size(self, entry_price, stop_loss):
         """
@@ -118,8 +134,6 @@ class PriceActionStrategy(bt.Strategy):
 
     def get_trade_info(self, trade_ref):
         info = self.trade_map.get(trade_ref, {})
-        # print(f"📖 get_trade_info({trade_ref}) called. Result: {info}")
-        # print(f"📋 Full trade_map: {self.trade_map}")
         return info
 
     def notify_trade(self, trade):
@@ -128,10 +142,8 @@ class PriceActionStrategy(bt.Strategy):
             # print(f"🔵 TRADE OPENED: ref={trade.ref}, size={current_size}, pending_metadata={self.pending_metadata}")
             
             if self.pending_metadata:
-                # print(f"DEBUG: Mapping Trade {trade.ref} to metadata: {self.pending_metadata}")
                 self.pending_metadata['size'] = current_size
                 self.trade_map[trade.ref] = self.pending_metadata
-                # print(f"🟢 STORED in trade_map[{trade.ref}]: {self.trade_map[trade.ref]}")
                 self.pending_metadata = None 
             else:
                 print(f"CRITICAL: Trade {trade.ref} opened WITHOUT metadata! Pending is None.")
@@ -155,7 +167,13 @@ class PriceActionStrategy(bt.Strategy):
                  raw_move = pnl / size
                  pnl_pct = (raw_move / entry_price) * 100
             
-            print(f"🔴 TRADE CLOSED [#{trade.ref}]: PnL: {pnl:.2f} ({pnl_pct:.2f}%) | Net: {pnl_comm:.2f} | Reason: {self.last_exit_reason} | Duration: {duration}")
+            if trade.ref not in self.trade_id_map:
+                self.trade_id_map[trade.ref] = self.next_trade_id
+                self.next_trade_id += 1
+            
+            local_trade_id = self.trade_id_map[trade.ref]
+            
+            print(f"🔴 TRADE CLOSED [#{local_trade_id}]: PnL: {pnl:.2f} ({pnl_pct:.2f}%) | Net: {pnl_comm:.2f} | Reason: {self.last_exit_reason} | Duration: {duration}")
 
             # Generate Narrative
             narrative = self._generate_trade_narrative(trade, self.last_exit_reason)
@@ -306,7 +324,9 @@ class PriceActionStrategy(bt.Strategy):
             
         # 0. Check Max Drawdown
         if hasattr(self.stats, 'drawdown'):
-             dd = self.stats.drawdown.max.drawdown
+             # Use [0] to get current value from the LineIterator (Observer)
+             # 'drawdown' line contains the current drawdown percentage
+             dd = self.stats.drawdown.drawdown[0]
              if dd > self.params.max_drawdown:
                  if not getattr(self, '_dd_limit_hit', False):
                      print(f"[{self.data.datetime.date(0).isoformat()}] CRITICAL: Max Drawdown {dd:.2f}% exceeded limit {self.params.max_drawdown}%. Stopping trading.")

@@ -1,4 +1,4 @@
-import React, { memo } from 'react';
+import { memo } from 'react';
 import { Grid, Box, TextField, FormControlLabel, Switch, Tooltip as MuiTooltip } from '@mui/material';
 
 interface StrategyFieldProps {

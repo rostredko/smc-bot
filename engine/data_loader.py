@@ -41,7 +41,12 @@ class DataLoader:
         """Initialize the ccxt exchange client."""
         print(f"🔌 Initializing {self.exchange_name} ({self.exchange_type}) exchange connection...")
         try:
-            exchange_class = getattr(ccxt, self.exchange_name)
+            # Use binanceusdm for futures to avoid hitting Spot API (which might be blocked)
+            if self.exchange_name == 'binance' and self.exchange_type == 'future':
+                exchange_class = getattr(ccxt, 'binanceusdm')
+            else:
+                exchange_class = getattr(ccxt, self.exchange_name)
+                
             exchange = exchange_class(
                 {
                     "rateLimit": 1200,  # Respect rate limits

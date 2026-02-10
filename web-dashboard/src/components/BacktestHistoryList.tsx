@@ -58,6 +58,7 @@ const GENERAL_SETTINGS = [
     { label: "Max Drawdown", key: "max_drawdown", suffix: "%" },
     { label: "Leverage", key: "leverage", suffix: "x" },
     { label: "Symbol", key: "symbol" },
+    { label: "Timeframes", key: "timeframes", format: (v: any) => Array.isArray(v) ? v.join(', ') : v },
     { label: "Start Date", key: "start_date" },
     { label: "End Date", key: "end_date" },
     { label: "Trailing Stop Dist", key: "trailing_stop_distance" },
