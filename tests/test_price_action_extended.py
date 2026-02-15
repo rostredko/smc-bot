@@ -1,6 +1,6 @@
 
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, patch, PropertyMock
 import backtrader as bt
 import sys
 import os
@@ -39,10 +39,6 @@ class TestPriceActionExtended(unittest.TestCase):
         self.strategy = results[0]
         
         # Now Mock attributes for testing
-        # We need to un-bind the lines from the data feed for testing specific values
-        # Or just mock the accessors.
-        # Since _check_filters etc use self.rsi[0], we can mock self.rsi
-        
         self.strategy.params = MagicMock()
         # Default mock params
         self.strategy.params.min_range_factor = 0.8
@@ -56,25 +52,39 @@ class TestPriceActionExtended(unittest.TestCase):
         self.strategy.params.use_rsi_filter = True
         self.strategy.params.use_rsi_momentum = True
         self.strategy.params.use_adx_filter = True
+        self.strategy.params.risk_reward_ratio = 2.5
 
         # Mock indicators as simple lists/arrays that support [0]
-        # In BT, lines support [0]. We can use MagicMock with __getitem__.
-        # But for list check, simple list works if checked at index 0.
-        
         self.strategy.close = [100.0]
         self.strategy.open = [100.0]
         self.strategy.high = [100.0]
         self.strategy.low = [100.0]
         self.strategy.atr = [10.0]
-        self.strategy.ema = [90.0] 
         self.strategy.rsi = [55.0] 
         self.strategy.adx = [25.0] 
+        
+        # Mock dual-timeframe attributes
+        htf_mock = MagicMock()
+        htf_mock.close = [90.0]  # Default: close < ema → bearish
+        self.strategy.data_htf = htf_mock
+        self.strategy.ema_htf = [100.0]  # EMA above close → bearish
+        
+        ltf_mock = MagicMock()
+        ltf_mock.__len__ = MagicMock(return_value=300)
+        self.strategy.data_ltf = ltf_mock
+        
+        # Prevent churn filter from blocking
+        self.strategy.last_entry_bar = -1
 
         # Mock trade map
         self.strategy.trade_map = {}
 
     def test_filter_rsi_momentum_long(self):
         """Test RSI Momentum Logic for Long entries"""
+        # For long: data_htf.close > ema_htf (bullish trend)
+        self.strategy.data_htf.close = [110.0]
+        self.strategy.ema_htf = [100.0]
+        
         # Case 1: RSI = 55 (Too weak, threshold is 60)
         self.strategy.rsi = [55.0]
         self.assertFalse(self.strategy._check_filters_long(), "Should fail: RSI 55 < Threshold 60")
@@ -86,12 +96,12 @@ class TestPriceActionExtended(unittest.TestCase):
     def test_filter_rsi_momentum_short(self):
         """Test RSI Momentum Logic for Short entries"""
         # Threshold 60 means short threshold is 100-60 = 40.
+        # For short: data_htf.close < ema_htf (bearish trend)
+        self.strategy.data_htf.close = [80.0]
+        self.strategy.ema_htf = [90.0]
         
         # Case 1: RSI = 45 (Too weak, must be < 40)
         self.strategy.rsi = [45.0]
-        # Set close < EMA to pass trend filter
-        self.strategy.close = [80.0] 
-        self.strategy.ema = [90.0]
         self.assertFalse(self.strategy._check_filters_short(), "Should fail: RSI 45 > bearish_threshold 40")
 
         # Case 2: RSI = 35 (Strong bearish, < 40)
@@ -102,25 +112,12 @@ class TestPriceActionExtended(unittest.TestCase):
         """Test if small candles are rejected by min_range_factor"""
         # ATR = 10, min_range_factor = 0.8 => Min Range = 8.0
         
-        # Candle Range = 5.0 (Fail)
-        self.strategy.high = [105.0]
-        self.strategy.low = [100.0]
-        self.strategy.atr = [10.0]
-        self.strategy.open = [100.0]
-        self.strategy.close = [100.0] # Doji
-        
-        # We need to test _is_bullish_pinbar which uses this logic
-        # But wait, logic is inside the method.
-        # Let's mock a perfect pinbar shape but small size.
-        # Body 0, Wick 5. (Range 5).
-        # Open=100, Close=100, Low=100, High=105? No, pinbar needs long wick.
-        # Bullish Pinbar: Hammer. Low is far below.
-        # Open=104, Close=104, High=105, Low=100.
-        # Range=5. Body=0. Lower Wick = 4. (4/5 = 0.8 > 0.6). Shape is OK.
+        # Valid pinbar shape but small size
         self.strategy.open = [104.0]
         self.strategy.close = [104.0]
         self.strategy.high = [105.0]
         self.strategy.low = [100.0]
+        self.strategy.atr = [10.0]
         
         self.assertFalse(self.strategy._is_bullish_pinbar(), "Should fail: Range 5.0 < MinRange 8.0")
 
@@ -134,30 +131,36 @@ class TestPriceActionExtended(unittest.TestCase):
 
     def test_narrative_generation(self):
         """Test narrative string generation"""
-        # Mock a closed trade
+        # Mock a closed trade with proper numeric values
         trade = MagicMock()
         trade.ref = 1
         trade.long = True
         trade.pnl = 100.0
+        trade.pnlcomm = 95.0  # Net PnL after commission
         trade.price = 1000.0
-        trade.history = [] # Use trade_map size
+        trade.dtclose = 5.0
+        trade.dtopen = 0.0
+        trade.history = []
         
-        self.strategy.trade_map = {1: {'size': 1.0}} # Size 1.0
+        self.strategy.trade_map = {1: {'size': 1.0, 'reason': 'Bullish Engulfing', 'stop_loss': 950.0, 'take_profit': 1100.0}}
+        self.strategy.sl_history = []
         
         # Test Take Profit
         narrative = self.strategy._generate_trade_narrative(trade, "Take Profit")
         self.assertIn("hit the Take Profit target", narrative)
-        self.assertIn("10.00%", narrative) # 100/1000 = 10%
+        self.assertIn("10.00%", narrative)  # 100/1000 = 10%
 
         # Test Stop Loss
         trade.pnl = -50.0
+        trade.pnlcomm = -55.0
         narrative = self.strategy._generate_trade_narrative(trade, "Stop Loss")
-        self.assertIn("hit the Stop Loss", narrative)
+        self.assertIn("Stop Loss", narrative)
 
         # Test Breakeven
         trade.pnl = 0.0
+        trade.pnlcomm = -5.0
         narrative = self.strategy._generate_trade_narrative(trade, "Breakeven")
-        self.assertIn("closed at Breakeven", narrative)
+        self.assertIn("breakeven", narrative.lower())
 
 if __name__ == '__main__':
     unittest.main()

@@ -29,9 +29,14 @@ class BTBacktestEngine(BaseEngine):
         end_date = self.config.get("end_date")
 
         # Backtrader requires data feeds. We'll use PandasData.
-        # We need to ensure the DataFrame has the correct index and columns.
+        # For dual-TF: add LOWER timeframe first (master clock),
+        # then HIGHER timeframe second.
+        # This ensures next() fires on every lower-TF bar.
+        # Config order: [higher_tf, lower_tf] e.g. ["4h", "15m"]
+        # Cerebro order: [lower_tf, higher_tf] — reversed
+        ordered_timeframes = list(reversed(timeframes)) if len(timeframes) > 1 else timeframes
         
-        for tf in timeframes:
+        for tf in ordered_timeframes:
             print(f"Loading data for {symbol} {tf}...")
             df = self.data_loader.get_data(symbol, tf, start_date, end_date)
             
@@ -50,16 +55,12 @@ class BTBacktestEngine(BaseEngine):
                     print(f"Error: Could not determine datetime index for {tf}")
                     continue
 
-            # Rename columns to match Backtrader requirements if necessary
-            # BT expects: open, high, low, close, volume, openinterest
-            # Our DataLoader likely returns lowercase options.
-            df = df.rename(columns={
-                "open": "open",
-                "high": "high",
-                "low": "low",
-                "close": "close",
-                "volume": "volume"
-            })
+            # Ensure expected column names (lowercase)
+            expected_cols = ['open', 'high', 'low', 'close', 'volume']
+            missing = [c for c in expected_cols if c not in df.columns]
+            if missing:
+                print(f"Warning: Missing columns {missing} for {tf}")
+                continue
 
             # Create Data Feed
             data = bt.feeds.PandasData(dataname=df, name=f"{symbol}_{tf}")

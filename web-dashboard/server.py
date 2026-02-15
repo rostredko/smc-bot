@@ -84,8 +84,8 @@ class BacktestConfig(BaseModel):
     strategy: str = "smc_strategy"
     strategy_config: Dict[str, Any] = {}
     min_risk_reward: float = 2.5
-    trailing_stop_distance: float = 0.05
-    breakeven_trigger_r: float = 1.0
+    trailing_stop_distance: float = 0.04
+    breakeven_trigger_r: float = 1.5
     max_total_risk_percent: float = 15.0
     dynamic_position_sizing: bool = True
     taker_fee: float = 0.04  # Default 0.04%
@@ -342,9 +342,9 @@ async def get_config():
             "end_date": config.get("period", {}).get("end_date", "2023-12-31"),
             "strategy": config.get("strategy", {}).get("name", "smc_strategy"),
             "strategy_config": config.get("strategy", {}).get("config", {}),
-            "min_risk_reward": config.get("min_risk_reward", 2.0),
-            "trailing_stop_distance": config.get("trailing_stop_distance", 0.02),
-            "breakeven_trigger_r": config.get("breakeven_trigger_r", 1.0),
+            "min_risk_reward": config.get("min_risk_reward", 2.5),
+            "trailing_stop_distance": config.get("trailing_stop_distance", 0.04),
+            "breakeven_trigger_r": config.get("breakeven_trigger_r", 1.5),
             "max_total_risk_percent": config.get("max_total_risk_percent", 15.0),
             "dynamic_position_sizing": config.get("dynamic_position_sizing", True)
         }
@@ -710,9 +710,9 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
             'end_date': config.get('end_date', '2023-12-31'),
             'strategy': config.get('strategy', 'smc_strategy'),
             'strategy_config': config.get('strategy_config', {}),
-            'min_risk_reward': config.get('min_risk_reward', 2.0),
-            'trailing_stop_distance': config.get('trailing_stop_distance', 0.02),
-            'breakeven_trigger_r': config.get('breakeven_trigger_r', 1.0),
+            'min_risk_reward': config.get('min_risk_reward', 2.5),
+            'trailing_stop_distance': config.get('trailing_stop_distance', 0.04),
+            'breakeven_trigger_r': config.get('breakeven_trigger_r', 1.5),
             'max_total_risk_percent': config.get('max_total_risk_percent', 15.0),
             'dynamic_position_sizing': config.get('dynamic_position_sizing', True),
             'commission': commission,
@@ -844,7 +844,7 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
                 
                 # Convert Dictionary trades to expected format
                 trades_data = []
-                for trade in engine.closed_trades:
+                for i, trade in enumerate(engine.closed_trades):
                     entry_time = datetime.fromisoformat(trade['entry_time']) if trade['entry_time'] else None
                     exit_time = datetime.fromisoformat(trade['exit_time']) if trade['exit_time'] else None
                     
@@ -855,7 +855,7 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
                         duration_str = str(diff).replace("0 days ", "")
 
                     trade_dict = {
-                        'id': trade['id'],
+                        'id': i + 1,
                         'direction': trade['direction'],
                         'entry_price': trade['entry_price'],
                         'exit_price': trade['exit_price'],
@@ -873,6 +873,9 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
                         'commission': trade.get('commission', 0),
                         'reason': trade.get('reason', 'Unknown'), # Use .get() for safety
                         'narrative': trade.get('narrative', None), # Add Narrative field
+                        'sl_calculation': trade.get('sl_calculation', None), # Add SL Calc
+                        'tp_calculation': trade.get('tp_calculation', None), # Add TP Calc
+                        'sl_history': trade.get('sl_history', []), # Add SL History
                         'metadata': {}
                     }
                     trades_data.append(trade_dict)
@@ -939,11 +942,9 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
             # Save results first to get the path
             result_file = os.path.join(RESULTS_DIR, f"{run_id}.json")
             try:
-                # logger.info(f"[{run_id}] Saving results to {result_file}...")
                 with open(result_file, 'w') as f:
                     json.dump(metrics, f, indent=2, default=str)
                 await broadcast_message(f"[{run_id}] ✅ Results saved to {result_file}\n")
-                # print(f"DEBUG: Results saved. Proceeding to report generation for {run_id}")
                 await asyncio.sleep(0.5) # Increased sleep to ensure flush
             except Exception as e:
                 import traceback

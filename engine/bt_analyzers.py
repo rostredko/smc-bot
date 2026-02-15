@@ -1,6 +1,7 @@
 import backtrader as bt
 from datetime import datetime
 
+
 class TradeListAnalyzer(bt.Analyzer):
     """
     Analyzer that records all closed trades with details required for the dashboard.
@@ -140,6 +141,15 @@ class TradeListAnalyzer(bt.Analyzer):
             else:
                  trade_record["exit_price"] = trade.price
                  trade_record["size"] = 0
+            
+            # Extract calculation details if available
+            if hasattr(self.strategy, 'get_trade_info'):
+                 info = self.strategy.get_trade_info(trade.ref)
+                 if info:
+                     if 'sl_calculation' in info:
+                         trade_record['sl_calculation'] = info['sl_calculation']
+                     if 'tp_calculation' in info:
+                         trade_record['tp_calculation'] = info['tp_calculation']
 
             self.trades.append(trade_record)
 

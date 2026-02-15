@@ -44,7 +44,8 @@ import {
   Refresh,
   ExpandMore,
   Check,
-  Close
+  Close,
+  InfoOutlined
 } from "@mui/icons-material";
 import {
   LineChart,
@@ -78,8 +79,8 @@ const TOOLTIP_HINTS: Record<string, string> = {
   symbol: "Trading pair to backtest (e.g. BTC/USDT)",
   start_date: "Backtest start date",
   end_date: "Backtest end date",
-  timeframe_primary: "The main timeframe for analysis (e.g. 4h, 1d)",
-  timeframe_secondary: "The lower timeframe for entries (e.g. 15m, 1h)",
+  timeframe_primary: "Higher timeframe for trend direction / EMA filter (e.g. 4h, 1d)",
+  timeframe_secondary: "Lower timeframe for pattern detection and trade entries (e.g. 15m, 1h)",
   trailing_stop_distance: "Distance to trail the stop loss behind price (e.g. 0.02 = 2%)",
   breakeven_trigger_r: "Profit multiplier to trigger move to breakeven (e.g. 1.0 = Move stop to entry when profit hits 1R)",
   dynamic_position_sizing: "Adjust position size based on current capital/risk",
@@ -201,17 +202,17 @@ interface BacktestResults {
 const DEFAULT_CONFIG: BacktestConfig = {
   initial_capital: 10000,
   risk_per_trade: 1.5,
-  max_drawdown: 20.0,
+  max_drawdown: 30.0,
   max_positions: 1,
   leverage: 10.0,
   symbol: "BTC/USDT",
-  timeframes: ["4h", "15m"],
+  timeframes: ["4h", "1h"],
   start_date: "2025-01-01",
   end_date: "2025-12-31",
   strategy: "",
   strategy_config: {},
-  trailing_stop_distance: 0.05,
-  breakeven_trigger_r: 1.0,
+  trailing_stop_distance: 0.04,
+  breakeven_trigger_r: 1.5,
   dynamic_position_sizing: true
 };
 
@@ -230,10 +231,12 @@ const validateBacktestConfig = (config: BacktestConfig, availableSymbols: string
   }
 
   const tfSecondary = config.timeframes && config.timeframes[1] !== undefined ? config.timeframes[1].trim() : "";
-  if (tfSecondary && !timeframeRegex.test(tfSecondary)) {
+
+  if (!tfSecondary) {
+    newErrors['timeframe_secondary'] = "Required";
+  } else if (!timeframeRegex.test(tfSecondary)) {
     newErrors['timeframe_secondary'] = "Invalid (e.g. 15m)";
   }
-
   // 2. Numeric validation
   if (isNaN(config.initial_capital) || config.initial_capital <= 0) newErrors['initial_capital'] = "Must be positive number";
   if (isNaN(config.risk_per_trade) || config.risk_per_trade <= 0) newErrors['risk_per_trade'] = "Must be positive number";
@@ -922,12 +925,34 @@ export default function App() {
                 </Grid>
 
                 <Grid item xs={6} md={3}>
-                  <Typography variant="caption" color="gray">STOP LOSS</Typography>
-                  <Typography variant="body2">${selectedTrade.stop_loss?.toFixed(2)}</Typography>
+                  <Typography variant="caption" color="gray">INITIAL STOP LOSS</Typography>
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                    <Typography variant="body2">
+                      ${selectedTrade.stop_loss?.toFixed(2)}
+                    </Typography>
+                    <MuiTooltip
+                      title={<span style={{ whiteSpace: 'pre-wrap' }}>{selectedTrade.sl_calculation || "Calculation details not available"}</span>}
+                      arrow
+                      placement="top"
+                    >
+                      <InfoOutlined fontSize="small" sx={{ cursor: 'help', width: 16, height: 16, color: '#2196f3' }} />
+                    </MuiTooltip>
+                  </Box>
                 </Grid>
                 <Grid item xs={6} md={3}>
-                  <Typography variant="caption" color="gray">TAKE PROFIT</Typography>
-                  <Typography variant="body2">${selectedTrade.take_profit?.toFixed(2)}</Typography>
+                  <Typography variant="caption" color="gray">INITIAL TAKE PROFIT</Typography>
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                    <Typography variant="body2">
+                      ${selectedTrade.take_profit?.toFixed(2)}
+                    </Typography>
+                    <MuiTooltip
+                      title={<span style={{ whiteSpace: 'pre-wrap' }}>{selectedTrade.tp_calculation || "Calculation details not available"}</span>}
+                      arrow
+                      placement="top"
+                    >
+                      <InfoOutlined fontSize="small" sx={{ cursor: 'help', width: 16, height: 16, color: '#2196f3' }} />
+                    </MuiTooltip>
+                  </Box>
                 </Grid>
                 <Grid item xs={6} md={3}>
                   <Typography variant="caption" color="gray">COMMISSION</Typography>
@@ -935,12 +960,58 @@ export default function App() {
                 </Grid>
                 <Grid item xs={12} md={3}>
                   <Typography variant="caption" color="gray">EXIT REASON</Typography>
-                  <Typography variant="body2" sx={{
-                    color: selectedTrade.exit_reason === 'Take Profit' ? '#4caf50' :
-                      selectedTrade.exit_reason === 'Stop Loss' ? '#f44336' : 'white'
-                  }}>
-                    {selectedTrade.exit_reason || 'Unknown'}
-                  </Typography>
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                    <Typography variant="body2" sx={{
+                      color: selectedTrade.exit_reason === 'Take Profit' ? '#4caf50' :
+                        selectedTrade.exit_reason === 'Stop Loss' ? '#f44336' : 'white'
+                    }}>
+                      {selectedTrade.exit_reason || 'Unknown'}
+                    </Typography>
+                    {selectedTrade.sl_history && selectedTrade.sl_history.length > 0 && (
+                      <MuiTooltip
+                        title={
+                          <Box sx={{ p: 0.5, maxHeight: '300px', overflowY: 'auto' }}>
+                            <Typography variant="subtitle2" sx={{ borderBottom: '1px solid rgba(255,255,255,0.2)', mb: 1, pb: 0.5 }}>
+                              Trailing Stop History
+                            </Typography>
+                            {selectedTrade.sl_history.map((h: any, i: number) => {
+                              const isFirst = i === 0;
+                              const isLast = i === selectedTrade.sl_history.length - 1;
+
+                              return (
+                                <Box key={i} sx={{ mb: 1, '&:last-child': { mb: 0 } }}>
+                                  <Typography
+                                    variant="caption"
+                                    display="block"
+                                    sx={{
+                                      color: isFirst ? '#90caf9' : isLast ? '#a5d6a7' : '#b0bec5',
+                                      fontWeight: (isFirst || isLast) ? 'bold' : 'normal'
+                                    }}
+                                  >
+                                    {h.reason}
+                                  </Typography>
+                                  <Typography
+                                    variant="body2"
+                                    sx={{
+                                      fontFamily: 'monospace',
+                                      color: (isFirst || isLast) ? 'white' : 'inherit',
+                                      fontWeight: (isFirst || isLast) ? 'bold' : 'normal'
+                                    }}
+                                  >
+                                    ${h.price.toFixed(2)}
+                                  </Typography>
+                                </Box>
+                              );
+                            })}
+                          </Box>
+                        }
+                        arrow
+                        placement="top"
+                      >
+                        <InfoOutlined fontSize="small" sx={{ cursor: 'help', width: 16, height: 16, color: '#2196f3' }} />
+                      </MuiTooltip>
+                    )}
+                  </Box>
                 </Grid>
 
                 {/* Trade Narrative Section */}
@@ -1171,13 +1242,13 @@ export default function App() {
                     <Grid item xs={12} md={2}>
                       <MuiTooltip title={TOOLTIP_HINTS["timeframe_primary"]} arrow placement="top">
                         <TextField
-                          label="Analysis Timeframe (High)"
+                          label="Trend TF"
                           required
                           value={config.timeframes && config.timeframes[0] ? config.timeframes[0] : ""}
                           onChange={e => {
                             const val = e.target.value;
-                            const currentSecondary = config.timeframes && config.timeframes[1] ? config.timeframes[1] : "";
-                            handleConfigChange("timeframes", currentSecondary ? [val, currentSecondary] : [val]);
+                            const secondary = config.timeframes && config.timeframes[1] ? config.timeframes[1] : "15m";
+                            handleConfigChange("timeframes", [val, secondary]);
                           }}
                           disabled={isConfigDisabled}
                           fullWidth
@@ -1187,14 +1258,15 @@ export default function App() {
                       </MuiTooltip>
                     </Grid>
                     <Grid item xs={12} md={2}>
-                      <MuiTooltip title="The lower timeframe used for execution and finer granularity (e.g. 15m)" arrow placement="top">
+                      <MuiTooltip title={TOOLTIP_HINTS["timeframe_secondary"]} arrow placement="top">
                         <TextField
-                          label="Execution Timeframe (Low)"
+                          label="Entry TF"
+                          required
                           value={config.timeframes && config.timeframes[1] ? config.timeframes[1] : ""}
                           onChange={e => {
                             const val = e.target.value;
-                            const currentPrimary = config.timeframes && config.timeframes[0] ? config.timeframes[0] : "4h";
-                            handleConfigChange("timeframes", val ? [currentPrimary, val] : [currentPrimary]);
+                            const primary = config.timeframes && config.timeframes[0] ? config.timeframes[0] : "4h";
+                            handleConfigChange("timeframes", [primary, val]);
                           }}
                           disabled={isConfigDisabled}
                           fullWidth
@@ -1203,6 +1275,7 @@ export default function App() {
                         />
                       </MuiTooltip>
                     </Grid>
+
                     <Grid item xs={12} md={4}>
                       <MuiTooltip title={TOOLTIP_HINTS["start_date"]} arrow placement="top">
                         <TextField
