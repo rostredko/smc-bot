@@ -146,20 +146,21 @@ class TestPriceActionExtended(unittest.TestCase):
         self.strategy.sl_history = []
         
         # Test Take Profit
-        narrative = self.strategy._generate_trade_narrative(trade, "Take Profit")
+        stored_info = self.strategy.trade_map.get(trade.ref, {})
+        narrative = self.strategy.narrator.generate_narrative(trade, "Take Profit", stored_info, self.strategy.sl_history)
         self.assertIn("hit the Take Profit target", narrative)
         self.assertIn("10.00%", narrative)  # 100/1000 = 10%
 
         # Test Stop Loss
         trade.pnl = -50.0
         trade.pnlcomm = -55.0
-        narrative = self.strategy._generate_trade_narrative(trade, "Stop Loss")
+        narrative = self.strategy.narrator.generate_narrative(trade, "Stop Loss", stored_info, self.strategy.sl_history)
         self.assertIn("Stop Loss", narrative)
 
         # Test Breakeven
         trade.pnl = 0.0
         trade.pnlcomm = -5.0
-        narrative = self.strategy._generate_trade_narrative(trade, "Breakeven")
+        narrative = self.strategy.narrator.generate_narrative(trade, "Breakeven", stored_info, self.strategy.sl_history)
         self.assertIn("breakeven", narrative.lower())
 
 if __name__ == '__main__':

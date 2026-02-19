@@ -809,6 +809,8 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
             
             engine.add_strategy(PriceActionStrategy, **st_config)
             
+
+            
             # Store engine reference for cancellation support
             running_backtests[run_id].engine = engine
             
