@@ -1,5 +1,5 @@
 """
-FastAPI Web Server for SMC Trading Engine.
+FastAPI Web Server for Backtrade Machine.
 Provides REST API endpoints for web dashboard integration.
 """
 
@@ -23,11 +23,12 @@ from pydantic import BaseModel
 
 from engine.bt_backtest_engine import BTBacktestEngine
 from strategies.bt_price_action import PriceActionStrategy
+# Central logging — must import AFTER sys.path is set up
+from engine.logger import get_logger, setup_logging, ws_log_queue
 
-
-# Store original stdout/stderr at module level for use in broadcast functions
-original_stdout = sys.stdout
-original_stderr = sys.stderr
+# Bootstrap project logging (console only at startup; WS handler added per-run)
+setup_logging(enable_ws=False)
+logger = get_logger("server")
 
 # Configuration - Use absolute paths for cross-platform compatibility
 BASE_DIR = Path(__file__).parent.parent.absolute()
@@ -39,16 +40,6 @@ USER_CONFIGS_DIR = str(BASE_DIR / "user_configs")
 os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(RESULTS_DIR, exist_ok=True)
 os.makedirs(USER_CONFIGS_DIR, exist_ok=True)
-
-import logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(original_stdout) # Log to original stdout to avoid capture loops
-    ]
-)
-logger = logging.getLogger("server")
 
 # FastAPI app
 app = FastAPI(
@@ -125,49 +116,32 @@ connection_lock = threading.Lock()
 # Cache for strategy schemas to avoid re-importing
 strategy_schema_cache: Dict[str, Dict[str, Any]] = {}
 
-# Queue for log messages from background tasks
-import queue
-log_queue = queue.Queue()
-
 
 async def broadcast_from_queue():
-    """Periodically broadcast queued messages to WebSocket clients."""
-    iteration = 0
+    """Periodically drain ws_log_queue and broadcast messages to WebSocket clients."""
     while True:
-        iteration += 1
         try:
-            # Try to get a message from the queue (non-blocking)
-            messages_sent = 0
             while True:
                 try:
-                    message = log_queue.get_nowait()
-                    # Broadcast to all connected clients
+                    message = ws_log_queue.get_nowait()
                     with connection_lock:
                         connections_copy = active_connections.copy()
-                    
+
                     if not connections_copy:
                         continue  # No clients connected, skip
-                    
+
                     for connection in connections_copy:
                         try:
                             await connection.send_text(message)
-                            messages_sent += 1
-                        except Exception as e:
-                            # Silently remove dead connections
-                            # BUT LOG IT NOW for debugging
-                            print(f"DEBUG: WebSocket send error: {e}")
+                        except Exception:
                             with connection_lock:
                                 if connection in active_connections:
                                     active_connections.remove(connection)
-                                    print(f"DEBUG: Removed dead connection. Remaining: {len(active_connections)}")
-                except queue.Empty:
+                except Exception:  # queue.Empty or other
                     break
-            
         except Exception as e:
-            print(f"DEBUG: Broadcaster loop error: {e}")
-            pass  # Silently ignore errors
-        
-        # Wait before checking again
+            logger.debug(f"Broadcaster loop error: {e}")
+
         await asyncio.sleep(0.05)
 
 
@@ -316,10 +290,9 @@ async def get_strategies():
     """Get available strategies."""
     import time
     start = time.time()
-    print(f"[BACKEND] Getting strategies list...", flush=True)
     strategies = load_available_strategies()
     elapsed = time.time() - start
-    print(f"[BACKEND] Strategies loaded in {elapsed:.3f}s: {[s['name'] for s in strategies]}", flush=True)
+    logger.debug(f"Strategies loaded in {elapsed:.3f}s: {[s['name'] for s in strategies]}")
     return {"strategies": strategies}
 
 
@@ -644,7 +617,7 @@ async def get_backtest_history(page: int = 1, page_size: int = 10):
                 }
                 history.append(summary)
             except Exception as e:
-                print(f"Error reading history file {filename}: {e}")
+                logger.warning(f"Error reading history file {filename}: {e}")
                 continue
     else:
         total_count = 0
@@ -821,36 +794,27 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
             await broadcast_message(f"[{run_id}] Strategy Config: {engine_config['strategy_config']}\n")
         await broadcast_message(f"[{run_id}] ============================================================\n")
         
-        # Create custom stdout to capture print statements
-        class WebSocketStdout:
-            """Custom stdout wrapper to capture print() output and put it in a queue."""
-            def __init__(self, run_id: str):
-                self.run_id = run_id
-                self.signals_count = 0
-            
-            def write(self, text: str):
-                if text.strip():  # Only send non-empty lines
-                    # Echo to original stdout so we can see it in terminal/logs
-                    original_stdout.write(text + '\n')
-                    original_stdout.flush()
-                    
-                    # Count signals from log messages
-                    if "SIGNAL GENERATED:" in text:
-                        self.signals_count += 1
-                    # Put message in thread-safe queue
-                    msg = f"[{self.run_id}] {text.strip()}\n"
-                    log_queue.put(msg)
-            
-            def flush(self):
-                original_stdout.flush()
-        
-        # Redirect stdout and stderr to capture all output
-        original_stdout = sys.stdout
-        original_stderr = sys.stderr
-        websocket_stdout = WebSocketStdout(run_id)
-        sys.stdout = websocket_stdout
-        sys.stderr = websocket_stdout
-        
+        # Activate WebSocket log delivery for this run.
+        # setup_logging adds a QueueHandler that formats every log record with
+        # the run_id prefix and puts it into ws_log_queue, which broadcast_from_queue()
+        # drains every 50 ms and sends to all connected WebSocket clients.
+        import logging as _logging
+        setup_logging(level=_logging.INFO, run_id=run_id, enable_ws=True)
+
+        # Track signals count via a lightweight log handler
+        class _SignalCounter(_logging.Handler):
+            def __init__(self):
+                super().__init__()
+                self.count = 0
+            def emit(self, record):
+                if "SIGNAL GENERATED:" in record.getMessage():
+                    self.count += 1
+
+        signal_counter = _SignalCounter()
+        import logging as _logging_root
+        _root_logger = _logging_root.getLogger("backtrade")
+        _root_logger.addHandler(signal_counter)
+
         try:
             # Create engine
             await broadcast_message(f"[{run_id}] Creating engine instance...\n")
@@ -903,9 +867,8 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
             mapped_metrics = None
             
             try:
-                # Add signals count to metrics (Backtrader doesn't expose this easily without custom logic, 
-                # but we can try to guess or use the stdout count we captured)
-                metrics['signals_generated'] = websocket_stdout.signals_count 
+                # Count signals generated during this run
+                metrics['signals_generated'] = signal_counter.count
                 
                 # Convert Dictionary trades to expected format
                 trades_data = []
@@ -976,7 +939,7 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
                     'avg_loss': metrics.get('avg_loss', 0),
                     'initial_capital': engine_config.get('initial_capital', 10000),
                     'final_capital': metrics.get('final_capital', 0),
-                    'signals_generated': websocket_stdout.signals_count, # Use the counter from the custom stdout
+                    'signals_generated': signal_counter.count,  # signals counted by _SignalCounter handler
                     'equity_curve': equity_data,
                     'trades': trades_data,
                     'strategy': engine_config.get('strategy', 'Unknown'),
@@ -986,8 +949,8 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
                 # Update metrics with mapped values
                 metrics.update(mapped_metrics)
                 
-                # Add logs to metrics for complete data preservation
-                metrics['logs'] = engine.logger.logs
+                # logs field: reserved for future structured log export
+                metrics['logs'] = []
                 
                 # Store results in running_backtests IMMEDIATELY so frontend can access them
                 running_backtests[run_id].results = metrics
@@ -1016,9 +979,8 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
                 logger.error(f"Error saving results: {e}\n{traceback.format_exc()}")
                 await broadcast_message(f"[{run_id}] ⚠️ Error saving results: {str(e)}\n")
             
-            # Restore stdout/stderr BEFORE generating the report to ensure no interference
-            sys.stdout = original_stdout
-            sys.stderr = original_stderr
+            # Restore WS logging to console-only (no more per-run prefix needed)
+            setup_logging(enable_ws=False)
             
             # Broadcast results summary to logs
             # Broadcast results summary to logs
@@ -1087,8 +1049,10 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
                 running_backtests[run_id].message = f"Report generation failed: {str(e)}"
         
         finally:
-            # Restore original stdout
-            sys.stderr = original_stderr # Also restore stderr
+            # Clean up signal counter handler to avoid accumulation across runs
+            _root_logger.removeHandler(signal_counter)
+            # Restore WS logging to console-only after cleanup
+            setup_logging(enable_ws=False)
         
     except Exception as e:
         # Update status with error

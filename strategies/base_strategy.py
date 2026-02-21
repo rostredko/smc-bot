@@ -1,6 +1,9 @@
 import backtrader as bt
 from .helpers.narrative_generator import TradeNarrator
 from .helpers.risk_manager import RiskManager
+from engine.logger import get_logger
+
+logger = get_logger(__name__)
 
 class BaseStrategy(bt.Strategy):
     """
@@ -70,9 +73,9 @@ class BaseStrategy(bt.Strategy):
         if order.status in [order.Completed]:
             dt_str = self.data.datetime.date(0).isoformat()
             if order.isbuy():
-                print(f"[{dt_str}] BUY EXECUTED, Price: {order.executed.price:.2f}, Cost: {order.executed.value:.2f}, Comm {order.executed.comm:.2f}")
+                logger.info(f"[{dt_str}] BUY EXECUTED, Price: {order.executed.price:.2f}, Cost: {order.executed.value:.2f}, Comm {order.executed.comm:.2f}")
             elif order.issell():
-                print(f"[{dt_str}] SELL EXECUTED, Price: {order.executed.price:.2f}, Cost: {order.executed.value:.2f}, Comm {order.executed.comm:.2f}")
+                logger.info(f"[{dt_str}] SELL EXECUTED, Price: {order.executed.price:.2f}, Cost: {order.executed.value:.2f}, Comm {order.executed.comm:.2f}")
             
             # Defensive check
             if isinstance(self.order, list):
@@ -87,7 +90,7 @@ class BaseStrategy(bt.Strategy):
             
             if is_stop_order:
                 self.last_exit_reason = self.stop_reason
-                print(f"[{dt_str}] EXIT TRIGGERED by {self.stop_reason} (Price: {order.executed.price:.2f})")
+                logger.info(f"[{dt_str}] EXIT TRIGGERED by {self.stop_reason} (Price: {order.executed.price:.2f})")
                 
                 # Cleanup sibling TP order
                 if self.tp_order:
@@ -97,7 +100,7 @@ class BaseStrategy(bt.Strategy):
                     
             elif is_tp_order:
                 self.last_exit_reason = "Take Profit"
-                print(f"[{dt_str}] EXIT TRIGGERED by Take Profit (Price: {order.executed.price:.2f})")
+                logger.info(f"[{dt_str}] EXIT TRIGGERED by Take Profit (Price: {order.executed.price:.2f})")
                 
                 # Cleanup sibling Stop order
                 if self.stop_order:
@@ -112,9 +115,9 @@ class BaseStrategy(bt.Strategy):
                 reason = self.cancel_reason if self.cancel_reason else "OCO / Broker Internal"
                 self.cancel_reason = None
             elif order.status == order.Margin:
-                print(f"[{dt_str}] ⛔ ORDER MARGIN ERROR - Insufficient Cash?{info_str}")
+                logger.warning(f"[{dt_str}] ⛔ ORDER MARGIN ERROR - Insufficient Cash?{info_str}")
             else:
-                print(f"[{dt_str}] ⛔ ORDER REJECTED {info_str}")
+                logger.warning(f"[{dt_str}] ⛔ ORDER REJECTED {info_str}")
             
             if order == self.stop_order:
                 self.stop_order = None
@@ -125,9 +128,9 @@ class BaseStrategy(bt.Strategy):
             if self.pending_metadata:
                 self.pending_metadata['size'] = current_size
                 self.trade_map[trade.ref] = self.pending_metadata
-                self.pending_metadata = None 
+                self.pending_metadata = None
             else:
-                print(f"CRITICAL: Trade {trade.ref} opened WITHOUT metadata! Pending is None.")
+                logger.error(f"CRITICAL: Trade {trade.ref} opened WITHOUT metadata! Pending is None.")
                 self.trade_map[trade.ref] = {'size': current_size} 
         
         elif trade.isclosed:
@@ -154,7 +157,7 @@ class BaseStrategy(bt.Strategy):
             
             local_trade_id = self.trade_id_map[trade.ref]
             
-            print(f"🔴 TRADE CLOSED [#{local_trade_id}]: PnL: {pnl:.2f} ({pnl_pct:.2f}%) | Net: {pnl_comm:.2f} | Reason: {self.last_exit_reason} | Duration: {duration}")
+            logger.info(f"🔴 TRADE CLOSED [#{local_trade_id}]: PnL: {pnl:.2f} ({pnl_pct:.2f}%) | Net: {pnl_comm:.2f} | Reason: {self.last_exit_reason} | Duration: {duration}")
 
             # Generate Narrative using Helper
             narrative = self.narrator.generate_narrative(

@@ -9,6 +9,9 @@ import ccxt
 import time
 from typing import Dict, List
 
+from engine.logger import get_logger
+logger = get_logger(__name__)
+
 
 class DataLoader:
     """
@@ -50,7 +53,7 @@ class DataLoader:
 
     def _initialize_exchange(self) -> ccxt.Exchange:
         """Initialize the ccxt exchange client."""
-        print(f"🔌 Initializing {self.exchange_name} ({self.exchange_type}) exchange connection...")
+        logger.info(f"🔌 Initializing {self.exchange_name} ({self.exchange_type}) exchange connection...")
         try:
             # Use binanceusdm for futures to avoid hitting Spot API (which might be blocked)
             if self.exchange_name == 'binance' and self.exchange_type == 'future':
@@ -69,26 +72,26 @@ class DataLoader:
             )
 
             # Test connection and get exchange info
-            print(f"✅ Connected to {exchange.name}")
-            print(f"📊 Exchange info:")
-            print(f"   - Rate limit: {exchange.rateLimit}ms")
-            print(f"   - Mode (defaultType): {exchange.options.get('defaultType', 'spot')}")
-            print(f"   - Has swap: {exchange.has.get('swap', False)}")
-            print(f"   - Has future: {exchange.has.get('future', False)}")
-            print(f"   - Has spot: {exchange.has.get('spot', False)}")
+            logger.info(f"✅ Connected to {exchange.name}")
+            logger.debug(f"📊 Exchange info:")
+            logger.debug(f"   - Rate limit: {exchange.rateLimit}ms")
+            logger.debug(f"   - Mode (defaultType): {exchange.options.get('defaultType', 'spot')}")
+            logger.debug(f"   - Has swap: {exchange.has.get('swap', False)}")
+            logger.debug(f"   - Has future: {exchange.has.get('future', False)}")
+            logger.debug(f"   - Has spot: {exchange.has.get('spot', False)}")
 
             # Test market loading
-            print(f"📈 Loading markets...")
+            logger.info(f"📈 Loading markets...")
             markets = exchange.load_markets()
-            print(f"✅ Loaded {len(markets)} markets")
+            logger.info(f"✅ Loaded {len(markets)} markets")
 
             # Show some popular symbols
             popular_symbols = [s for s in markets.keys() if "BTC" in s or "ETH" in s][:5]
-            print(f"🎯 Popular symbols: {', '.join(popular_symbols)}")
+            logger.debug(f"🎯 Popular symbols: {', '.join(popular_symbols)}")
 
             return exchange
         except Exception as e:
-            print(f"❌ Failed to initialize {self.exchange_name} exchange: {e}")
+            logger.error(f"❌ Failed to initialize {self.exchange_name} exchange: {e}")
             raise RuntimeError(f"Failed to initialize {self.exchange_name} exchange: {e}")
 
     def fetch_ohlcv(self, symbol: str, timeframe: str, start_date: str, end_date: str) -> pd.DataFrame:
@@ -109,20 +112,20 @@ class DataLoader:
         if os.path.exists(cache_file):
             file_age_days = (time.time() - os.path.getmtime(cache_file)) / (24 * 3600)
             if file_age_days > self.max_cache_age_days:
-                print(f"♻️ Cache file {cache_file} is {file_age_days:.1f} days old (older than {self.max_cache_age_days} limit). Removing it.")
+                logger.info(f"♻️ Cache file {cache_file} is {file_age_days:.1f} days old (older than {self.max_cache_age_days} limit). Removing it.")
                 try:
                     os.remove(cache_file)
                 except OSError as e:
-                    print(f"Warning: Failed to remove old cache file {cache_file}: {e}")
+                    logger.warning(f"Failed to remove old cache file {cache_file}: {e}")
             else:
-                print(f"Loading cached data from {cache_file} (Age: {file_age_days:.1f} days)")
+                logger.info(f"Loading cached data from {cache_file} (Age: {file_age_days:.1f} days)")
                 return pd.read_csv(cache_file, index_col=0, parse_dates=True)
 
         # Convert dates to timestamps
         start_ts = int(pd.Timestamp(start_date).timestamp() * 1000)
         end_ts = int(pd.Timestamp(end_date).timestamp() * 1000)
 
-        print(f"Fetching {symbol} {timeframe} data from {start_date} to {end_date}")
+        logger.info(f"Fetching {symbol} {timeframe} data from {start_date} to {end_date}")
 
         all_data = []
         current_ts = start_ts
@@ -143,10 +146,10 @@ class DataLoader:
                 # Update current timestamp to next chunk
                 current_ts = ohlcv[-1][0] + 1
 
-                print(f"Fetched {len(ohlcv)} bars, total: {len(all_data)}")
+                logger.debug(f"Fetched {len(ohlcv)} bars, total: {len(all_data)}")
 
             except Exception as e:
-                print(f"Error fetching data: {e}")
+                logger.error(f"Error fetching data: {e}")
                 time.sleep(1)  # Wait before retry
                 continue
 
@@ -161,7 +164,7 @@ class DataLoader:
 
         # Cache the data
         df.to_csv(cache_file)
-        print(f"Cached data to {cache_file}")
+        logger.info(f"Cached data to {cache_file}")
 
         return df
 
@@ -201,7 +204,7 @@ class DataLoader:
         data = {}
 
         for tf in timeframes:
-            print(f"Fetching {tf} data...")
+            logger.info(f"Fetching {tf} data...")
             data[tf] = self.get_data(symbol, tf, start_date, end_date)
 
         return data
@@ -295,7 +298,7 @@ class DataLoader:
         if os.path.exists(self.cache_dir):
             shutil.rmtree(self.cache_dir)
         os.makedirs(self.cache_dir, exist_ok=True)
-        print("Cache cleared")
+        logger.info("Cache cleared")
 
     def get_available_symbols(self) -> List[str]:
         """Get list of available trading symbols."""
@@ -303,7 +306,7 @@ class DataLoader:
             markets = self.exchange.load_markets()
             return list(markets.keys())
         except Exception as e:
-            print(f"Error fetching symbols: {e}")
+            logger.error(f"Error fetching symbols: {e}")
             return []
 
     def get_exchange_info(self) -> Dict:
@@ -316,7 +319,7 @@ class DataLoader:
                 "has": self.exchange.has,
             }
         except Exception as e:
-            print(f"Error fetching exchange info: {e}")
+            logger.error(f"Error fetching exchange info: {e}")
             return {}
 
 
@@ -326,6 +329,6 @@ if __name__ == "__main__":
 
     # Test data fetching
     df = loader.get_data("BTC/USDT", "1h", "2023-01-01", "2023-01-31")
-    print(f"Fetched {len(df)} bars")
-    print(df.head())
-    print(df.columns.tolist())
+    logger.info(f"Fetched {len(df)} bars")
+    logger.debug(df.head())
+    logger.debug(df.columns.tolist())

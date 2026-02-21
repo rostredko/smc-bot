@@ -3,8 +3,11 @@ import pandas as pd
 from typing import Dict, Any
 from .base_engine import BaseEngine
 from .data_loader import DataLoader
+from .logger import get_logger
 
 from .bt_analyzers import TradeListAnalyzer, EquityCurveAnalyzer
+
+logger = get_logger(__name__)
 
 class BTBacktestEngine(BaseEngine):
     """
@@ -37,11 +40,11 @@ class BTBacktestEngine(BaseEngine):
         ordered_timeframes = list(reversed(timeframes)) if len(timeframes) > 1 else timeframes
         
         for tf in ordered_timeframes:
-            print(f"Loading data for {symbol} {tf}...")
+            logger.info(f"Loading data for {symbol} {tf}...")
             df = self.data_loader.get_data(symbol, tf, start_date, end_date)
             
             if df is None or df.empty:
-                print(f"Warning: No data found for {symbol} {tf}")
+                logger.warning(f"No data found for {symbol} {tf}")
                 continue
 
             # Prepare DataFrame for Backtrader
@@ -52,14 +55,14 @@ class BTBacktestEngine(BaseEngine):
                      df['datetime'] = pd.to_datetime(df['timestamp'])
                      df.set_index('datetime', inplace=True)
                 else:
-                    print(f"Error: Could not determine datetime index for {tf}")
+                    logger.error(f"Could not determine datetime index for {tf}")
                     continue
 
             # Ensure expected column names (lowercase)
             expected_cols = ['open', 'high', 'low', 'close', 'volume']
             missing = [c for c in expected_cols if c not in df.columns]
             if missing:
-                print(f"Warning: Missing columns {missing} for {tf}")
+                logger.warning(f"Missing columns {missing} for {tf}")
                 continue
 
             # Create Data Feed
@@ -83,7 +86,7 @@ class BTBacktestEngine(BaseEngine):
         # Add Observers for live strategy feedback (stats)
         self.cerebro.addobserver(bt.observers.DrawDown)
 
-        print("Starting Backtrader backtest...")
+        logger.info("Starting Backtrader backtest...")
         results = self.run()
         
         if not results:

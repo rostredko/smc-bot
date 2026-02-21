@@ -1,6 +1,9 @@
 import backtrader as bt
 from .base_strategy import BaseStrategy
 from .helpers.patterns import PatternDetector
+from engine.logger import get_logger
+
+logger = get_logger(__name__)
 
 class PriceActionStrategy(BaseStrategy):
     """
@@ -84,8 +87,6 @@ class PriceActionStrategy(BaseStrategy):
 
 
     def next(self):
-        # print(f"DEBUG: next() call. len={len(self)}") # Trace every bar
-        
         # Check if an order is pending
         if self.order:
             return
@@ -101,7 +102,7 @@ class PriceActionStrategy(BaseStrategy):
              dd = self.stats.drawdown.drawdown[0]
              if dd > self.params.max_drawdown:
                  if not getattr(self, '_dd_limit_hit', False):
-                     print(f"[{self.data_ltf.datetime.date(0).isoformat()}] CRITICAL: Max Drawdown {dd:.2f}% exceeded limit {self.params.max_drawdown}%. Stopping trading.")
+                     logger.warning(f"[{self.data_ltf.datetime.date(0).isoformat()}] CRITICAL: Max Drawdown {dd:.2f}% exceeded limit {self.params.max_drawdown}%. Stopping trading.")
                      self._dd_limit_hit = True
                  return 
                  
@@ -156,7 +157,7 @@ class PriceActionStrategy(BaseStrategy):
 
              # 3. Execute Single Update if needed
              if sl_changed:
-                 print(f"[{self.data_ltf.datetime.date(0).isoformat()}] STOP UPDATE: {new_reason} -> {new_sl:.2f}")
+                 logger.info(f"[{self.data_ltf.datetime.date(0).isoformat()}] STOP UPDATE: {new_reason} -> {new_sl:.2f}")
                  self.cancel_reason = f"{new_reason} Update"
                  self.cancel(self.stop_order)
                  self.stop_reason = new_reason
@@ -175,18 +176,9 @@ class PriceActionStrategy(BaseStrategy):
                  
 
 
-        # 1. Pattern Detection
+        # Pattern Detection
         if self.position:
             return
-
-        # DEBUG TRACE
-        # if len(self) > 240 and len(self) < 260:
-        #      print(f"DEBUG: Bar {len(self)} (Date: {self.data.datetime.date(0)})")
-        #      print(f"DEBUG: OHLC: {self.open[0]}, {self.high[0]}, {self.low[0]}, {self.close[0]}")
-        #      print(f"DEBUG: Is Bull Pinbar? {self._is_bullish_pinbar()}")
-        #      # print(f"DEBUG: Check Filters Long? {self._check_filters_long()}") # This might fail if called before pinbar
-        #      print(f"DEBUG: EMA: {self.ema_htf[0]}, Trend: {self.params.use_trend_filter}")
-        #      print(f"DEBUG: RSI: {self.rsi[0]}")
 
         if self._is_bullish_pinbar():
             if self._check_filters_long():
@@ -221,7 +213,7 @@ class PriceActionStrategy(BaseStrategy):
         size = self._calculate_position_size(self.close[0], sl_price)
         
         dt_str = self.data_ltf.datetime.date(0).isoformat()
-        print(f"[{dt_str}] SIGNAL GENERATED: LONG Entry={self.close[0]:.2f} SL={sl_price:.2f} TP={tp_price:.2f} Size={size:.4f} Reason={reason}")
+        logger.info(f"[{dt_str}] SIGNAL GENERATED: LONG Entry={self.close[0]:.2f} SL={sl_price:.2f} TP={tp_price:.2f} Size={size:.4f} Reason={reason}")
         
         # Calculation strings for tooltip
         sl_calc = (
@@ -302,7 +294,7 @@ class PriceActionStrategy(BaseStrategy):
         size = self._calculate_position_size(self.close[0], sl_price)
         
         dt_str = self.data_ltf.datetime.date(0).isoformat()
-        print(f"[{dt_str}] SIGNAL GENERATED: SHORT Entry={self.close[0]:.2f} SL={sl_price:.2f} TP={tp_price:.2f} Size={size:.4f} Reason={reason}")
+        logger.info(f"[{dt_str}] SIGNAL GENERATED: SHORT Entry={self.close[0]:.2f} SL={sl_price:.2f} TP={tp_price:.2f} Size={size:.4f} Reason={reason}")
         
         # Calculation strings for tooltip
         sl_calc = (
