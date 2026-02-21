@@ -38,16 +38,9 @@ class BaseEngine(ABC):
         self.cerebro.broker.set_coo(True) 
 
     def _setup_sizers(self):
-        """Configure position sizing."""
-        # Default to a simple sizer, strategies can override or we can make this configurable
-        risk_per_trade = self.config.get("risk_per_trade", 2.0)
-        # We might want a custom sizer that takes risk into account, 
-        # but for now let's stick to a PercentSizer or similar if applicable, 
-        # or handle sizing in the strategy itself.
-        # Let's use a fixed sizer for now and let strategy manage size dynamically if needed.
-        # Use PercentSizer to trade 10% of portfolio by default
-        # self.cerebro.addsizer(bt.sizers.PercentSizer, percents=10)
+        """Position sizing is handled dynamically inside the strategy itself."""
         pass
+
 
     @abstractmethod
     def add_data(self):

@@ -36,7 +36,8 @@ import {
   DialogActions,
   Divider,
   Stack,
-  Autocomplete
+  Autocomplete,
+  IconButton
 } from "@mui/material";
 import {
   PlayArrow,
@@ -45,7 +46,9 @@ import {
   ExpandMore,
   Check,
   Close,
-  InfoOutlined
+  InfoOutlined,
+  FileDownloadOutlined,
+  DeleteOutline
 } from "@mui/icons-material";
 import {
   LineChart,
@@ -285,6 +288,9 @@ export default function App() {
   const consoleEndRef = useRef<HTMLDivElement>(null);
   const websocketRef = useRef<WebSocket | null>(null);
 
+  const [loadDialogOpen, setLoadDialogOpen] = useState(false);
+  const [savedConfigs, setSavedConfigs] = useState<string[]>([]);
+
   // Sections mapping for strategy parameters (order matters)
   // Sections mapping for strategy parameters (order matters)
   // Sections mapping for strategy parameters (order matters)
@@ -507,6 +513,79 @@ export default function App() {
     };
     loadData();
   }, []);
+
+  const loadUserConfigs = async () => {
+    try {
+      const response = await fetch(`${API_BASE}/api/user-configs`);
+      if (response.ok) {
+        const data = await response.json();
+        setSavedConfigs(data.configs || []);
+      }
+    } catch (error) {
+      console.error("Failed to load user configs:", error);
+    }
+  };
+
+  const handleOpenLoadDialog = () => {
+    loadUserConfigs();
+    setLoadDialogOpen(true);
+  };
+
+  const handleLoadConfig = async (configName: string) => {
+    try {
+      const response = await fetch(`${API_BASE}/api/user-configs/${configName}`);
+      if (response.ok) {
+        const data = await response.json();
+
+        // Apply config
+        setConfig(prev => ({ ...prev, ...data }));
+
+        if (data.strategy) {
+          setSelectedStrategy(data.strategy);
+
+          // Get strategy defaults
+          const strategyDef = strategies.find(s => s.name === data.strategy);
+          if (strategyDef) {
+            const defaults: Record<string, any> = {};
+            Object.entries(strategyDef.config_schema || {}).forEach(([key, schema]: [string, any]) => {
+              defaults[key] = schema.default;
+            });
+            setStrategyConfig({
+              ...defaults,
+              ...(data.strategy_config || {})
+            });
+          } else {
+            setStrategyConfig(data.strategy_config || {});
+          }
+        } else {
+          setStrategyConfig({});
+        }
+
+        setLoadDialogOpen(false);
+      }
+    } catch (error) {
+      console.error("Failed to load specific config:", error);
+    }
+  };
+
+  const handleDeleteConfig = async (configName: string) => {
+    if (!window.confirm(`Are you sure you want to delete the configuration "${configName}"?`)) {
+      return;
+    }
+
+    try {
+      const response = await fetch(`${API_BASE}/api/user-configs/${configName}`, {
+        method: 'DELETE',
+      });
+      if (response.ok) {
+        loadUserConfigs(); // Refresh list after deletion
+      } else {
+        console.error("Failed to delete config:", response.status);
+      }
+    } catch (error) {
+      console.error("Error deleting config:", error);
+    }
+  };
 
   const resetDashboard = async () => {
     // 1. Reset Run State
@@ -1035,6 +1114,51 @@ export default function App() {
           </>
         )}
       </Dialog>
+
+      {/* Load Configuration Dialog */}
+      <Dialog
+        open={loadDialogOpen}
+        onClose={() => setLoadDialogOpen(false)}
+        aria-labelledby="load-dialog-title"
+        maxWidth="sm"
+        fullWidth
+        PaperProps={{
+          sx: { bgcolor: '#1e1e1e', color: '#fff' }
+        }}
+      >
+        <DialogTitle id="load-dialog-title" sx={{ borderBottom: '1px solid #333' }}>
+          Load Configuration Template
+        </DialogTitle>
+        <DialogContent sx={{ p: 0 }}>
+          {savedConfigs.length === 0 ? (
+            <Typography sx={{ color: '#aaa', p: 3, textAlign: 'center' }}>
+              No saved configurations found. Save a configuration from Recent Backtests first.
+            </Typography>
+          ) : (
+            <TableContainer>
+              <Table size="small">
+                <TableBody>
+                  {savedConfigs.map((name) => (
+                    <TableRow key={name} hover sx={{ cursor: 'pointer', '&:hover': { bgcolor: 'rgba(255,255,255,0.05)' } }} onClick={() => handleLoadConfig(name)}>
+                      <TableCell sx={{ color: '#fff', borderBottom: '1px solid #333' }}>{name}</TableCell>
+                      <TableCell align="right" sx={{ borderBottom: '1px solid #333' }}>
+                        <Button size="small" variant="text" color="primary" onClick={(e) => { e.stopPropagation(); handleLoadConfig(name); }}>Load</Button>
+                        <IconButton size="small" color="error" title={`Delete ${name}`} onClick={(e: React.MouseEvent) => { e.stopPropagation(); handleDeleteConfig(name); }}>
+                          <DeleteOutline fontSize="small" />
+                        </IconButton>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </TableContainer>
+          )}
+        </DialogContent>
+        <DialogActions sx={{ borderTop: '1px solid #333', p: 2 }}>
+          <Button onClick={() => setLoadDialogOpen(false)} color="inherit">Close</Button>
+        </DialogActions>
+      </Dialog>
+
       <Typography variant="h3" component="h1" gutterBottom align="center">
         Backtest Machine Dashboard
       </Typography>
@@ -1116,6 +1240,15 @@ export default function App() {
                       disabled={isRunning}
                     >
                       Reset
+                    </Button>
+                    <Button
+                      variant="outlined"
+                      startIcon={<FileDownloadOutlined />}
+                      onClick={handleOpenLoadDialog}
+                      disabled={isRunning}
+                      color="secondary"
+                    >
+                      Load Config
                     </Button>
                   </Box>
                 </Grid>

@@ -33,10 +33,12 @@ original_stderr = sys.stderr
 BASE_DIR = Path(__file__).parent.parent.absolute()
 DATA_DIR = str(BASE_DIR / "data_cache")
 RESULTS_DIR = str(BASE_DIR / "results")
+USER_CONFIGS_DIR = str(BASE_DIR / "user_configs")
 
 # Ensure directories exist
 os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(RESULTS_DIR, exist_ok=True)
+os.makedirs(USER_CONFIGS_DIR, exist_ok=True)
 
 import logging
 logging.basicConfig(
@@ -419,6 +421,67 @@ async def update_config(config: Dict[str, Any]):
     
     return {"message": "Configuration updated"}
 
+
+@app.get("/api/user-configs")
+async def list_user_configs():
+    """List all saved user configurations."""
+    configs = []
+    if os.path.exists(USER_CONFIGS_DIR):
+        for name in os.listdir(USER_CONFIGS_DIR):
+            if name.endswith(".json"):
+                configs.append(name[:-5])  # Remove .json extension
+    return {"configs": sorted(configs)}
+
+
+@app.get("/api/user-configs/{name}")
+async def get_user_config(name: str):
+    """Get a specific user configuration."""
+    # Basic path traversal protection
+    if "/" in name or "\\" in name or ".." in name:
+        raise HTTPException(status_code=400, detail="Invalid configuration name")
+    
+    file_path = os.path.join(USER_CONFIGS_DIR, f"{name}.json")
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="Configuration not found")
+        
+    try:
+        with open(file_path, 'r') as f:
+            data = json.load(f)
+        return data
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error reading configuration: {str(e)}")
+
+
+@app.post("/api/user-configs/{name}")
+async def save_user_config(name: str, config: Dict[str, Any]):
+    """Save a user configuration."""
+    if "/" in name or "\\" in name or ".." in name:
+        raise HTTPException(status_code=400, detail="Invalid configuration name")
+        
+    file_path = os.path.join(USER_CONFIGS_DIR, f"{name}.json")
+    try:
+        with open(file_path, 'w') as f:
+            json.dump(config, f, indent=2)
+        return {"message": f"Configuration '{name}' saved successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error saving configuration: {str(e)}")
+
+
+@app.delete("/api/user-configs/{name}")
+async def delete_user_config(name: str):
+    """Delete a user configuration."""
+    if "/" in name or "\\" in name or ".." in name:
+        raise HTTPException(status_code=400, detail="Invalid configuration name")
+        
+    file_path = os.path.join(USER_CONFIGS_DIR, f"{name}.json")
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="Configuration not found")
+        
+    try:
+        os.remove(file_path)
+        return {"message": f"Configuration '{name}' deleted successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error deleting configuration: {str(e)}")
 
 @app.post("/backtest/start")
 async def start_backtest(request: BacktestRequest, background_tasks: BackgroundTasks):

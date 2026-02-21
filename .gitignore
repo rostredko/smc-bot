@@ -41,6 +41,7 @@ results/*.log
 config/*.local.json
 !config/config.json
 !config/live_trading_config.json
+user_configs/*.json
 
 # --- Misc ---
 *.bak

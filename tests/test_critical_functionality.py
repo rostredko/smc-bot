@@ -124,20 +124,20 @@ class TestPositionSizing(unittest.TestCase):
         self.assertAlmostEqual(size, 20.0, places=2)
 
     def test_leverage_cap(self):
-        """Position should be capped at max leverage."""
+        """Position should be capped at account_value * leverage."""
         self.strategy.params = MagicMock()
         self.strategy.params.dynamic_position_sizing = True
         self.strategy.params.risk_per_trade = 10.0  # 10% — very aggressive
-        self.strategy.params.leverage = 2.0  # Low leverage
-        
+        self.strategy.params.leverage = 2.0
+
         self.strategy.broker = MagicMock()
         self.strategy.broker.get_cash.return_value = 10000
         self.strategy.broker.get_value.return_value = 10000
-        
+
         # Entry at 100, SL at 99 → risk_per_share = 1
         # Risk amount = 10000 * 0.10 = 1000
-        # Uncapped size = 1000 / 1 = 1000 → value = 100000
-        # Max value at 2x leverage = 20000 → max size = 200
+        # Uncapped size = 1000 / 1 = 1000 → notional = 100000
+        # Max allowed = 10000 * 2 = 20000 → max size = 200
         size = self.strategy._calculate_position_size(100.0, 99.0)
         self.assertAlmostEqual(size, 200.0, places=2)
 

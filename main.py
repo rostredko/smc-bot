@@ -83,13 +83,13 @@ def load_config_from_json(config_file: str) -> Dict[str, Any]:
         config = {
             # Account settings (try nested first, then flat)
             "initial_capital": json_config.get("account", {}).get("initial_capital", json_config.get("initial_capital", 10000)),
-            "risk_per_trade": json_config.get("account", {}).get("risk_per_trade", json_config.get("risk_per_trade", 2.0)),
             "commission": json_config.get("trading", {}).get("commission", json_config.get("commission", 0.0004)),
             
             # Trading settings (try nested first, then flat)
             "symbol": json_config.get("trading", {}).get("symbol", json_config.get("symbol", "BTC/USDT")),
             "timeframes": json_config.get("trading", {}).get("timeframes", json_config.get("timeframes", ["4h", "15m"])),
             "exchange": json_config.get("trading", {}).get("exchange", json_config.get("exchange", "binance")),
+            "leverage": json_config.get("leverage", 10.0),
             
             # Period settings (try nested first, then flat)
             "start_date": json_config.get("period", {}).get("start_date", json_config.get("start_date", "2023-01-01")),
@@ -98,12 +98,6 @@ def load_config_from_json(config_file: str) -> Dict[str, Any]:
             # Strategy settings
             "strategy": strategy_name,
             "strategy_config": (json_config.get("strategy", {}) if isinstance(json_config.get("strategy"), dict) else {}).get("config", json_config.get("strategy_config", {})),
-            
-            # Output settings
-            "save_results": json_config.get("output", {}).get("save_results", True),
-            "results_file": json_config.get("output", {}).get("results_file", "results/backtest_results.json"),
-            "export_trades": json_config.get("output", {}).get("export_trades", True),
-            "trades_file": json_config.get("output", {}).get("trades_file", "results/trades_history.json"),
         }
 
         return config

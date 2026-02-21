@@ -21,7 +21,8 @@ import {
     DialogTitle,
     DialogContent,
     DialogContentText,
-    DialogActions
+    DialogActions,
+    TextField
 } from '@mui/material';
 import {
     KeyboardArrowDown,
@@ -31,7 +32,8 @@ import {
     NavigateNext,
     FirstPage,
     LastPage,
-    DeleteOutline
+    DeleteOutline,
+    FileCopyOutlined
 } from '@mui/icons-material';
 
 interface BacktestSummary {
@@ -163,6 +165,58 @@ const BacktestHistoryList: React.FC = () => {
     const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
     const [itemToDelete, setItemToDelete] = useState<string | null>(null);
 
+    const [saveDialogOpen, setSaveDialogOpen] = useState(false);
+    const [itemToSave, setItemToSave] = useState<BacktestSummary | null>(null);
+    const [saveTemplateName, setSaveTemplateName] = useState("");
+    const [saveError, setSaveError] = useState("");
+
+    const handleSaveClick = (e: React.MouseEvent, item: BacktestSummary) => {
+        e.stopPropagation();
+        setItemToSave(item);
+        setSaveTemplateName("");
+        setSaveError("");
+        setSaveDialogOpen(true);
+    };
+
+    const handleSaveCancel = () => {
+        setSaveDialogOpen(false);
+        setItemToSave(null);
+    };
+
+    const handleSaveConfirm = async () => {
+        if (!itemToSave || !saveTemplateName.trim()) {
+            setSaveError("Template name is required.");
+            return;
+        }
+
+        // Validate filename (alphanumeric, dashes, underscores)
+        if (!/^[a-zA-Z0-9_-]+$/.test(saveTemplateName)) {
+            setSaveError("Invalid name. Use only letters, numbers, dashes, and underscores.");
+            return;
+        }
+
+        try {
+            const response = await fetch(`${API_BASE}/api/user-configs/${saveTemplateName}`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify(itemToSave.configuration),
+            });
+
+            if (response.ok) {
+                setSaveDialogOpen(false);
+                setItemToSave(null);
+            } else {
+                const data = await response.json();
+                setSaveError(data.detail || "Failed to save configuration.");
+            }
+        } catch (error) {
+            console.error("Error saving config:", error);
+            setSaveError("Network error occurred.");
+        }
+    };
+
     const handleDeleteClick = (e: React.MouseEvent, filename: string) => {
         e.stopPropagation(); // Prevent row expansion
         setItemToDelete(filename);
@@ -241,7 +295,7 @@ const BacktestHistoryList: React.FC = () => {
                                                 hover
                                                 onClick={() => toggleRow(item.filename)}
                                                 sx={{
-                                                    '& > *': { borderBottom: 'unset' },
+                                                    '& > *': { borderBottom: openRows[item.filename] ? '1px solid #e0e0e0' : '1px solid #e0e0e0' },
                                                     cursor: 'pointer',
                                                     '&:hover': { backgroundColor: 'action.hover' }
                                                 }}
@@ -281,10 +335,21 @@ const BacktestHistoryList: React.FC = () => {
                                                 <TableCell align="right" sx={{ color: 'red' }}>{item.max_drawdown.toFixed(2)}%</TableCell>
                                                 <TableCell align="center">
                                                     <IconButton
+                                                        aria-label="save config"
+                                                        size="small"
+                                                        onClick={(e) => handleSaveClick(e, item)}
+                                                        color="default"
+                                                        title="Save as template"
+                                                        sx={{ '&:hover': { color: 'primary.main' }, mr: 1 }}
+                                                    >
+                                                        <FileCopyOutlined fontSize="small" />
+                                                    </IconButton>
+                                                    <IconButton
                                                         aria-label="delete"
                                                         size="small"
                                                         onClick={(e) => handleDeleteClick(e, item.filename)}
                                                         color="default"
+                                                        title="Delete backtest"
                                                         sx={{ '&:hover': { color: 'error.main' } }}
                                                     >
                                                         <DeleteOutline fontSize="small" />
@@ -438,6 +503,43 @@ const BacktestHistoryList: React.FC = () => {
                         </Button>
                     </Stack>
                 )}
+
+                {/* Save Configuration Dialog */}
+                <Dialog
+                    open={saveDialogOpen}
+                    onClose={handleSaveCancel}
+                    aria-labelledby="save-dialog-title"
+                >
+                    <DialogTitle id="save-dialog-title">
+                        Save Configuration Template
+                    </DialogTitle>
+                    <DialogContent>
+                        <DialogContentText sx={{ mb: 2 }}>
+                            Enter a name for this template to quickly load it later. Use only letters, numbers, dashes, and underscores.
+                        </DialogContentText>
+                        <TextField
+                            autoFocus
+                            margin="dense"
+                            label="Template Name"
+                            type="text"
+                            fullWidth
+                            variant="outlined"
+                            value={saveTemplateName}
+                            onChange={(e) => {
+                                setSaveTemplateName(e.target.value);
+                                setSaveError("");
+                            }}
+                            error={!!saveError}
+                            helperText={saveError}
+                        />
+                    </DialogContent>
+                    <DialogActions>
+                        <Button onClick={handleSaveCancel}>Cancel</Button>
+                        <Button onClick={handleSaveConfirm} color="primary" variant="contained">
+                            Save
+                        </Button>
+                    </DialogActions>
+                </Dialog>
 
                 {/* Delete Confirmation Dialog */}
                 <Dialog
