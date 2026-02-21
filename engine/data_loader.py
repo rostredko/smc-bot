@@ -16,22 +16,33 @@ class DataLoader:
     Handles OHLCV data fetching, multi-timeframe support, and caching.
     """
 
-    def __init__(self, exchange_name: str = "binance", exchange_type: str = "future", cache_dir: str = "data_cache"):
+    def _get_project_root(self) -> str:
+        """Get the absolute path to the project root directory."""
+        # Find the root based on this file's location (engine/data_loader.py -> project_root)
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        project_root = os.path.dirname(current_dir)
+        return project_root
+
+    def __init__(self, exchange_name: str = "binance", exchange_type: str = "future", cache_dir: str = "data_cache", max_cache_age_days: float = 7.0):
         """
         Initialize the data loader.
 
         Args:
             exchange_name: Name of the exchange (e.g., 'binance', 'bybit')
             exchange_type: Type of market ('spot', 'future', 'swap'). Default 'future'.
-            cache_dir: Directory to store cached data
+            cache_dir: Directory to store cached data relative to project root
+            max_cache_age_days: Maximum age of a cache file in days before it is invalidated
         """
         self.exchange_name = exchange_name
         self.exchange_type = exchange_type
-        self.cache_dir = cache_dir
+        self.max_cache_age_days = max_cache_age_days
+        
+        project_root = self._get_project_root()
+        self.cache_dir = os.path.join(project_root, cache_dir)
         self.exchange = self._initialize_exchange()
 
         # Create cache directory if it doesn't exist
-        os.makedirs(cache_dir, exist_ok=True)
+        os.makedirs(self.cache_dir, exist_ok=True)
 
         # Rate limiting
         self.last_request_time = 0
@@ -96,8 +107,16 @@ class DataLoader:
         # Check cache first
         cache_file = self._get_cache_file(symbol, timeframe, start_date, end_date)
         if os.path.exists(cache_file):
-            print(f"Loading cached data from {cache_file}")
-            return pd.read_csv(cache_file, index_col=0, parse_dates=True)
+            file_age_days = (time.time() - os.path.getmtime(cache_file)) / (24 * 3600)
+            if file_age_days > self.max_cache_age_days:
+                print(f"♻️ Cache file {cache_file} is {file_age_days:.1f} days old (older than {self.max_cache_age_days} limit). Removing it.")
+                try:
+                    os.remove(cache_file)
+                except OSError as e:
+                    print(f"Warning: Failed to remove old cache file {cache_file}: {e}")
+            else:
+                print(f"Loading cached data from {cache_file} (Age: {file_age_days:.1f} days)")
+                return pd.read_csv(cache_file, index_col=0, parse_dates=True)
 
         # Convert dates to timestamps
         start_ts = int(pd.Timestamp(start_date).timestamp() * 1000)
