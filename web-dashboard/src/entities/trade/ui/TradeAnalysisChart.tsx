@@ -89,4 +89,4 @@ const TradeAnalysisChart: React.FC<TradeAnalysisChartProps> = ({ trades, onTrade
     );
 };
 
-export default TradeAnalysisChart;
+export default React.memo(TradeAnalysisChart);

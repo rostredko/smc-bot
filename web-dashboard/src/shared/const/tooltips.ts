@@ -1,0 +1,38 @@
+export const TOOLTIP_HINTS: Record<string, string> = {
+    // Account
+    initial_capital: "Starting account balance in USD",
+    risk_per_trade: "Percentage of capital risked per single trade (e.g. 1.0 = 1%)",
+    max_drawdown: "Maximum allowed decline in account equity before stopping",
+    leverage: "Multiplier for position size (technical use only, risk is controlled by % per trade)",
+    max_positions: "Maximum number of simultaneous open trades",
+
+    // General
+    symbol: "Trading pair to backtest (e.g. BTC/USDT)",
+    start_date: "Backtest start date",
+    end_date: "Backtest end date",
+    timeframe_primary: "Higher timeframe for trend direction / EMA filter (e.g. 4h, 1d)",
+    timeframe_secondary: "Lower timeframe for pattern detection and trade entries (e.g. 15m, 1h)",
+    trailing_stop_distance: "Distance to trail the stop loss behind price (e.g. 0.02 = 2%)",
+    breakeven_trigger_r: "Profit multiplier to trigger move to breakeven (e.g. 1.0 = Move stop to entry when profit hits 1R)",
+    dynamic_position_sizing: "Adjust position size based on current capital/risk",
+
+    // Strategy Specific
+    primary_timeframe: "The main timeframe for candle analysis (e.g. 4h, 1h)",
+    min_range_factor: "Minimum size of a candle relative to recent average",
+    use_trend_filter: "Enable/Disable trading only in direction of EMA trend",
+    trend_ema_period: "Period for Exponential Moving Average to determine trend direction",
+    risk_reward_ratio: "Target Profit/Risk ratio for trade exits",
+    sl_buffer_atr: "Buffer added to Stop Loss based on ATR (volatility)",
+    use_rsi_filter: "Enable/Disable RSI checks for overbought/oversold conditions",
+    rsi_period: "Lookback period for RSI indicator",
+    rsi_overbought: "RSI level above which Longs are avoided (Too high)",
+    rsi_oversold: "RSI level below which Shorts are avoided (Too low)",
+    min_wick_to_range: "Minimum wick size relative to candle body (for Pin Bars)",
+
+    max_body_to_range: "Maximum body size relative to total range (for Pin Bars)",
+    use_adx_filter: "Enable/Disable ADX (Trend Strength) Filter",
+    adx_period: "Lookback period for ADX indicator",
+    adx_threshold: "Minimum ADX value required to enter a trade (Trend Strength)",
+    use_rsi_momentum: "Enable/Disable RSI Momentum (Long if > 50, Short if < 50)",
+    rsi_momentum_threshold: "Threshold for RSI Momentum (usually 50)",
+};
