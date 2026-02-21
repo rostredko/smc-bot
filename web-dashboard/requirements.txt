@@ -1,4 +1,4 @@
-# SMC Trading Engine Requirements - Web Dashboard
+# Backtrade Machine Requirements - Web Dashboard
 
 # Core dependencies
 pandas>=1.5.0

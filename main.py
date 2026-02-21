@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-SMC Trading Engine - Main Entry Point
+Backtrade Machine - Main Entry Point
 This script provides easy access to all main functionality including backtesting, live trading, and testing.
 """
 

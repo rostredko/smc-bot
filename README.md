@@ -1,6 +1,6 @@
-# SMC Trading Engine - Complete Guide
+# Backtrade Machine - Complete Guide
 
-A production-ready Python backtesting framework for Smart Money Concepts (SMC) spot crypto trading strategies with Binance integration, comprehensive risk management, web dashboard, and automated testing.
+A production-ready Python backtesting framework for algorithmic spot crypto trading strategies with Binance integration, comprehensive risk management, web dashboard, and automated testing.
 
 **Status**: ✅ Production Ready | **Tests**: 100% Passing | **Engine**: Backtrader (v1.9)
 

@@ -1,6 +1,6 @@
 # Backtrader Library Usage Documentation
 
-This document describes exactly how the **Backtrader** library is utilized within the `smc-bot` project. It distinguishes between native Backtrader features and custom helper code.
+This document describes exactly how the **Backtrader** library is utilized within the `Backtrade Machine` project. It distinguishes between native Backtrader features and custom helper code.
 
 ## 1. Data Management
 

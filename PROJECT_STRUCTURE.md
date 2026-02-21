@@ -1,7 +1,7 @@
-# SMC Trading Bot - Project Structure
+# Backtrade Machine - Project Structure
 
 ## Overview
-Trading bot for cryptocurrency spot trading using Smart Money Concepts (SMC) strategy. Supports backtesting and live trading with comprehensive risk management.
+Trading bot for cryptocurrency spot trading using custom strategies. Supports backtesting and live trading with comprehensive risk management.
 
 ---
 

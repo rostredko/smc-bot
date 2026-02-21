@@ -50,8 +50,8 @@ logger = logging.getLogger("server")
 
 # FastAPI app
 app = FastAPI(
-    title="SMC Trading Engine API",
-    description="REST API for SMC Trading Engine",
+    title="Backtrade Machine API",
+    description="REST API for Backtrade Machine",
     version="1.0.0"
 )
 
