@@ -22,7 +22,8 @@ import {
     DialogContent,
     DialogContentText,
     DialogActions,
-    TextField
+    TextField,
+    CircularProgress
 } from '@mui/material';
 import {
     KeyboardArrowDown,
@@ -35,6 +36,9 @@ import {
     DeleteOutline,
     FileCopyOutlined
 } from '@mui/icons-material';
+
+import TradeAnalysisChart from './TradeAnalysisChart';
+import TradeDetailsModal from './TradeDetailsModal';
 
 interface BacktestSummary {
     filename: string;
@@ -96,6 +100,9 @@ const BacktestHistoryList: React.FC = () => {
     const [totalPages, setTotalPages] = useState(0);
     const [totalCount, setTotalCount] = useState(0);
     const [loading, setLoading] = useState(false);
+    const [detailedResults, setDetailedResults] = useState<Record<string, any>>({});
+    const [selectedTrade, setSelectedTrade] = useState<any | null>(null);
+    const [isTradeModalOpen, setIsTradeModalOpen] = useState(false);
 
     const fetchHistory = async (currentPage: number = 1) => {
         setLoading(true);
@@ -130,8 +137,28 @@ const BacktestHistoryList: React.FC = () => {
         return () => clearInterval(interval);
     }, [page]);
 
-    const toggleRow = (filename: string) => {
-        setOpenRows(prev => ({ ...prev, [filename]: !prev[filename] }));
+    const toggleRow = async (filename: string) => {
+        const isCurrentlyOpen = openRows[filename];
+        setOpenRows(prev => ({ ...prev, [filename]: !isCurrentlyOpen }));
+
+        if (!isCurrentlyOpen && !detailedResults[filename]) {
+            try {
+                const response = await fetch(`${API_BASE}/results/${filename}`);
+                if (response.ok) {
+                    const data = await response.json();
+                    setDetailedResults(prev => ({ ...prev, [filename]: data }));
+                }
+            } catch (error) {
+                console.error("Failed to fetch detailed results:", error);
+            }
+        }
+    };
+
+    const handleTradeClick = (trade: any) => {
+        if (trade) {
+            setSelectedTrade(trade);
+            setIsTradeModalOpen(true);
+        }
     };
 
     const formatDate = (isoString: string) => {
@@ -442,7 +469,32 @@ const BacktestHistoryList: React.FC = () => {
                                                                 </Box>
                                                             </Box>
 
-                                                            <Box>
+                                                            {/* Trade Analysis Chart */}
+                                                            <Box sx={{ mt: 2, pt: 2, borderTop: '1px solid rgba(255, 255, 255, 0.1)' }}>
+                                                                <Typography variant="subtitle2" gutterBottom color="primary">
+                                                                    Trade Analysis
+                                                                </Typography>
+
+                                                                {!detailedResults[item.filename] ? (
+                                                                    <Box sx={{ display: 'flex', justifyContent: 'center', p: 4 }}>
+                                                                        <CircularProgress size={30} />
+                                                                    </Box>
+                                                                ) : detailedResults[item.filename].trades && detailedResults[item.filename].trades.length > 0 ? (
+                                                                    <Box sx={{ mt: 2 }}>
+                                                                        <TradeAnalysisChart
+                                                                            trades={detailedResults[item.filename].trades}
+                                                                            onTradeClick={handleTradeClick}
+                                                                            height={200}
+                                                                        />
+                                                                    </Box>
+                                                                ) : (
+                                                                    <Typography variant="body2" color="textSecondary">
+                                                                        No trade data available for this backtest.
+                                                                    </Typography>
+                                                                )}
+                                                            </Box>
+
+                                                            <Box sx={{ mt: 3 }}>
                                                                 <Typography variant="caption" display="block" color="textSecondary">
                                                                     File: {item.filename}
                                                                 </Typography>
@@ -509,12 +561,15 @@ const BacktestHistoryList: React.FC = () => {
                     open={saveDialogOpen}
                     onClose={handleSaveCancel}
                     aria-labelledby="save-dialog-title"
+                    PaperProps={{
+                        sx: { bgcolor: '#1e1e1e', color: '#fff' }
+                    }}
                 >
-                    <DialogTitle id="save-dialog-title">
+                    <DialogTitle id="save-dialog-title" sx={{ borderBottom: '1px solid #333' }}>
                         Save Configuration Template
                     </DialogTitle>
-                    <DialogContent>
-                        <DialogContentText sx={{ mb: 2 }}>
+                    <DialogContent sx={{ mt: 2 }}>
+                        <DialogContentText sx={{ mb: 2, color: '#aaa' }}>
                             Enter a name for this template to quickly load it later. Use only letters, numbers, dashes, and underscores.
                         </DialogContentText>
                         <TextField
@@ -531,10 +586,18 @@ const BacktestHistoryList: React.FC = () => {
                             }}
                             error={!!saveError}
                             helperText={saveError}
+                            sx={{
+                                input: { color: '#fff' },
+                                label: { color: '#aaa' },
+                                '& .MuiOutlinedInput-root': {
+                                    '& fieldset': { borderColor: '#555' },
+                                    '&:hover fieldset': { borderColor: '#888' },
+                                },
+                            }}
                         />
                     </DialogContent>
-                    <DialogActions>
-                        <Button onClick={handleSaveCancel}>Cancel</Button>
+                    <DialogActions sx={{ borderTop: '1px solid #333', p: 2 }}>
+                        <Button onClick={handleSaveCancel} sx={{ color: '#aaa' }}>Cancel</Button>
                         <Button onClick={handleSaveConfirm} color="primary" variant="contained">
                             Save
                         </Button>
@@ -547,22 +610,32 @@ const BacktestHistoryList: React.FC = () => {
                     onClose={handleDeleteCancel}
                     aria-labelledby="alert-dialog-title"
                     aria-describedby="alert-dialog-description"
+                    PaperProps={{
+                        sx: { bgcolor: '#1e1e1e', color: '#fff' }
+                    }}
                 >
-                    <DialogTitle id="alert-dialog-title">
+                    <DialogTitle id="alert-dialog-title" sx={{ borderBottom: '1px solid #333' }}>
                         {"Confirm Deletion"}
                     </DialogTitle>
-                    <DialogContent>
-                        <DialogContentText id="alert-dialog-description">
+                    <DialogContent sx={{ mt: 2 }}>
+                        <DialogContentText id="alert-dialog-description" sx={{ color: '#aaa' }}>
                             Are you sure you want to delete this backtest result? This action cannot be undone.
                         </DialogContentText>
                     </DialogContent>
-                    <DialogActions>
-                        <Button onClick={handleDeleteCancel}>Cancel</Button>
-                        <Button onClick={handleDeleteConfirm} color="error" autoFocus>
+                    <DialogActions sx={{ borderTop: '1px solid #333', p: 2 }}>
+                        <Button onClick={handleDeleteCancel} sx={{ color: '#aaa' }}>Cancel</Button>
+                        <Button onClick={handleDeleteConfirm} color="error" variant="contained" autoFocus>
                             Delete
                         </Button>
                     </DialogActions>
                 </Dialog>
+
+                {/* Trade Details Modal */}
+                <TradeDetailsModal
+                    open={isTradeModalOpen}
+                    onClose={() => setIsTradeModalOpen(false)}
+                    selectedTrade={selectedTrade}
+                />
             </CardContent>
         </Card>
     );
