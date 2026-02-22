@@ -2,7 +2,6 @@
 import sys
 import os
 import json
-import pytest
 from fastapi.testclient import TestClient
 
 # Add project root to path to verify imports

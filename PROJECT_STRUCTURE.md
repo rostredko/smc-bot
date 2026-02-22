@@ -149,15 +149,16 @@ Contains trading strategies and analysis logic.
 - **`smc_analysis.py`**: Library of SMC analysis components (Reuse attempted in BT or pending migration).
 
 #### Class: PriceActionStrategy (extends bt.Strategy)
-Backtrader strategy using EMA, RSI, and candlestick patterns.
+Backtrader strategy using TA-Lib for high-performance indicator calculations and candlestick patterns.
 
 **params:**
 - trend_ema_period, rsi_period, etc.
 
 **Methods:**
 - `next()`: Main strategy logic executed per bar.
-- `_is_bullish_pinbar()`: Pattern detection.
-- `_enter_long()`: Executing trades using `buy_bracket`.
+- `_is_bullish_pinbar()`: Pattern detection executed manually using pure OHLCV formulas.
+- `_enter_long()`: Executing trades using OCO-linked Bracket Orders (`buy`, `sell` with `oco=` keyword).
+- `_manage_trailing_stop()`: Manages OCO recreation when trailing a stop or moving to breakeven.
 ---
 
 ### 3. smc_strategy.py
@@ -390,3 +391,39 @@ Displays historical backtest runs with:
 - Dedicated columns for Strategy and Period
 - Expandable rows showing full configuration diffs
 - PnL and other performance metrics
+
+---
+
+## BACKTRADER & TA-LIB ENGINE ARCHITECTURE
+
+This section details how the **Backtrader** library and **TA-Lib** C-bindings are orchestrated alongside custom helper code to form the Backtrade Machine engine.
+
+### 1. Data Management
+- **Downloading Data (Custom):** Backtrader does not support downloading historical crypto data out-of-the-box. We use `ccxt.binance` inside `engine/data_loader.py` to fetch pure OHLCV data.
+- **Feeding Data (Custom Wrapper):** We use a custom `SMCDataFeed` (inheriting from `bt.feeds.PandasData`) inside `engine/bt_backtest_engine.py` to strictly map and feed the pandas DataFrame into the Backtrader `Cerebro` engine.
+
+### 2. Trading Strategy
+- **Strategy Logic (Native Backtrader):** Our `PriceActionStrategy` inherits directly from `bt.Strategy` and hooks into the standard `next(self)` event loop.
+- **Indicators (TA-Lib):** We **bypass** native Backtrader indicators (like `bt.indicators.EMA`) and instead use standard **TA-Lib** (`bt.talib.EMA`, `bt.talib.RSI`, `bt.talib.ATR`, `bt.talib.ADX`). This guarantees maximum mathematical parity with industry standards (like TradingView) and extreme C-level execution speed.
+- **Order Execution (Native Backtrader OCO):**
+  - **Entry:** We execute Limit and Stop orders. 
+  - **Exits & Trailing Stops:** We manually link Stop Loss and Take Profit orders using the `oco=` (One-Cancels-Other) parameter. When trailing a stop, we gracefully cancel the existing bracket and recreate *both* the Stop and TP to preserve the OCO constraint natively.
+
+### 3. Backtest Engine & Reporting
+- **Core Engine (Native):** We use `bt.Cerebro()` as the central controller, configuring the broker (`cerebro.broker.setcash()`) and a custom position sizing logic inside the strategy via `RiskManager`.
+- **Metrics Math (Native):** We attach native analyzers (`TradeAnalyzer`, `DrawDown`, `SharpeRatio`, `TimeReturn`) to calculate performance metrics.
+- **Report Generation (Custom):** `web-dashboard/server.py` extracts raw analyzer Python objects and maps them into rigid JSON structures needed for the React frontend, broadcasting live status via WebSocket.
+
+### Engine Components Summary Table
+
+| Component | Implementation Source | Notes |
+| :--- | :--- | :--- |
+| **Data Downloading** | **Custom (`ccxt`)** | Backtrader has no native crypto downloader. |
+| **Data Feed** | **Custom (`SMCDataFeed`)** | Inherits `PandasData` for strict column safety. |
+| **Strategy Logic** | **Native (`bt.Strategy`)** | 100% Backtrader event loop. |
+| **Indicators** | **TA-Lib (`bt.talib`)** | Bypasses BT native math for C-speed and accuracy. |
+| **Order Management** | **Native (`bt.Order`)** | Strict OCO links via `buy/sell(oco=...)`. |
+| **Backtest Loop** | **Native (`bt.Cerebro`)** | The core orchestrator. |
+| **Metrics Math** | **Native (`bt.analyzers`)** | We trust Backtrader's math. |
+| **Report Formatting** | **Custom (`server.py`)** | Pydantic JSON/Web API mapping. |
+

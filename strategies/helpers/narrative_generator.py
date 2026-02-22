@@ -105,7 +105,6 @@ class TradeNarrator:
             lines.append(f"Outcome: Closed at ${exit_price:,.2f} ({achieved_r:+.2f}R). Exit reason: {exit_reason}.")
         
         # Line 4: Financial summary
-        result_word = "Profit" if pnl_comm > 0 else "Loss"
         lines.append(f"P&L: ${pnl_comm:+,.2f} net ({price_diff_pct:.2f}% move). Commission ${commission:,.2f} ({comm_pct_of_pnl:.1f}% of gross).")
         
         return " ".join(lines)

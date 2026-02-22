@@ -73,7 +73,7 @@ class DataLoader:
 
             # Test connection and get exchange info
             logger.info(f"✅ Connected to {exchange.name}")
-            logger.debug(f"📊 Exchange info:")
+            logger.debug("📊 Exchange info:")
             logger.debug(f"   - Rate limit: {exchange.rateLimit}ms")
             logger.debug(f"   - Mode (defaultType): {exchange.options.get('defaultType', 'spot')}")
             logger.debug(f"   - Has swap: {exchange.has.get('swap', False)}")
@@ -81,7 +81,7 @@ class DataLoader:
             logger.debug(f"   - Has spot: {exchange.has.get('spot', False)}")
 
             # Test market loading
-            logger.info(f"📈 Loading markets...")
+            logger.info("📈 Loading markets...")
             markets = exchange.load_markets()
             logger.info(f"✅ Loaded {len(markets)} markets")
 
@@ -182,10 +182,6 @@ class DataLoader:
             Cleaned DataFrame with OHLCV data
         """
         df = self.fetch_ohlcv(symbol, timeframe, start_date, end_date)
-
-        # Add common technical indicators
-        df = self._add_technical_indicators(df)
-
         return df
 
     def get_data_multi(self, symbol: str, timeframes: List[str], start_date: str, end_date: str) -> Dict[str, pd.DataFrame]:
@@ -225,55 +221,6 @@ class DataLoader:
         df.dropna(inplace=True)
 
         return df
-
-    def _add_technical_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Add common technical indicators to the DataFrame."""
-        # ATR (Average True Range)
-        df["atr"] = self._calculate_atr(df, period=14)
-
-        # Simple Moving Averages
-        df["sma_20"] = df["close"].rolling(window=20).mean()
-        df["sma_50"] = df["close"].rolling(window=50).mean()
-
-        # Exponential Moving Averages
-        df["ema_12"] = df["close"].ewm(span=12).mean()
-        df["ema_26"] = df["close"].ewm(span=26).mean()
-
-        # MACD
-        df["macd"] = df["ema_12"] - df["ema_26"]
-        df["macd_signal"] = df["macd"].ewm(span=9).mean()
-        df["macd_histogram"] = df["macd"] - df["macd_signal"]
-
-        # RSI
-        df["rsi"] = self._calculate_rsi(df["close"], period=14)
-
-        # Volume indicators
-        df["volume_sma"] = df["volume"].rolling(window=20).mean()
-        df["volume_ratio"] = df["volume"] / df["volume_sma"]
-
-        return df
-
-    def _calculate_atr(self, df: pd.DataFrame, period: int = 14) -> pd.Series:
-        """Calculate Average True Range."""
-        high_low = df["high"] - df["low"]
-        high_close = abs(df["high"] - df["close"].shift())
-        low_close = abs(df["low"] - df["close"].shift())
-
-        true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-        atr = true_range.rolling(window=period).mean()
-
-        return atr
-
-    def _calculate_rsi(self, prices: pd.Series, period: int = 14) -> pd.Series:
-        """Calculate Relative Strength Index."""
-        delta = prices.diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-
-        rs = gain / loss
-        rsi = 100 - (100 / (1 + rs))
-
-        return rsi
 
     def _rate_limit(self):
         """Implement rate limiting between requests."""

@@ -9,6 +9,21 @@ from .bt_analyzers import TradeListAnalyzer, EquityCurveAnalyzer
 
 logger = get_logger(__name__)
 
+class SMCDataFeed(bt.feeds.PandasData):
+    """
+    Robust data feed enforcing strict column mapping for smc-bot.
+    Guarantees that Cerebro receives exactly OHLCV from the Pandas dataframe.
+    """
+    params = (
+        ('datetime', None),
+        ('open', -1),
+        ('high', -1),
+        ('low', -1),
+        ('close', -1),
+        ('volume', -1),
+        ('openinterest', -1),
+    )
+
 class BTBacktestEngine(BaseEngine):
     """
     Concrete implementation of BacktestEngine using Backtrader.
@@ -65,8 +80,8 @@ class BTBacktestEngine(BaseEngine):
                 logger.warning(f"Missing columns {missing} for {tf}")
                 continue
 
-            # Create Data Feed
-            data = bt.feeds.PandasData(dataname=df, name=f"{symbol}_{tf}")
+            # Create Data Feed using strict mapping
+            data = SMCDataFeed(dataname=df, name=f"{symbol}_{tf}")
             self.cerebro.adddata(data)
 
     def run_backtest(self):

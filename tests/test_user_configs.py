@@ -1,9 +1,6 @@
 import os
 import sys
-import json
 import pytest
-import tempfile
-import shutil
 from unittest.mock import patch
 from fastapi.testclient import TestClient
 

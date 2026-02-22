@@ -112,7 +112,7 @@ class BaseStrategy(bt.Strategy):
             dt_str = self.data.datetime.date(0).isoformat()
             info_str = f" Info: {order.info}" if order.info else ""
             if order.status == order.Canceled:
-                reason = self.cancel_reason if self.cancel_reason else "OCO / Broker Internal"
+                # OCO / Broker Internal cancellations handling
                 self.cancel_reason = None
             elif order.status == order.Margin:
                 logger.warning(f"[{dt_str}] ⛔ ORDER MARGIN ERROR - Insufficient Cash?{info_str}")

@@ -367,20 +367,23 @@ Backend (FastAPI)
 Backtest Results
 ```
 
-### File Structure
+### File Structure (FSD Architecture)
 
 ```
 web-dashboard/
 ├── server.py                  # FastAPI backend
-├── requirements.txt          # Python dependencies
-├── package.json             # Node.js dependencies
+├── requirements.txt           # Python dependencies
+├── package.json               # Node.js dependencies
 ├── src/
-│   ├── components/         # React components
-│   │   └── BacktestHistoryList.tsx
-│   ├── App.tsx             # Main React component
-│   └── index.css           # Styles
-├── dist/                    # Built React app
-└── README.md               # Dashboard docs
+│   ├── app/                   # App initialization & Providers
+│   ├── widgets/               # Complex autonomous components (e.g. ConfigPanel)
+│   ├── features/              # User interactions (e.g. TradeAnalysis)
+│   ├── entities/              # Business entities (e.g. BacktestSummary)
+│   ├── shared/                # Reusable UI components & API clients
+│   ├── App.tsx                # Main React entry
+│   └── index.css              # Global styles
+├── dist/                      # Built React app
+└── README.md                  # Dashboard docs
 ```
 
 ### API Endpoints
@@ -466,17 +469,20 @@ After each backtest, results are saved to `results/{run_id}.json`:
 
 ### Available Strategies
 
-#### PriceActionStrategy (Backtrader)
+#### PriceActionStrategy (Backtrader + TA-Lib)
 **File**: `strategies/bt_price_action.py`
 
 **Key Features**:
-- **Pattern Recognition**: Detects Pinbars, Engulfing patterns with quality filters (Min Range check).
+- **Pattern Recognition**: Detects precise candlestick formations using strict OHLCV formulas:
+    - **Bullish/Bearish Pinbars**: Filtered by minimum wick-to-range ratio (e.g. wick > 60% of candle length) and maximum body-to-range ratio to ensure valid rejection.
+    - **Bullish/Bearish Engulfing**: Requires the engulfing body to strictly cover the previous candle's body, alongside a minimum volatility range check (`min_range_factor`) to avoid signals in flat markets.
+- **TA-Lib Indicators**: Uses C-compiled `TA-Lib` bindings (`SMA`, `EMA`, `RSI`, `ATR`, `ADX`) instead of native Backtrader lines for enormous speed gains and trading accuracy.
 - **Trend Filtering**: Uses EMA (200) and ADX to trade only with strong trends.
 - **Momentum Filters**: RSI Momentum logic (Long > 60, Short < 40) to enter on strength.
 - **Risk Management**:
     - **Dynamic Position Sizing**: Based on Account Risk % and Stop Loss distance.
-    - **Atomic Order Execution**: Uses OCO (One-Cancels-Other) Bracket Orders for guaranteed SL/TP.
-    - **Breakeven & Trailing**: Auto-moves SL to Breakeven and trails price to lock in profits.
+    - **Atomic Order Execution**: Uses fully linked OCO (One-Cancels-Other) Bracket Orders for guaranteed SL/TP.
+    - **Breakeven & Trailing**: Auto-moves SL to Breakeven and trails price to lock in profits, safely reconstructing OCO links on every edit.
 - **Narrative Generation**: Automatically generates human-readable explanations for every trade outcome (e.g., *"Long trade hit Take Profit perfectly..."*).
 
 **Best For**: Strategy research, parameter optimization, and educational analysis.

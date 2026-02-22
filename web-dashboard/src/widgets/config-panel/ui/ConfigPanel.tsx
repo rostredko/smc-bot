@@ -27,11 +27,10 @@ const ConfigPanel: React.FC = () => {
         {
             title: "Filters",
             keys: [
-                "volatility_filter_enabled", "atr_period", "atr_percentile_min", "atr_percentile_max", "sl_atr_multiplier", "min_signal_confidence",
-                "use_rsi_filter", "rsi_period", "rsi_overbought", "rsi_oversold", "use_rsi_momentum", "rsi_momentum_threshold",
+                "use_rsi_filter", "rsi_period", "rsi_overbought", "rsi_oversold",
+                "use_rsi_momentum", "rsi_momentum_threshold",
                 "use_adx_filter", "adx_period", "adx_threshold",
                 "use_trend_filter", "trend_ema_period",
-                "require_structure_confirmation", "support_level_lookback_bars"
             ]
         },
         {
@@ -41,11 +40,8 @@ const ConfigPanel: React.FC = () => {
     ];
 
     const generalStrategyKeys = [
-        "mode", "allow_short",
-        "risk_reward_ratio", "sl_buffer_atr",
-        "use_partial_tp", "tp1_r", "tp1_pct", "tp2_r", "tp2_pct", "runner_pct",
-        "cooldown_after_loss_bars", "reduce_risk_after_loss", "risk_reduction_after_loss",
-        "min_notional", "taker_fee", "slippage_bp"
+        "risk_reward_ratio", "sl_buffer_atr", "atr_period",
+        "trailing_stop_distance", "breakeven_trigger_r",
     ];
 
     return (

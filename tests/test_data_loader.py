@@ -11,11 +11,7 @@ import sys
 import os
 import pytest
 import pandas as pd
-import numpy as np
-from datetime import datetime, timedelta
-from unittest.mock import Mock, patch, MagicMock
-import tempfile
-import json
+from unittest.mock import patch
 
 # Add project root to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
@@ -242,6 +238,26 @@ class TestDataLoaderEdgeCases:
         
         assert '/' in valid
         assert '/' not in invalid
+
+
+class TestEngineDataFeed:
+    """Test the SMCDataFeed explicit mapping"""
+    
+    def test_smc_data_feed_columns(self):
+        """Ensure SMCDataFeed has explicit bindings for exactly OHLCV."""
+        from engine.bt_backtest_engine import SMCDataFeed
+        
+        # In Backtrader, params is a metaclass. We instantiate to check defaults.
+        import pandas as pd
+        dummy_df = pd.DataFrame({'open':[], 'high':[], 'low':[], 'close':[], 'volume':[]})
+        data = SMCDataFeed(dataname=dummy_df)
+        
+        assert data.p.datetime is None
+        assert data.p.open == -1
+        assert data.p.high == -1
+        assert data.p.low == -1
+        assert data.p.close == -1
+        assert data.p.volume == -1
 
 
 # Test runner

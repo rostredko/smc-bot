@@ -1,5 +1,4 @@
 import backtrader as bt
-from datetime import datetime
 
 
 class TradeListAnalyzer(bt.Analyzer):
@@ -17,81 +16,11 @@ class TradeListAnalyzer(bt.Analyzer):
             pnlcomm = trade.pnlcomm
             
             # Get Entry/Exit details 
-            # Note: A trade might theoretically have multiple entries/exits if averaged in/out.
-            # For simplicity, we assume single entry/exit or take the cached price.
-            
-            # We need to access the history or just take the main price
             entry_date = bt.num2date(trade.dtopen)
             exit_date = bt.num2date(trade.dtclose)
             
-            # Retrieve metadata from the opening order
-            reason = "Signal"
-            stop_loss = None
-            take_profit = None
-            
-            # Try to get info from the opening order
-            # The opening transaction is usually the first in history
-            if len(trade.history) > 0:
-                # history contains list of [datetime, size, price, value, commission, pnl] 
-                # OR is it just text? Only internal backlog.
-                # Actually trade objects don't store the order object directly in history list easily accessible.
-                # But we can try to find the order ref?
-                pass
-                
-            # Alternative: Since we are in the same cerebro instance, we can try to look up the order?
-            # No, easiest way is to rely on customized trade objects if possible, but BT doesn't support that well.
-            
-            # Let's try to access the order info directly if attached to the trade opener?
-            # trade.opener is NOT a standard attribute.
-            
-            # Strategy 2: If we are running in the same strategy instance, the strategy tracks the trades.
-            # But analyzer is separate.
-            
-            # STRATEGY 3: We added .addinfo() to the order.
-            # Does the trade object keep a ref to the order?
-            # trade.ref is unique.
-            # Using private attribute trade.historyon -> NO.
-            
-            # Let's look at the open order associated with this trade.
-            # We can't easily.
-            
-            # NEW APPROACH:
-            # We will use a shared "trade_metadata" dictionary on the strategy instance.
-            # The strategy object is accessible via self.strategy (if added to strategy) or self.datas...
-            
-            # Analyzer is added to Cerebro. self.strategy might be available if using correct hook?
-            # Actually, `notify_trade` is called by the strategy? 
-            # In backtrader: `strategy.notify_trade` calls `analyzer.notify_trade`.
-            # So `self.strategy` should be available in the analyzer!
-            
-            # Let's use `self.strategy.trade_metadata` (we need to implement this in strategy first? 
-            # Wait, I just implemented .addinfo(). Let's see if we can access it).
-            
-            # Accessing via self.strategy.closed_trades? No.
-            
-            # Robust way: 
-            # In NotifyTrade, the `trade` object is passed.
-            # We can iterate `self.strategy.orders`? No.
-            
-            # Let's use the .addinfo() we just added. 
-            # But where is the order?
-            # trade.justopened?
-            
-            # Let's assume we can't get the order from the trade easily.
-            # Let's create a mapping in the strategy.
-            # self.strategy.trades_info[trade.ref] = { ... }
-            # But we don't know trade.ref when creating the order.
-            
-            # What if we use `notify_order` in the strategy to map order.ref -> trade.ref?
-            # When order is executed, trade is opened/updated.
-            
-            # Okay, simpler plan for this edit:
-            # Just extract what we can.
-            # I will assume for now we can't get custom info easily without a shared dict.
-            # I will use a placeholder and then fix the mapping in the NEXT step.
-            
-            # Actually, let's fix the schema first.
-            # Get size from history or metadata
+            # Get size from trade or rely on metadata
+
             size = abs(trade.size) if trade.size else 0
             
             # Prepare initial record

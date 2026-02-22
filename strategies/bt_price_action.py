@@ -1,6 +1,5 @@
 import backtrader as bt
 from .base_strategy import BaseStrategy
-from .helpers.patterns import PatternDetector
 from engine.logger import get_logger
 
 logger = get_logger(__name__)
@@ -67,12 +66,17 @@ class PriceActionStrategy(BaseStrategy):
             self.data_ltf = self.datas[0]
         
         # Higher TF indicators (trend direction)
-        self.ema_htf = bt.indicators.EMA(self.data_htf, period=self.params.trend_ema_period)
+        self.ema_htf = bt.talib.EMA(self.data_htf.close, timeperiod=self.params.trend_ema_period)
         
         # Lower TF indicators (execution)
-        self.rsi = bt.indicators.RSI(self.data_ltf, period=self.params.rsi_period)
-        self.atr = bt.indicators.ATR(self.data_ltf, period=self.params.atr_period)
-        self.adx = bt.indicators.ADX(self.data_ltf, period=self.params.adx_period)
+        self.rsi = bt.talib.RSI(self.data_ltf.close, timeperiod=self.params.rsi_period)
+        self.atr = bt.talib.ATR(self.data_ltf.high, self.data_ltf.low, self.data_ltf.close, timeperiod=self.params.atr_period)
+        self.adx = bt.talib.ADX(self.data_ltf.high, self.data_ltf.low, self.data_ltf.close, timeperiod=self.params.adx_period)
+        
+        # TA-Lib Pattern Indicators
+        self.cdl_engulfing = bt.talib.CDLENGULFING(self.data_ltf.open, self.data_ltf.high, self.data_ltf.low, self.data_ltf.close)
+        self.cdl_hammer = bt.talib.CDLHAMMER(self.data_ltf.open, self.data_ltf.high, self.data_ltf.low, self.data_ltf.close)
+        self.cdl_shootingstar = bt.talib.CDLSHOOTINGSTAR(self.data_ltf.open, self.data_ltf.high, self.data_ltf.low, self.data_ltf.close)
         
         # Helper for patterns — always on lower TF
         self.open = self.data_ltf.open
@@ -159,6 +163,14 @@ class PriceActionStrategy(BaseStrategy):
              if sl_changed:
                  logger.info(f"[{self.data_ltf.datetime.date(0).isoformat()}] STOP UPDATE: {new_reason} -> {new_sl:.2f}")
                  self.cancel_reason = f"{new_reason} Update"
+                 
+                 # Capture existing TP price before cancellation breaks the bracket
+                 tp_price_val = None
+                 if self.tp_order:
+                     tp_price_val = self.tp_order.price
+                     self.cancel(self.tp_order)
+                     self.tp_order = None
+                     
                  self.cancel(self.stop_order)
                  self.stop_reason = new_reason
                  
@@ -169,10 +181,15 @@ class PriceActionStrategy(BaseStrategy):
                      'reason': new_reason
                  })
                  
+                 # Recreate both orders linked via OCO
                  if self.position.size > 0:
                      self.stop_order = self.sell(price=new_sl, exectype=bt.Order.Stop, size=self.position.size)
+                     if tp_price_val is not None:
+                         self.tp_order = self.sell(price=tp_price_val, exectype=bt.Order.Limit, size=self.position.size, oco=self.stop_order)
                  else:
                      self.stop_order = self.buy(price=new_sl, exectype=bt.Order.Stop, size=abs(self.position.size))
+                     if tp_price_val is not None:
+                         self.tp_order = self.buy(price=tp_price_val, exectype=bt.Order.Limit, size=abs(self.position.size), oco=self.stop_order)
                  
 
 
@@ -358,33 +375,21 @@ class PriceActionStrategy(BaseStrategy):
             tp_calculation=tp_calc
         )
 
+    def _has_significant_range(self):
+        rng = self.high[0] - self.low[0]
+        return rng >= (self.atr[0] * self.params.min_range_factor)
+
     def _is_bullish_pinbar(self):
-        return PatternDetector.is_bullish_pinbar(
-            self.open[0], self.high[0], self.low[0], self.close[0],
-            self.atr[0], self.params
-        )
+        return self.cdl_hammer[0] == 100 and self._has_significant_range()
 
     def _is_bearish_pinbar(self):
-        return PatternDetector.is_bearish_pinbar(
-            self.open[0], self.high[0], self.low[0], self.close[0],
-            self.atr[0], self.params
-        )
+        return self.cdl_shootingstar[0] == -100 and self._has_significant_range()
 
     def _is_bullish_engulfing(self):
-        return PatternDetector.is_bullish_engulfing(
-            self.open[-1], self.close[-1],
-            self.open[0], self.close[0],
-            self.high[0], self.low[0],
-            self.atr[0], self.params
-        )
+        return self.cdl_engulfing[0] == 100 and self._has_significant_range()
 
     def _is_bearish_engulfing(self):
-        return PatternDetector.is_bearish_engulfing(
-            self.open[-1], self.close[-1],
-            self.open[0], self.close[0],
-            self.high[0], self.low[0],
-            self.atr[0], self.params
-        )
+        return self.cdl_engulfing[0] == -100 and self._has_significant_range()
 
     def _check_filters_long(self):
         if self.position: return False # Already in position

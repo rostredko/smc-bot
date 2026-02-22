@@ -9,8 +9,8 @@ import os
 import pytest
 import pandas as pd
 import numpy as np
-from datetime import datetime, timedelta
-from unittest.mock import Mock, MagicMock
+from datetime import timedelta
+from unittest.mock import MagicMock
 
 # Add project root to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))

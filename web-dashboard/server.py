@@ -711,7 +711,7 @@ async def broadcast_message(message: str):
     for connection in connections_copy:
         try:
             await connection.send_text(message)
-        except Exception as e:
+        except Exception:
             # Silently remove dead connections
             with connection_lock:
                 if connection in active_connections:
@@ -720,8 +720,6 @@ async def broadcast_message(message: str):
 
 async def run_backtest_task(run_id: str, config: Dict[str, Any]):
     """Background task to run backtest."""
-    import io
-    import contextlib
     
     try:
         # Update status

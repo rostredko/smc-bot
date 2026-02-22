@@ -31,16 +31,9 @@ const GENERAL_SETTINGS = [
 ];
 
 const STRATEGY_SECTIONS = [
-    { title: "Core Settings", keys: ["mode", "allow_short"] },
-    { title: "Timeframes", keys: ["high_timeframe", "low_timeframe"] },
-    { title: "Volatility Filters", keys: ["volatility_filter_enabled", "atr_period", "atr_percentile_min", "atr_percentile_max", "sl_atr_multiplier", "min_signal_confidence"] },
     { title: "Technical Entry Filters", keys: ["use_rsi_filter", "rsi_period", "rsi_overbought", "rsi_oversold", "use_rsi_momentum", "rsi_momentum_threshold", "use_adx_filter", "adx_period", "adx_threshold", "use_trend_filter", "trend_ema_period"] },
-    { title: "Pattern Settings", keys: ["min_range_factor", "min_wick_to_range", "max_body_to_range", "risk_reward_ratio", "sl_buffer_atr"] },
-    { title: "Partial Take Profits", keys: ["use_partial_tp", "tp1_r", "tp1_pct", "tp2_r", "tp2_pct", "runner_pct"] },
-    { title: "Exit Management", keys: ["trailing_stop_enabled", "trail_start", "trail_step", "breakeven_move_enabled"] },
-    { title: "Market Structure", keys: ["require_structure_confirmation", "support_level_lookback_bars"] },
-    { title: "Cooldown & Psychology", keys: ["cooldown_after_loss_bars", "reduce_risk_after_loss", "risk_reduction_after_loss"] },
-    { title: "Exchange Settings", keys: ["min_notional", "taker_fee", "slippage_bp"] },
+    { title: "Pattern Settings", keys: ["min_range_factor", "min_wick_to_range", "max_body_to_range", "risk_reward_ratio", "sl_buffer_atr", "atr_period"] },
+    { title: "Exit Management", keys: ["trailing_stop_distance", "breakeven_trigger_r"] },
 ];
 
 const BacktestHistoryList: React.FC = () => {

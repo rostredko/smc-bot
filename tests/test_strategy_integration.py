@@ -5,7 +5,6 @@ import unittest
 import pandas as pd
 import numpy as np
 import backtrader as bt
-from datetime import datetime
 
 # Add project root to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))

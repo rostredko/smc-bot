@@ -130,7 +130,7 @@ def run_backtest_from_config(config_file: str, config_name: Optional[str] = None
     if config is None:
         return None, None
 
-    logger.info(f"📊 Configuration Summary:")
+    logger.info("📊 Configuration Summary:")
     logger.info(f"   Strategy: {config['strategy']}")
     logger.info(f"   Symbol: {config['symbol']}")
     logger.info(f"   Period: {config['start_date']} to {config['end_date']}")
@@ -223,7 +223,7 @@ def run_backtest(config_file: str = "config/config.json"):
         signals_generated = getattr(engine.strategy, "signals_generated", 0)
         signals_executed = getattr(engine.strategy, "signals_executed", 0)
 
-        logger.info(f"\n🎯 Backtest Results:")
+        logger.info("\n🎯 Backtest Results:")
         logger.info(f"   Signals Generated: {signals_generated}")
         logger.info(f"   Signals Executed: {signals_executed}")
         logger.info(f"   Total Trades: {metrics.get('total_trades', 0)}")
