@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
     Box, Card, CardHeader, CardContent, Typography, Table, TableBody, TableCell,
     TableContainer, TableHead, TableRow, Paper, IconButton, Collapse, Button, Stack,
@@ -49,7 +49,7 @@ const BacktestHistoryList: React.FC = () => {
     const [selectedTrade, setSelectedTrade] = useState<any | null>(null);
     const [isTradeModalOpen, setIsTradeModalOpen] = useState(false);
 
-    const loadData = async (currentPage: number = 1) => {
+    const loadData = useCallback(async (currentPage: number = 1) => {
         setLoading(true);
         try {
             const data = await fetchBacktestHistory(currentPage, pageSize);
@@ -64,16 +64,16 @@ const BacktestHistoryList: React.FC = () => {
         } finally {
             setLoading(false);
         }
-    };
+    }, [pageSize]);
 
     useEffect(() => {
         loadData(page);
-    }, [page]);
+    }, [loadData, page]);
 
     useEffect(() => {
         const interval = setInterval(() => loadData(page), 10000);
         return () => clearInterval(interval);
-    }, [page]);
+    }, [loadData, page]);
 
     const toggleRow = async (filename: string) => {
         const isCurrentlyOpen = openRows[filename];
@@ -96,11 +96,13 @@ const BacktestHistoryList: React.FC = () => {
         }
     };
 
-    const formatDate = (isoString: string) => {
-        try { return new Date(isoString).toLocaleString(); } catch { return isoString; }
+    const formatDate = (isoString: string | undefined) => {
+        if (isoString == null) return '-';
+        try { return new Date(isoString).toLocaleString(); } catch { return String(isoString); }
     };
 
-    const formatPnL = (val: number, initialCapital: number) => {
+    const formatPnL = (val: number | undefined, initialCapital: number | undefined) => {
+        if (val == null || initialCapital == null || initialCapital === 0) return <span>-</span>;
         const percentage = (val / initialCapital) * 100;
         return (
             <span style={{ color: val >= 0 ? 'green' : 'red', fontWeight: 'bold' }}>
@@ -235,8 +237,8 @@ const BacktestHistoryList: React.FC = () => {
                                                     </Typography>
                                                 </TableCell>
                                                 <TableCell>{formatPnL(item.total_pnl, item.initial_capital)}</TableCell>
-                                                <TableCell align="right">{(item.win_rate * 100).toFixed(1)}%</TableCell>
-                                                <TableCell align="right" sx={{ color: 'red' }}>{item.max_drawdown.toFixed(2)}%</TableCell>
+                                                <TableCell align="right">{item.win_rate != null ? (item.win_rate * 100).toFixed(1) : '-'}%</TableCell>
+                                                <TableCell align="right" sx={{ color: 'red' }}>{item.max_drawdown != null ? item.max_drawdown.toFixed(2) : '-'}%</TableCell>
                                                 <TableCell align="center">
                                                     <IconButton size="small" onClick={(e) => handleSaveClick(e, item)} title="Save as template" sx={{ '&:hover': { color: 'primary.main' }, mr: 1 }}>
                                                         <FileCopyOutlined fontSize="small" />
@@ -253,8 +255,8 @@ const BacktestHistoryList: React.FC = () => {
                                                             <Box sx={{ display: 'flex', gap: 4, mb: 2, flexWrap: 'wrap' }}>
                                                                 <Box sx={{ minWidth: 200, maxWidth: 250 }}>
                                                                     <Typography variant="subtitle2" gutterBottom color="primary">Key Metrics</Typography>
-                                                                    <Typography variant="body2">Initial Capital: ${item.initial_capital.toLocaleString()}</Typography>
-                                                                    <Typography variant="body2">Profit Factor: {item.profit_factor.toFixed(2)}</Typography>
+                                                                    <Typography variant="body2">Initial Capital: ${(item.initial_capital ?? 0).toLocaleString()}</Typography>
+                                                                    <Typography variant="body2">Profit Factor: {item.profit_factor != null ? item.profit_factor.toFixed(2) : 'N/A'}</Typography>
                                                                     <Typography variant="body2">Sharpe Ratio: {item.sharpe_ratio?.toFixed(2) || 'N/A'}</Typography>
                                                                     <Typography variant="body2">Total Trades: {item.total_trades}</Typography>
                                                                     <Typography variant="body2" sx={{ color: 'green' }}>Wins: {item.winning_trades} (Avg: ${item.avg_win?.toFixed(2)})</Typography>

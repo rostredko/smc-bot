@@ -45,16 +45,23 @@ export const ResultsProvider: React.FC<{ children: React.ReactNode }> = ({ child
             const status = await response.json();
             setBacktestStatus(status);
 
-            if (status.status === "completed" || status.status === "cancelled") {
+            if (!response.ok) {
+                setIsRunning(false);
+                setIsConfigDisabled(false);
+                return;
+            }
+            if (status?.status === "completed" || status?.status === "cancelled") {
                 setIsRunning(false);
                 setIsConfigDisabled(false);
                 setResults(status.results);
-            } else if (status.status === "failed") {
+            } else if (status?.status === "failed") {
                 setIsRunning(false);
                 setIsConfigDisabled(false);
             }
         } catch (error) {
             console.error("Failed to check status:", error);
+            setIsRunning(false);
+            setIsConfigDisabled(false);
         }
     }, []);
 

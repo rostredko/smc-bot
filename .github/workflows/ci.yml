@@ -24,6 +24,11 @@ jobs:
           cd web-dashboard
           npm ci
 
+      - name: Lint Frontend
+        run: |
+          cd web-dashboard
+          npm run lint
+
       - name: Build Frontend
         run: |
           cd web-dashboard

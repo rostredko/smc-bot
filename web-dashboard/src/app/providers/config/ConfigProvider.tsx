@@ -215,6 +215,9 @@ export const ConfigProvider: React.FC<{ children: React.ReactNode }> = ({ childr
                     progress: 0,
                     message: "Starting backtest..."
                 });
+            } else {
+                const errData = await response.json().catch(() => ({}));
+                throw new Error(errData.detail || `Backtest start failed: HTTP ${response.status}`);
             }
         } catch (error) {
             console.error("Failed to start backtest:", error);

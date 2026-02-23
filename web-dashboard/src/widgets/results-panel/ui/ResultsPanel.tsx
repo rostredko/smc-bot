@@ -46,23 +46,21 @@ const MemoizedPieChart = React.memo(({ data }: { data: any[] }) => (
 const ResultsPanel: React.FC = () => {
     const { results, equityData, pieData, handleBarClick, selectedTrade, isTradeModalOpen, setIsTradeModalOpen } = useResultsContext();
 
-    if (!results) return null;
-
-    // useMemo prevents creating new object references on every render.
-    // Without this, chartStrategyConfig={} ?-fallback creates a new object each time,
-    // which propagates through TradeOHLCVChart's indParams useMemo → useEffect → extra fetch.
+    // useMemo must run before early return (rules of hooks)
     const chartSymbol = useMemo(
-        () => results.configuration?.symbol ?? 'BTC/USDT',
-        [results.configuration]
+        () => results?.configuration?.symbol ?? 'BTC/USDT',
+        [results?.configuration]
     );
     const chartTimeframes = useMemo(
-        () => results.configuration?.timeframes ?? ['1h'],
-        [results.configuration]
+        () => results?.configuration?.timeframes ?? ['1h'],
+        [results?.configuration]
     );
     const chartStrategyConfig = useMemo(
-        () => results.configuration?.strategy_config ?? {},
-        [results.configuration]
+        () => results?.configuration?.strategy_config ?? {},
+        [results?.configuration]
     );
+
+    if (!results) return null;
 
     return (
         <>
