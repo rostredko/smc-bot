@@ -18,6 +18,7 @@ venv/
 # --- Node / React (Vite) ---
 node_modules/
 dist/
+**/test-results/
 build/
 *.tsbuildinfo
 npm-debug.log*

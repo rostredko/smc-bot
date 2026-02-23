@@ -48,6 +48,8 @@ const BacktestHistoryList: React.FC = () => {
     const [detailedResults, setDetailedResults] = useState<Record<string, any>>({});
     const [selectedTrade, setSelectedTrade] = useState<any | null>(null);
     const [isTradeModalOpen, setIsTradeModalOpen] = useState(false);
+    const [tradeModalConfig, setTradeModalConfig] = useState<{ symbol: string; timeframes: string[]; strategyConfig: Record<string, any> } | null>(null);
+    const [expandedForChart, setExpandedForChart] = useState<Record<string, boolean>>({});
 
     const loadData = useCallback(async (currentPage: number = 1) => {
         setLoading(true);
@@ -75,6 +77,28 @@ const BacktestHistoryList: React.FC = () => {
         return () => clearInterval(interval);
     }, [loadData, page]);
 
+    // Reset expandedForChart when page changes to avoid stale state
+    useEffect(() => {
+        setExpandedForChart({});
+    }, [page]);
+
+    // Trim detailedResults cache when page changes: keep only current page's files
+    useEffect(() => {
+        if (history.length === 0) return;
+        const currentFilenames = new Set(history.map((h) => h.filename));
+        setDetailedResults((prev) => {
+            const next = { ...prev };
+            let changed = false;
+            for (const key of Object.keys(next)) {
+                if (!currentFilenames.has(key)) {
+                    delete next[key];
+                    changed = true;
+                }
+            }
+            return changed ? next : prev;
+        });
+    }, [page, history]);
+
     const toggleRow = async (filename: string) => {
         const isCurrentlyOpen = openRows[filename];
         setOpenRows(prev => ({ ...prev, [filename]: !isCurrentlyOpen }));
@@ -89,12 +113,29 @@ const BacktestHistoryList: React.FC = () => {
         }
     };
 
-    const handleTradeClick = (trade: any) => {
+    const getConfigValue = useCallback((config: any, key: string) => {
+        if (!config) return undefined;
+        if (key in config) return config[key];
+        if (key in (config.strategy_config || {})) return config.strategy_config[key];
+        if (key in (config.account || {})) return config.account[key];
+        if (key in (config.trading || {})) return config.trading[key];
+        return undefined;
+    }, []);
+
+    const handleTradeClick = useCallback((trade: any, config?: any) => {
         if (trade) {
             setSelectedTrade(trade);
+            setTradeModalConfig(config ? {
+                symbol: getConfigValue(config, 'symbol') ?? 'BTC/USDT',
+                timeframes: (() => {
+                    const tf = getConfigValue(config, 'timeframes');
+                    return Array.isArray(tf) ? tf : ['1h'];
+                })(),
+                strategyConfig: config?.strategy_config ?? config?.strategyConfig ?? {},
+            } : null);
             setIsTradeModalOpen(true);
         }
-    };
+    }, [getConfigValue]);
 
     const formatDate = (isoString: string | undefined) => {
         if (isoString == null) return '-';
@@ -109,15 +150,6 @@ const BacktestHistoryList: React.FC = () => {
                 {val >= 0 ? '+' : ''}${val.toFixed(2)} ({val >= 0 ? '+' : ''}{percentage.toFixed(2)}%)
             </span>
         );
-    };
-
-    const getConfigValue = (config: any, key: string) => {
-        if (!config) return undefined;
-        if (key in config) return config[key];
-        if (key in (config.strategy_config || {})) return config.strategy_config[key];
-        if (key in (config.account || {})) return config.account[key];
-        if (key in (config.trading || {})) return config.trading[key];
-        return undefined;
     };
 
     const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
@@ -248,9 +280,19 @@ const BacktestHistoryList: React.FC = () => {
                                                     </IconButton>
                                                 </TableCell>
                                             </TableRow>
-                                            <TableRow>
+                                            <TableRow onClick={(e) => e.stopPropagation()}>
                                                 <TableCell style={{ paddingBottom: 0, paddingTop: 0 }} colSpan={8}>
-                                                    <Collapse in={openRows[item.filename]} timeout="auto" unmountOnExit>
+                                                    <Collapse
+                                                        in={openRows[item.filename]}
+                                                        timeout="auto"
+                                                        unmountOnExit
+                                                        onEntered={() => {
+                                                            requestAnimationFrame(() => {
+                                                                setExpandedForChart((p) => ({ ...p, [item.filename]: true }));
+                                                            });
+                                                        }}
+                                                        onExited={() => setExpandedForChart((p) => ({ ...p, [item.filename]: false }))}
+                                                    >
                                                         <Box sx={{ margin: 2 }}>
                                                             <Box sx={{ display: 'flex', gap: 4, mb: 2, flexWrap: 'wrap' }}>
                                                                 <Box sx={{ minWidth: 200, maxWidth: 250 }}>
@@ -314,7 +356,18 @@ const BacktestHistoryList: React.FC = () => {
                                                                     <Box sx={{ display: 'flex', justifyContent: 'center', p: 4 }}><CircularProgress size={30} /></Box>
                                                                 ) : detailedResults[item.filename].trades?.length > 0 ? (
                                                                     <Box sx={{ mt: 2 }}>
-                                                                        <TradeAnalysisChart trades={detailedResults[item.filename].trades} onTradeClick={handleTradeClick} height={200} />
+                                                                        {expandedForChart[item.filename] ? (
+                                                                            <TradeAnalysisChart
+                                                                                key={item.filename}
+                                                                                trades={detailedResults[item.filename].trades}
+                                                                                onTradeClick={(t) => handleTradeClick(t, detailedResults[item.filename].configuration ?? item.configuration)}
+                                                                                height={200}
+                                                                            />
+                                                                        ) : (
+                                                                            <Box sx={{ display: 'flex', justifyContent: 'center', p: 2 }}>
+                                                                                <CircularProgress size={24} />
+                                                                            </Box>
+                                                                        )}
                                                                     </Box>
                                                                 ) : (
                                                                     <Typography variant="body2" color="textSecondary">No trade data available.</Typography>
@@ -368,7 +421,14 @@ const BacktestHistoryList: React.FC = () => {
                     </DialogActions>
                 </Dialog>
 
-                <TradeDetailsModal open={isTradeModalOpen} onClose={() => setIsTradeModalOpen(false)} selectedTrade={selectedTrade} />
+                <TradeDetailsModal
+                    open={isTradeModalOpen}
+                    onClose={() => setIsTradeModalOpen(false)}
+                    selectedTrade={selectedTrade}
+                    symbol={tradeModalConfig?.symbol ?? 'BTC/USDT'}
+                    timeframes={tradeModalConfig?.timeframes ?? ['1h']}
+                    strategyConfig={tradeModalConfig?.strategyConfig ?? {}}
+                />
             </CardContent>
         </Card>
     );
