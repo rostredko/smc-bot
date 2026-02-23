@@ -174,9 +174,9 @@ class PriceActionStrategy(BaseStrategy):
                  self.cancel(self.stop_order)
                  self.stop_reason = new_reason
                  
-                 # Record SL update
+                 # Record SL update with full ISO datetime for chart visualisation
                  self.sl_history.append({
-                     'date': self.data_ltf.datetime.date(0).isoformat(),
+                     'time': self.data_ltf.datetime.datetime(0).isoformat(),
                      'price': new_sl,
                      'reason': new_reason
                  })
@@ -261,9 +261,9 @@ class PriceActionStrategy(BaseStrategy):
         self.initial_sl = sl_price
         self.stop_reason = "Stop Loss" # Reset stop reason for new trade
         
-        # Initialize SL history
+        # Initialize SL history with full ISO datetime for chart visualisation
         self.sl_history = [{
-            'date': dt_str,
+            'time': self.data_ltf.datetime.datetime(0).isoformat(),
             'price': sl_price,
             'reason': 'Initial Stop Loss'
         }]
@@ -341,9 +341,9 @@ class PriceActionStrategy(BaseStrategy):
         self.initial_sl = sl_price
         self.stop_reason = "Stop Loss" # Reset stop reason for new trade
         
-        # Initialize SL history
+        # Initialize SL history with full ISO datetime for chart visualisation
         self.sl_history = [{
-            'date': dt_str,
+            'time': self.data_ltf.datetime.datetime(0).isoformat(),
             'price': sl_price,
             'reason': 'Initial Stop Loss'
         }]

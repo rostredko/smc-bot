@@ -531,9 +531,30 @@ async def get_results():
     return {"results": sorted(results)}
 
 
+def _default_configuration_for_legacy_backtest() -> Dict[str, Any]:
+    """Default configuration for old backtests that lack configuration. Matches PriceActionStrategy defaults."""
+    return {
+        "symbol": "BTC/USDT",
+        "timeframes": ["1h"],
+        "strategy": "bt_price_action",
+        "_legacy_default": True,  # Marks that real config was not saved; these are assumed defaults
+        "strategy_config": {
+            "use_trend_filter": True,
+            "trend_ema_period": 200,
+            "use_rsi_filter": True,
+            "rsi_period": 14,
+            "rsi_overbought": 70,
+            "rsi_oversold": 30,
+            "use_adx_filter": True,
+            "adx_period": 14,
+            "adx_threshold": 25,
+        },
+    }
+
+
 @app.get("/results/{filename}")
 async def get_result_file(filename: str):
-    """Get specific result file."""
+    """Get specific result file. Backfills configuration for legacy files and persists it."""
     file_path = os.path.join(RESULTS_DIR, filename)
     
     if not os.path.exists(file_path):
@@ -542,6 +563,18 @@ async def get_result_file(filename: str):
     try:
         with open(file_path, 'r') as f:
             data = json.load(f)
+        
+        # Backfill configuration for legacy backtests (no configuration saved)
+        if not data.get("configuration"):
+            default_cfg = _default_configuration_for_legacy_backtest()
+            data["configuration"] = default_cfg
+            try:
+                with open(file_path, 'w') as f:
+                    json.dump(data, f, indent=2, default=str)
+                logger.info(f"Backfilled configuration for legacy result: {filename}")
+            except Exception as e:
+                logger.warning(f"Could not persist backfilled config to {filename}: {e}")
+        
         return data
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error reading file: {str(e)}")
@@ -1147,8 +1180,279 @@ async def get_top_symbols(limit: int = 10):
              return {"symbols": SYMBOLS_CACHE["data"][:limit]}
         return {"symbols": ["BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT"]}
 
+
+# ---------------------------------------------------------------------------
+# OHLCV endpoint — fetches candlestick data for trade chart visualisation
+# ---------------------------------------------------------------------------
+
+from collections import OrderedDict
+from datetime import timezone
+
+# Simple LRU cache: max 30 entries, each key = "symbol|timeframe|start|end"
+_OHLCV_CACHE: OrderedDict = OrderedDict()
+_OHLCV_CACHE_MAX = 30
+
+
+def _ohlcv_cache_key(symbol: str, timeframe: str, since_ms: int, until_ms: int) -> str:
+    return f"{symbol}|{timeframe}|{since_ms}|{until_ms}"
+
+
+def _ohlcv_cache_get(key: str):
+    if key in _OHLCV_CACHE:
+        _OHLCV_CACHE.move_to_end(key)
+        return _OHLCV_CACHE[key]
+    return None
+
+
+def _ohlcv_cache_set(key: str, value: list):
+    if key in _OHLCV_CACHE:
+        _OHLCV_CACHE.move_to_end(key)
+    _OHLCV_CACHE[key] = value
+    if len(_OHLCV_CACHE) > _OHLCV_CACHE_MAX:
+        _OHLCV_CACHE.popitem(last=False)
+
+
+# Map friendly timeframe strings to millisecond durations for window expansion
+_TF_MS: dict = {
+    "1m": 60_000,
+    "3m": 180_000,
+    "5m": 300_000,
+    "15m": 900_000,
+    "30m": 1_800_000,
+    "1h": 3_600_000,
+    "2h": 7_200_000,
+    "4h": 14_400_000,
+    "6h": 21_600_000,
+    "8h": 28_800_000,
+    "12h": 43_200_000,
+    "1d": 86_400_000,
+    "3d": 259_200_000,
+    "1w": 604_800_000,
+}
+
+
+@app.get("/api/ohlcv")
+async def get_ohlcv(
+    symbol: str = "BTC/USDT",
+    timeframe: str = "1h",
+    start: str = "",
+    end: str = "",
+    context_bars: int = 25,
+    # ── Indicator knobs (0 = disabled) ──────────────────────────────────────
+    ema_period: int = 0,        # EMA overlay on price (e.g. 200)
+    ema_timeframe: str = "",    # Timeframe for EMA computation (defaults to main timeframe)
+    rsi_period: int = 0,        # RSI subplot (e.g. 14)
+    rsi_overbought: float = 70,
+    rsi_oversold: float = 30,
+    adx_period: int = 0,        # ADX subplot (e.g. 14)
+    adx_threshold: float = 25,
+):
+    """
+    Fetch OHLCV candlestick data + optional TA-Lib indicators.
+
+    Indicator params (pass 0 to skip):
+      ema_period       - EMA on price panel (trend filter line)
+      rsi_period       - RSI subplot
+      rsi_overbought   - upper reference line (default 70)
+      rsi_oversold     - lower reference line (default 30)
+      adx_period       - ADX subplot
+      adx_threshold    - reference line (default 25)
+
+    Returns:
+      {
+        candles: [{time, open, high, low, close, volume}],
+        indicators: {
+          ema?:  [{time, value}],
+          rsi?:  [{time, value}], rsi_ob, rsi_os,
+          adx?:  [{time, value}], adx_threshold
+        }
+      }
+    """
+    try:
+        def to_ms(iso_str: str) -> int:
+            dt = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return int(dt.timestamp() * 1000)
+
+        bar_ms = _TF_MS.get(timeframe, 3_600_000)
+        pad_ms = bar_ms * max(1, context_bars)
+
+        if start:
+            since_ms = to_ms(start) - pad_ms
+        else:
+            since_ms = int(datetime.now(timezone.utc).timestamp() * 1000) - 200 * bar_ms
+
+        if end:
+            until_ms = to_ms(end) + pad_ms
+        else:
+            until_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+
+        # TA-Lib needs a warmup window so it has enough data for the first valid value.
+        # Fetch an extra 300 bars before the visible window for warmup, then trim.
+        warmup_bars = 300
+        fetch_since_ms = since_ms - bar_ms * warmup_bars
+
+        # Cache key includes indicator config so different param combos are cached separately
+        ind_key = f"ema{ema_period}_rsi{rsi_period}-{rsi_overbought}-{rsi_oversold}_adx{adx_period}-{adx_threshold}"
+        cache_key = _ohlcv_cache_key(symbol, timeframe, since_ms, until_ms) + "|" + ind_key
+
+        cached = _ohlcv_cache_get(cache_key)
+        if cached is not None:
+            logger.debug(f"OHLCV+indicators cache hit: {cache_key}")
+            return cached
+
+        num_bars = max(1, int((until_ms - fetch_since_ms) / bar_ms)) + 2
+
+        def fetch_and_compute():
+            import numpy as np
+
+            # ── 1. Fetch raw OHLCV ──────────────────────────────────────────
+            exchange = ccxt.binance({"enableRateLimit": True})
+            raw = exchange.fetch_ohlcv(symbol, timeframe, since=fetch_since_ms, limit=min(num_bars, 1500))
+
+            if not raw:
+                return {"candles": [], "indicators": {}}
+
+            timestamps = [bar[0] for bar in raw]
+            opens      = np.array([bar[1] for bar in raw], dtype=float)
+            highs      = np.array([bar[2] for bar in raw], dtype=float)
+            lows       = np.array([bar[3] for bar in raw], dtype=float)
+            closes     = np.array([bar[4] for bar in raw], dtype=float)
+            volumes    = np.array([bar[5] for bar in raw], dtype=float)
+
+            # ── 2. Compute indicators (full array, then trim) ───────────────
+            indicators_raw: dict = {}
+            indicators_out: dict = {}   # ← must be defined before HTF EMA block writes into it
+
+            try:
+                import talib  # TA-Lib is installed in deps/requirements.txt
+                has_talib = True
+            except ImportError:
+                try:
+                    import TA_Lib as talib
+                    has_talib = True
+                except ImportError:
+                    has_talib = False
+                    logger.warning("TA-Lib not available — indicators skipped")
+
+            if has_talib:
+                # ── EMA: optionally on a different (higher) timeframe ─────────
+                if ema_period > 0:
+                    effective_ema_tf = ema_timeframe if ema_timeframe else timeframe
+                    if effective_ema_tf != timeframe:
+                        # Fetch HTF OHLCV for EMA — needs its own warmup window
+                        htf_bar_ms    = _TF_MS.get(effective_ema_tf, bar_ms)
+                        htf_fetch_ms  = since_ms - htf_bar_ms * (ema_period + 100)
+                        htf_limit     = max(1, int((until_ms - htf_fetch_ms) / htf_bar_ms)) + 5
+                        raw_htf = exchange.fetch_ohlcv(
+                            symbol, effective_ema_tf,
+                            since=htf_fetch_ms,
+                            limit=min(htf_limit, 1000)
+                        )
+                        htf_closes    = np.array([b[4] for b in raw_htf], dtype=float)
+                        htf_timestamps = [b[0] for b in raw_htf]
+                        htf_ema_arr   = talib.EMA(htf_closes, timeperiod=ema_period)
+
+                        # Build EMA series for the visible window (HTF timestamps)
+                        ema_series: list = []
+                        for j, ts_ms_htf in enumerate(htf_timestamps):
+                            if ts_ms_htf < since_ms or ts_ms_htf > until_ms:
+                                continue
+                            val = float(htf_ema_arr[j]) if (j < len(htf_ema_arr) and not np.isnan(htf_ema_arr[j])) else None
+                            if val is not None:
+                                ema_series.append({
+                                    "time": datetime.fromtimestamp(ts_ms_htf / 1000, tz=timezone.utc).isoformat(),
+                                    "value": val,
+                                })
+                        indicators_out["ema"] = {
+                            "values":    ema_series,
+                            "period":    ema_period,
+                            "timeframe": effective_ema_tf,
+                        }
+                    else:
+                        # Same timeframe — compute EMA on the main LTF closes array
+                        indicators_raw["ema"] = talib.EMA(closes, timeperiod=ema_period)
+
+                if rsi_period > 0:
+                    indicators_raw["rsi"] = talib.RSI(closes, timeperiod=rsi_period)
+
+                if adx_period > 0:
+                    indicators_raw["adx"] = talib.ADX(highs, lows, closes, timeperiod=adx_period)
+
+            # ── 3. Build visible candles (trim warmup) ──────────────────────
+            candles = []
+            indicator_series: dict = {k: [] for k in indicators_raw}
+
+            for i, ts_ms in enumerate(timestamps):
+                if ts_ms > until_ms:
+                    break
+                dt_iso = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).isoformat()
+
+                # Only include candles in the visible window (after warmup)
+                if ts_ms >= since_ms:
+                    candles.append({
+                        "time":   dt_iso,
+                        "open":   opens[i],
+                        "high":   highs[i],
+                        "low":    lows[i],
+                        "close":  closes[i],
+                        "volume": volumes[i],
+                    })
+
+                    # Include indicator values for visible range (LTF indicators only)
+                    for key, arr in indicators_raw.items():
+                        val = float(arr[i]) if (i < len(arr) and not np.isnan(arr[i])) else None
+                        if val is not None:
+                            indicator_series[key].append({"time": dt_iso, "value": val})
+
+            # ── 4. Build response ────────────────────────────────────────────
+            # EMA may already be in indicators_out (HTF case); only add LTF EMA if not yet set
+            if "ema" not in indicators_out and "ema" in indicator_series and indicator_series["ema"]:
+                indicators_out["ema"] = {
+                    "values":    indicator_series["ema"],
+                    "period":    ema_period,
+                    "timeframe": timeframe,
+                }
+
+            if "rsi" in indicator_series and indicator_series["rsi"]:
+                indicators_out["rsi"] = {
+                    "values":       indicator_series["rsi"],
+                    "period":       rsi_period,
+                    "overbought":   rsi_overbought,
+                    "oversold":     rsi_oversold,
+                }
+
+            if "adx" in indicator_series and indicator_series["adx"]:
+                indicators_out["adx"] = {
+                    "values":    indicator_series["adx"],
+                    "period":    adx_period,
+                    "threshold": adx_threshold,
+                }
+
+            return {"candles": candles, "indicators": indicators_out}
+
+
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(None, fetch_and_compute)
+
+        _ohlcv_cache_set(cache_key, result)
+        logger.info(
+            f"OHLCV fetched: {symbol} {timeframe} → {len(result['candles'])} candles, "
+            f"indicators: {list(result['indicators'].keys())}"
+        )
+        return result
+
+    except Exception as e:
+        logger.error(f"Error fetching OHLCV for {symbol} {timeframe}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch OHLCV data: {str(e)}")
+
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
+
+
 
 

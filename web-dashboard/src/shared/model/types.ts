@@ -46,7 +46,21 @@ export interface BacktestResults {
     initial_capital: number;
     equity_curve: Array<{ date: string, equity: number }>;
     trades: Array<any>;
+    /** Backtest configuration (symbol, timeframes, etc.) */
+    configuration?: Record<string, any>;
 }
+
+/** A single OHLCV candlestick bar, as returned by /api/ohlcv */
+export interface OHLCVCandle {
+    time: string;   // ISO-8601 datetime string (UTC)
+    open: number;
+    high: number;
+    low: number;
+    close: number;
+    volume: number;
+}
+
+
 
 export const DEFAULT_CONFIG: BacktestConfig = {
     initial_capital: 10000,

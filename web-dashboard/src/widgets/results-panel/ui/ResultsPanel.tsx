@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { Card, CardHeader, CardContent, Grid, Paper, Typography, TableContainer, Table, TableHead, TableRow, TableCell, TableBody } from '@mui/material';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
 import { useResultsContext } from '../../../app/providers/results/ResultsProvider';
@@ -48,6 +48,22 @@ const ResultsPanel: React.FC = () => {
 
     if (!results) return null;
 
+    // useMemo prevents creating new object references on every render.
+    // Without this, chartStrategyConfig={} ?-fallback creates a new object each time,
+    // which propagates through TradeOHLCVChart's indParams useMemo → useEffect → extra fetch.
+    const chartSymbol = useMemo(
+        () => results.configuration?.symbol ?? 'BTC/USDT',
+        [results.configuration]
+    );
+    const chartTimeframes = useMemo(
+        () => results.configuration?.timeframes ?? ['1h'],
+        [results.configuration]
+    );
+    const chartStrategyConfig = useMemo(
+        () => results.configuration?.strategy_config ?? {},
+        [results.configuration]
+    );
+
     return (
         <>
             <Suspense fallback={null}>
@@ -55,8 +71,12 @@ const ResultsPanel: React.FC = () => {
                     open={isTradeModalOpen}
                     onClose={() => setIsTradeModalOpen(false)}
                     selectedTrade={selectedTrade}
+                    symbol={chartSymbol}
+                    timeframes={chartTimeframes}
+                    strategyConfig={chartStrategyConfig}
                 />
             </Suspense>
+
 
             {/* Performance Metrics */}
             <Grid item xs={12} mt={3}>

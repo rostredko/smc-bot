@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { lazy, Suspense } from 'react';
 import {
     Dialog,
     DialogTitle,
@@ -11,23 +11,70 @@ import {
     Paper,
     Stack,
     Divider,
-    Button
+    Button,
+    CircularProgress
 } from '@mui/material';
 import { InfoOutlined } from '@mui/icons-material';
 import MuiTooltip from '@mui/material/Tooltip';
+
+// Lazy-load the chart to avoid blocking the modal open animation
+const TradeOHLCVChart = lazy(() => import('../../../entities/trade/ui/TradeOHLCVChart'));
 
 interface TradeDetailsModalProps {
     open: boolean;
     onClose: () => void;
     selectedTrade: any | null;
+    /** Symbol from backtest config, e.g. "BTC/USDT" */
+    symbol?: string;
+    /** Timeframes from backtest config, e.g. ["4h", "1h"]. Smallest used for chart. */
+    timeframes?: string[];
+    /** Full strategy_config from backtest results — drives which indicators are shown */
+    strategyConfig?: Record<string, any>;
 }
 
-const TradeDetailsModal: React.FC<TradeDetailsModalProps> = ({ open, onClose, selectedTrade }) => {
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+/** Parse a timeframe string to its minute equivalent for comparison */
+function timeframeToMinutes(tf: string): number {
+    const map: Record<string, number> = {
+        '1m': 1, '3m': 3, '5m': 5, '15m': 15, '30m': 30,
+        '1h': 60, '2h': 120, '4h': 240, '6h': 360, '8h': 480, '12h': 720,
+        '1d': 1440, '3d': 4320, '1w': 10080,
+    };
+    return map[tf] ?? 60;
+}
+
+/** Pick the smallest (finest-grained) timeframe from a list */
+function pickSmallestTimeframe(timeframes: string[]): string {
+    if (!timeframes || timeframes.length === 0) return '1h';
+    return timeframes.slice().sort((a, b) => timeframeToMinutes(a) - timeframeToMinutes(b))[0];
+}
+
+/** Pick the largest (coarsest) timeframe from a list — used for HTF indicators like EMA */
+function pickLargestTimeframe(timeframes: string[]): string | undefined {
+    if (!timeframes || timeframes.length <= 1) return undefined;
+    return timeframes.slice().sort((a, b) => timeframeToMinutes(b) - timeframeToMinutes(a))[0];
+}
+
+// ─── Component ────────────────────────────────────────────────────────────────
+
+const TradeDetailsModal: React.FC<TradeDetailsModalProps> = ({
+    open,
+    onClose,
+    selectedTrade,
+    symbol = 'BTC/USDT',
+    timeframes = ['1h'],
+    strategyConfig = {},
+}) => {
+    const chartTimeframe = pickSmallestTimeframe(timeframes);
+    // EMA is computed on the HTF in the strategy — request HTF EMA from backend
+    const emaTimeframe = pickLargestTimeframe(timeframes);
+
     return (
         <Dialog
             open={open}
             onClose={onClose}
-            maxWidth="md"
+            maxWidth="lg"
             fullWidth
             PaperProps={{
                 sx: { bgcolor: '#1e1e1e', color: '#fff' }
@@ -35,7 +82,7 @@ const TradeDetailsModal: React.FC<TradeDetailsModalProps> = ({ open, onClose, se
         >
             {selectedTrade && (
                 <>
-                    <DialogTitle sx={{ borderBottom: '1px solid #333', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <DialogTitle component="div" sx={{ borderBottom: '1px solid #333', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                         <Box display="flex" alignItems="center" gap={2}>
                             <Typography variant="h6">Trade #{selectedTrade.id}</Typography>
                             <Chip
@@ -56,6 +103,34 @@ const TradeDetailsModal: React.FC<TradeDetailsModalProps> = ({ open, onClose, se
                     </DialogTitle>
                     <DialogContent sx={{ mt: 2 }}>
                         <Grid container spacing={3}>
+
+                            {/* ── Candlestick Chart ──────────────────────────── */}
+                            <Grid item xs={12}>
+                                <Paper variant="outlined" sx={{ p: 0, bgcolor: '#181818', borderColor: '#333', overflow: 'hidden' }}>
+                                    <Typography
+                                        variant="caption"
+                                        sx={{ color: '#fff', opacity: 0.6, display: 'block', px: 2, pt: 1.5, pb: 0.5 }}
+                                    >
+                                        PRICE CHART · {symbol} · {chartTimeframe.toUpperCase()}
+                                    </Typography>
+                                    <Suspense fallback={
+                                        <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: 420 }}>
+                                            <CircularProgress size={28} />
+                                        </Box>
+                                    }>
+                                        <TradeOHLCVChart
+                                            trade={selectedTrade}
+                                            symbol={symbol}
+                                            timeframe={chartTimeframe}
+                                            emaTimeframe={emaTimeframe}
+                                            strategyConfig={strategyConfig}
+                                            height={420}
+                                        />
+                                    </Suspense>
+                                </Paper>
+                            </Grid>
+
+                            {/* ── Entry Reason / Context ─────────────────────── */}
                             <Grid item xs={12}>
                                 <Paper variant="outlined" sx={{ p: 2, bgcolor: 'rgba(255,255,255,0.05)', borderColor: '#333' }}>
                                     <Typography variant="caption" sx={{ color: '#fff', opacity: 0.7 }} gutterBottom display="block">ENTRY REASON / CONTEXT</Typography>
@@ -83,7 +158,7 @@ const TradeDetailsModal: React.FC<TradeDetailsModalProps> = ({ open, onClose, se
                                 </Paper>
                             </Grid>
 
-                            {/* PnL Calculation Breakdown */}
+                            {/* ── PnL Calculation Breakdown ──────────────────── */}
                             <Grid item xs={12}>
                                 <Paper variant="outlined" sx={{ p: 2, bgcolor: 'rgba(255,255,255,0.05)', borderColor: '#333' }}>
                                     <Typography variant="caption" sx={{ color: '#fff', opacity: 0.7 }} gutterBottom display="block">PnL CALCULATION</Typography>
@@ -97,8 +172,6 @@ const TradeDetailsModal: React.FC<TradeDetailsModalProps> = ({ open, onClose, se
 
                                         const priceDiff = isLong ? (exitPrice - entryPrice) : (entryPrice - exitPrice);
                                         const grossPnl = priceDiff * size;
-                                        // netPnl should match selectedTrade.pnl roughly
-
                                         const pnlColor = grossPnl >= 0 ? '#4caf50' : '#f44336';
 
                                         return (

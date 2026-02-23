@@ -56,7 +56,11 @@ export const ConsoleProvider: React.FC<{ children: React.ReactNode }> = ({ child
         flushTimeout.current = null;
     }, []);
 
+    const destroyed = useRef(false);
+
     const connectWebSocket = useCallback(() => {
+        if (destroyed.current) return;
+
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         const host = window.location.hostname;
         const port = '8000';
@@ -83,26 +87,35 @@ export const ConsoleProvider: React.FC<{ children: React.ReactNode }> = ({ child
                 }
             };
 
+            // Suppress browser's default "WebSocket connection failed" console error
+            ws.onerror = () => { /* intentionally silenced — onclose handles reconnect */ };
+
             ws.onclose = () => {
                 setWebsocketConnected(false);
                 if (flushTimeout.current) {
                     clearTimeout(flushTimeout.current);
                     flushLogs();
                 }
-                setTimeout(() => connectWebSocket(), 3000);
+                // Only reconnect if the provider is still mounted
+                if (!destroyed.current) {
+                    setTimeout(() => connectWebSocket(), 3000);
+                }
             };
 
             websocketRef.current = ws;
-        } catch (error) {
-            console.error('❌ Failed to connect WebSocket:', error);
+        } catch {
+            // Silently ignore — backend may not be running yet
         }
     }, [flushLogs]);
 
     useEffect(() => {
+        destroyed.current = false;
         connectWebSocket();
         return () => {
+            destroyed.current = true;
             if (websocketRef.current) {
-                websocketRef.current.onclose = null;
+                websocketRef.current.onclose = null;  // prevent reconnect on intentional close
+                websocketRef.current.onerror = null;
                 websocketRef.current.close();
             }
             if (flushTimeout.current) {
@@ -110,6 +123,7 @@ export const ConsoleProvider: React.FC<{ children: React.ReactNode }> = ({ child
             }
         };
     }, [connectWebSocket]);
+
 
     const value = {
         consoleOutput, setConsoleOutput,
