@@ -59,6 +59,18 @@ const ResultsPanel: React.FC = () => {
         () => results?.configuration?.strategy_config ?? {},
         [results?.configuration]
     );
+    const exchangeType = useMemo(
+        () => results?.configuration?.exchange_type ?? 'future',
+        [results?.configuration]
+    );
+    const backtestStart = useMemo(
+        () => results?.configuration?.start_date ?? undefined,
+        [results?.configuration]
+    );
+    const backtestEnd = useMemo(
+        () => results?.configuration?.end_date ?? undefined,
+        [results?.configuration]
+    );
 
     if (!results) return null;
 
@@ -72,6 +84,9 @@ const ResultsPanel: React.FC = () => {
                     symbol={chartSymbol}
                     timeframes={chartTimeframes}
                     strategyConfig={chartStrategyConfig}
+                    exchangeType={exchangeType}
+                    backtestStart={backtestStart}
+                    backtestEnd={backtestEnd}
                 />
             </Suspense>
 

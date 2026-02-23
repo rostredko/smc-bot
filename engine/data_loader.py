@@ -107,7 +107,10 @@ class DataLoader:
         Returns:
             DataFrame with OHLCV data
         """
-        # Check cache first
+        if not start_date or not end_date:
+            raise ValueError("start_date and end_date are required for fetch_ohlcv")
+        if start_date > end_date:
+            raise ValueError(f"start_date ({start_date}) must be <= end_date ({end_date})")
         cache_file = self._get_cache_file(symbol, timeframe, start_date, end_date)
         if os.path.exists(cache_file):
             file_age_days = (time.time() - os.path.getmtime(cache_file)) / (24 * 3600)

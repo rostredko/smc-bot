@@ -1,4 +1,4 @@
-import React, { lazy, Suspense } from 'react';
+import React, { lazy, Suspense, useEffect, useState, useMemo } from 'react';
 import {
     Dialog,
     DialogTitle,
@@ -16,25 +16,22 @@ import {
 } from '@mui/material';
 import { InfoOutlined } from '@mui/icons-material';
 import MuiTooltip from '@mui/material/Tooltip';
+import { API_BASE } from '../../../shared/api/config';
 
-// Lazy-load the chart to avoid blocking the modal open animation
 const TradeOHLCVChart = lazy(() => import('../../../entities/trade/ui/TradeOHLCVChart'));
 
 interface TradeDetailsModalProps {
     open: boolean;
     onClose: () => void;
     selectedTrade: any | null;
-    /** Symbol from backtest config, e.g. "BTC/USDT" */
     symbol?: string;
-    /** Timeframes from backtest config, e.g. ["4h", "1h"]. Smallest used for chart. */
     timeframes?: string[];
-    /** Full strategy_config from backtest results — drives which indicators are shown */
     strategyConfig?: Record<string, any>;
+    exchangeType?: string;
+    backtestStart?: string;
+    backtestEnd?: string;
 }
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
-/** Parse a timeframe string to its minute equivalent for comparison */
 function timeframeToMinutes(tf: string): number {
     const map: Record<string, number> = {
         '1m': 1, '3m': 3, '5m': 5, '15m': 15, '30m': 30,
@@ -44,19 +41,34 @@ function timeframeToMinutes(tf: string): number {
     return map[tf] ?? 60;
 }
 
-/** Pick the smallest (finest-grained) timeframe from a list */
 function pickSmallestTimeframe(timeframes: string[]): string {
     if (!timeframes || timeframes.length === 0) return '1h';
     return timeframes.slice().sort((a, b) => timeframeToMinutes(a) - timeframeToMinutes(b))[0];
 }
 
-/** Pick the largest (coarsest) timeframe from a list — used for HTF indicators like EMA */
 function pickLargestTimeframe(timeframes: string[]): string | undefined {
     if (!timeframes || timeframes.length <= 1) return undefined;
     return timeframes.slice().sort((a, b) => timeframeToMinutes(b) - timeframeToMinutes(a))[0];
 }
 
-// ─── Component ────────────────────────────────────────────────────────────────
+function toIso(str: string | null | undefined): string {
+    if (!str) return '';
+    const s = str.replace(' ', 'T').split('.')[0];
+    if (!s.endsWith('Z') && !s.includes('+')) return s + 'Z';
+    return s;
+}
+
+function valueAtTime(series: Array<{ time: string; value: number }> | undefined, targetIso: string): number | null {
+    if (!series?.length || !targetIso) return null;
+    const targetMs = new Date(targetIso).getTime();
+    let best: { time: string; value: number } | null = null;
+    let bestDiff = Infinity;
+    for (const p of series) {
+        const diff = Math.abs(new Date(p.time).getTime() - targetMs);
+        if (diff < bestDiff) { bestDiff = diff; best = p; }
+    }
+    return best ? best.value : null;
+}
 
 const TradeDetailsModal: React.FC<TradeDetailsModalProps> = ({
     open,
@@ -65,10 +77,96 @@ const TradeDetailsModal: React.FC<TradeDetailsModalProps> = ({
     symbol = 'BTC/USDT',
     timeframes = ['1h'],
     strategyConfig = {},
+    exchangeType = 'future',
+    backtestStart,
+    backtestEnd,
 }) => {
     const chartTimeframe = pickSmallestTimeframe(timeframes);
-    // EMA is computed on the HTF in the strategy — request HTF EMA from backend
     const emaTimeframe = pickLargestTimeframe(timeframes);
+    const indParams = useMemo(() => {
+        const cfg = strategyConfig;
+        const hasConfig = cfg && Object.keys(cfg).length > 0;
+        const useDefaults = !hasConfig;
+        return {
+            emaPeriod: useDefaults || cfg?.use_trend_filter ? (cfg?.trend_ema_period ?? 200) : 0,
+            rsiPeriod: useDefaults || cfg?.use_rsi_filter ? (cfg?.rsi_period ?? 14) : 0,
+            adxPeriod: useDefaults || cfg?.use_adx_filter ? (cfg?.adx_period ?? 14) : 0,
+            atrPeriod: cfg?.atr_period ?? 14,
+        };
+    }, [strategyConfig]);
+
+    const [indicatorsAtExitFallback, setIndicatorsAtExitFallback] = useState<Record<string, number> | null>(null);
+    const [indicatorsAtExitLoading, setIndicatorsAtExitLoading] = useState(false);
+
+    useEffect(() => {
+        const needFetch = open && selectedTrade?.exit_time &&
+            !selectedTrade?.exit_context?.indicators_at_exit &&
+            (indParams.emaPeriod > 0 || indParams.rsiPeriod > 0 || indParams.adxPeriod > 0 || indParams.atrPeriod > 0);
+
+        if (!needFetch) {
+            setIndicatorsAtExitFallback(null);
+            return;
+        }
+
+        let cancelled = false;
+        setIndicatorsAtExitLoading(true);
+        setIndicatorsAtExitFallback(null);
+
+        const exitIso = toIso(selectedTrade.exit_time);
+        const exitDate = new Date(exitIso);
+        const startDate = new Date(exitDate.getTime() - 72 * 60 * 60 * 1000);
+        const endDate = new Date(exitDate.getTime() + 2 * 60 * 60 * 1000);
+        const startIso = startDate.toISOString().split('.')[0] + 'Z';
+        const endIso = endDate.toISOString().split('.')[0] + 'Z';
+
+        const params = new URLSearchParams({
+            symbol,
+            timeframe: chartTimeframe,
+            start: startIso,
+            end: endIso,
+            context_bars: '25',
+            exchange_type: exchangeType || 'future',
+            ema_period: String(indParams.emaPeriod),
+            ...(emaTimeframe ? { ema_timeframe: emaTimeframe } : {}),
+            rsi_period: String(indParams.rsiPeriod),
+            rsi_overbought: '70',
+            rsi_oversold: '30',
+            adx_period: String(indParams.adxPeriod),
+            adx_threshold: '25',
+            atr_period: String(indParams.atrPeriod),
+            ...(backtestStart ? { backtest_start: backtestStart } : {}),
+            ...(backtestEnd ? { backtest_end: backtestEnd } : {}),
+        });
+
+        fetch(`${API_BASE}/api/ohlcv?${params}`)
+            .then(res => { if (!res.ok) throw new Error(`HTTP ${res.status}`); return res.json(); })
+            .then((d: { candles?: Array<{ time: string }>; indicators?: Record<string, { values?: Array<{ time: string; value: number }>; period?: number }> }) => {
+                if (cancelled) return;
+                const ind: Record<string, number> = {};
+                const indicators = d?.indicators ?? {};
+                if (indicators.atr?.values?.length) {
+                    const v = valueAtTime(indicators.atr.values, exitIso);
+                    if (v != null) ind['ATR'] = Math.round(v * 10000) / 10000;
+                }
+                if (indicators.ema?.values?.length && indParams.emaPeriod > 0) {
+                    const v = valueAtTime(indicators.ema.values, exitIso);
+                    if (v != null) ind[`EMA_${indParams.emaPeriod}`] = Math.round(v * 100) / 100;
+                }
+                if (indicators.rsi?.values?.length && indParams.rsiPeriod > 0) {
+                    const v = valueAtTime(indicators.rsi.values, exitIso);
+                    if (v != null) ind['RSI'] = Math.round(v * 10) / 10;
+                }
+                if (indicators.adx?.values?.length && indParams.adxPeriod > 0) {
+                    const v = valueAtTime(indicators.adx.values, exitIso);
+                    if (v != null) ind['ADX'] = Math.round(v * 10) / 10;
+                }
+                setIndicatorsAtExitFallback(Object.keys(ind).length ? ind : null);
+            })
+            .catch(() => { if (!cancelled) setIndicatorsAtExitFallback(null); })
+            .finally(() => { if (!cancelled) setIndicatorsAtExitLoading(false); });
+
+        return () => { cancelled = true; };
+    }, [open, selectedTrade?.exit_time, selectedTrade?.exit_context?.indicators_at_exit, symbol, chartTimeframe, emaTimeframe, exchangeType, backtestStart, backtestEnd, indParams]);
 
     return (
         <Dialog
@@ -104,7 +202,6 @@ const TradeDetailsModal: React.FC<TradeDetailsModalProps> = ({
                     <DialogContent sx={{ mt: 2 }}>
                         <Grid container spacing={3}>
 
-                            {/* ── Candlestick Chart ──────────────────────────── */}
                             <Grid item xs={12}>
                                 <Paper variant="outlined" sx={{ p: 0, bgcolor: '#181818', borderColor: '#333', overflow: 'hidden' }}>
                                     <Typography
@@ -124,41 +221,15 @@ const TradeDetailsModal: React.FC<TradeDetailsModalProps> = ({
                                             timeframe={chartTimeframe}
                                             emaTimeframe={emaTimeframe}
                                             strategyConfig={strategyConfig}
+                                            exchangeType={exchangeType}
+                                            backtestStart={backtestStart}
+                                            backtestEnd={backtestEnd}
                                             height={420}
                                         />
                                     </Suspense>
                                 </Paper>
                             </Grid>
 
-                            {/* ── Entry Reason / Context ─────────────────────── */}
-                            <Grid item xs={12}>
-                                <Paper variant="outlined" sx={{ p: 2, bgcolor: 'rgba(255,255,255,0.05)', borderColor: '#333' }}>
-                                    <Typography variant="caption" sx={{ color: '#fff', opacity: 0.7 }} gutterBottom display="block">ENTRY REASON / CONTEXT</Typography>
-                                    <Typography variant="body1" sx={{ fontStyle: 'italic', fontWeight: 'medium', color: '#fff' }}>
-                                        "{selectedTrade.reason || 'No specific reason recorded'}"
-                                    </Typography>
-
-                                    {selectedTrade.metadata && Object.keys(selectedTrade.metadata).length > 0 && (
-                                        <Box sx={{ mt: 2, pt: 2, borderTop: '1px solid rgba(255,255,255,0.1)' }}>
-                                            <Typography variant="caption" sx={{ color: '#fff', opacity: 0.7 }} gutterBottom display="block">ADDITIONAL CONTEXT</Typography>
-                                            <Grid container spacing={1}>
-                                                {Object.entries(selectedTrade.metadata).map(([key, value]) => (
-                                                    <Grid item xs={6} md={4} key={key}>
-                                                        <Typography variant="caption" sx={{ color: '#aaa', textTransform: 'uppercase', fontSize: '0.7rem' }} display="block">
-                                                            {key.replace(/_/g, ' ')}
-                                                        </Typography>
-                                                        <Typography variant="body2" sx={{ color: '#fff' }}>
-                                                            {typeof value === 'object' ? JSON.stringify(value) : String(value)}
-                                                        </Typography>
-                                                    </Grid>
-                                                ))}
-                                            </Grid>
-                                        </Box>
-                                    )}
-                                </Paper>
-                            </Grid>
-
-                            {/* ── PnL Calculation Breakdown ──────────────────── */}
                             <Grid item xs={12}>
                                 <Paper variant="outlined" sx={{ p: 2, bgcolor: 'rgba(255,255,255,0.05)', borderColor: '#333' }}>
                                     <Typography variant="caption" sx={{ color: '#fff', opacity: 0.7 }} gutterBottom display="block">PnL CALCULATION</Typography>
@@ -248,13 +319,9 @@ const TradeDetailsModal: React.FC<TradeDetailsModalProps> = ({
                                         <Typography variant="body1">
                                             {(() => {
                                                 if (!selectedTrade.duration) return 'N/A';
-
-                                                // Handle "X days, HH:MM:SS" format from Python timedelta
                                                 if (selectedTrade.duration.includes('day')) {
-                                                    return selectedTrade.duration.split('.')[0]; // Remove microseconds if any
+                                                    return selectedTrade.duration.split('.')[0];
                                                 }
-
-                                                // Parse duration string "HH:MM:SS"
                                                 const parts = selectedTrade.duration.split(':');
                                                 if (parts.length >= 2) {
                                                     const h = parseInt(parts[0]);
@@ -362,19 +429,85 @@ const TradeDetailsModal: React.FC<TradeDetailsModalProps> = ({
                                 </Box>
                             </Grid>
 
-                            {/* Trade Narrative Section */}
-                            {selectedTrade.narrative && (
-                                <Grid item xs={12} sx={{ mt: 2 }}>
-                                    <Box sx={{ p: 2, bgcolor: 'rgba(255,255,255,0.05)', borderRadius: 1, borderLeft: '3px solid #64b5f6' }}>
-                                        <Typography variant="subtitle2" color="#64b5f6" gutterBottom>
-                                            TRADE ANALYSIS
-                                        </Typography>
-                                        <Typography variant="body2" color="#e0e0e0" sx={{ fontStyle: 'italic' }}>
+                            <Grid item xs={12} sx={{ mt: 2 }}>
+                                <Box sx={{ p: 2, bgcolor: 'rgba(255,255,255,0.05)', borderRadius: 1, borderLeft: '3px solid #64b5f6' }}>
+                                    <Typography variant="subtitle2" color="#64b5f6" gutterBottom>
+                                        TRADE ANALYSIS
+                                    </Typography>
+                                    {selectedTrade.narrative && (
+                                        <Typography variant="body2" color="#e0e0e0" sx={{ fontStyle: 'italic', mb: 2 }}>
                                             "{selectedTrade.narrative}"
                                         </Typography>
+                                    )}
+
+                                    <Box sx={{ pt: 2, borderTop: '1px solid rgba(255,255,255,0.1)' }}>
+                                        <Typography variant="caption" sx={{ color: '#fff', opacity: 0.7 }} gutterBottom display="block">ENTRY</Typography>
+                                        <Typography variant="body2" color="#e0e0e0" sx={{ mb: 1 }}>
+                                            {selectedTrade.reason || 'No specific reason recorded'}
+                                        </Typography>
+                                        {selectedTrade.entry_context?.why_entry?.length > 0 && (
+                                            <Box component="ul" sx={{ m: 0, pl: 2.5, color: '#b0bec5', fontSize: '0.85rem', mb: 1 }}>
+                                                {selectedTrade.entry_context.why_entry.map((line: string, i: number) => (
+                                                    <li key={i}>{line}</li>
+                                                ))}
+                                            </Box>
+                                        )}
+                                        {selectedTrade.entry_context?.indicators_at_entry && Object.keys(selectedTrade.entry_context.indicators_at_entry).length > 0 && (
+                                            <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75, mb: 2 }}>
+                                                {Object.entries(selectedTrade.entry_context.indicators_at_entry).map(([k, v]) => {
+                                                    const disp = k.startsWith('EMA') ? `$${Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : String(v);
+                                                    return (
+                                                        <Chip key={k} size="small" label={`${k}: ${disp}`} sx={{ fontSize: '0.75rem', height: 22, bgcolor: 'rgba(66,165,245,0.15)', color: '#90caf9', border: '1px solid rgba(66,165,245,0.3)' }} />
+                                                    );
+                                                })}
+                                            </Box>
+                                        )}
+
+                                        <Typography variant="caption" sx={{ color: '#fff', opacity: 0.7 }} gutterBottom display="block" style={{ marginTop: 12 }}>EXIT</Typography>
+                                        <Typography variant="body2" color="#e0e0e0" sx={{ mb: 1 }}>
+                                            {selectedTrade.exit_reason || 'Unknown'}
+                                        </Typography>
+                                        <Box component="ul" sx={{ m: 0, pl: 2.5, color: '#b0bec5', fontSize: '0.85rem', mb: 1 }}>
+                                            {selectedTrade.exit_context?.why_exit?.length ? (
+                                                selectedTrade.exit_context.why_exit.map((line: string, i: number) => <li key={i}>{line}</li>)
+                                            ) : (
+                                                <li>Exit: {selectedTrade.exit_reason || 'Unknown'} — no detailed context for this historical run.</li>
+                                            )}
+                                        </Box>
+                                        {(() => {
+                                            const exitInd = selectedTrade.exit_context?.indicators_at_exit ?? indicatorsAtExitFallback;
+                                            return exitInd && Object.keys(exitInd).length > 0 ? (
+                                                <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75 }}>
+                                                    {Object.entries(exitInd).map(([k, v]) => {
+                                                        const disp = k.startsWith('EMA') ? `$${Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : String(v);
+                                                        return (
+                                                            <Chip key={k} size="small" label={`${k}: ${disp}`} sx={{ fontSize: '0.75rem', height: 22, bgcolor: 'rgba(255,152,0,0.15)', color: '#ffb74d', border: '1px solid rgba(255,152,0,0.3)' }} />
+                                                        );
+                                                    })}
+                                                </Box>
+                                            ) : indicatorsAtExitLoading ? (
+                                                    <CircularProgress size={14} sx={{ color: '#ffb74d' }} />
+                                                ) : null;
+                                        })()}
                                     </Box>
-                                </Grid>
-                            )}
+
+                                    {selectedTrade.metadata && Object.keys(selectedTrade.metadata).length > 0 && (
+                                        <Box sx={{ mt: 2, pt: 2, borderTop: '1px solid rgba(255,255,255,0.1)' }}>
+                                            <Typography variant="caption" sx={{ color: '#fff', opacity: 0.7 }} gutterBottom display="block">ADDITIONAL CONTEXT</Typography>
+                                            <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1 }}>
+                                                {Object.entries(selectedTrade.metadata).map(([key, value]) => (
+                                                    <Chip
+                                                        key={key}
+                                                        size="small"
+                                                        label={`${key.replace(/_/g, ' ')}: ${typeof value === 'object' ? JSON.stringify(value) : String(value)}`}
+                                                        sx={{ fontSize: '0.75rem', bgcolor: 'rgba(255,255,255,0.08)', color: '#b0bec5', border: '1px solid rgba(255,255,255,0.1)' }}
+                                                    />
+                                                ))}
+                                            </Box>
+                                        </Box>
+                                    )}
+                                </Box>
+                            </Grid>
                         </Grid>
                     </DialogContent>
                     <DialogActions sx={{ borderTop: '1px solid #333', p: 2 }}>

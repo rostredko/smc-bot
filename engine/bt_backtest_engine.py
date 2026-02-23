@@ -43,10 +43,9 @@ class BTBacktestEngine(BaseEngine):
         """
         symbol = self.config.get("symbol", "BTC/USDT")
         timeframes = self.config.get("timeframes", ["1h"])
-        start_date = self.config.get("start_date")
-        end_date = self.config.get("end_date")
+        start_date = self.config.get("start_date") or "2024-01-01"
+        end_date = self.config.get("end_date") or "2024-12-31"
 
-        # Backtrader requires data feeds. We'll use PandasData.
         # For dual-TF: add LOWER timeframe first (master clock),
         # then HIGHER timeframe second.
         # This ensures next() fires on every lower-TF bar.

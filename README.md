@@ -258,6 +258,7 @@ python server.py
 - 💾 **Auto-Save Results** - JSON export to `results/` directory
 - 📜 **Enhanced History** - Clickable rows, Period display, Config grouping, PnL tracking
 - 🔄 **Smart Reset** - Button helps restore default configs from server
+- 📋 **Trade Details Modal** - Full trade analysis: narrative, entry/exit context (reason, why_entry/why_exit, indicators at entry/exit). For old backtests without stored context, indicators at exit are fetched from the OHLCV API.
 
 #### Live Console Output
 
@@ -397,6 +398,8 @@ POST /backtest/start             - Start backtest
 GET  /backtest/status/{run_id}  - Get status
 DELETE /backtest/{run_id}        - Cancel backtest
 GET  /backtest/results/{run_id} - Get results
+GET  /api/ohlcv                 - OHLCV + indicators (EMA, RSI, ADX, ATR) for chart
+GET  /api/backtest/history      - Paginated backtest history
 WebSocket /ws                    - Live console output
 ```
 
@@ -465,6 +468,20 @@ After each backtest, results are saved to `results/{run_id}.json`:
 
 ---
 
+## Data Sources
+
+Backtest data comes from **Binance USD-M Futures** (perpetual contracts), the same source as TradingView.
+
+| Source | Exchange | Symbol | TradingView Equivalent |
+|--------|----------|--------|------------------------|
+| Backtest / Chart | Binance USD-M Futures | BTC/USDT | BINANCE:BTCUSDT.P |
+
+- **OHLCV**: Fetched via ccxt (binanceusdm), cached in `data_cache/`
+- **Indicators**: TA-Lib (RSI, ADX, EMA, ATR) — industry standard
+- **Chart API** (`/api/ohlcv`): Returns candles + indicators (EMA, RSI, ADX, ATR). When `backtest_start`/`backtest_end` are provided, uses DataLoader cache so chart and narrative share the same data.
+
+---
+
 ## Strategies
 
 ### Available Strategies
@@ -484,6 +501,7 @@ After each backtest, results are saved to `results/{run_id}.json`:
     - **Atomic Order Execution**: Uses fully linked OCO (One-Cancels-Other) Bracket Orders for guaranteed SL/TP.
     - **Breakeven & Trailing**: Auto-moves SL to Breakeven and trails price to lock in profits, safely reconstructing OCO links on every edit.
 - **Narrative Generation**: Automatically generates human-readable explanations for every trade outcome (e.g., *"Long trade hit Take Profit perfectly..."*).
+- **Entry/Exit Context**: Each trade stores `entry_context` (why_entry, indicators_at_entry) and `exit_context` (why_exit, indicators_at_exit) for the trade details modal.
 
 **Best For**: Strategy research, parameter optimization, and educational analysis.
 

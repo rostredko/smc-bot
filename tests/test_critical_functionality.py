@@ -219,6 +219,59 @@ class TestPatternDetection(unittest.TestCase):
         self.assertFalse(self.strategy._is_bearish_pinbar())
 
 
+class TestEngineMetrics(unittest.TestCase):
+    """Test engine metric calculations for edge cases."""
+
+    def test_win_rate_zero_trades(self):
+        """Win rate should be 0 when no trades closed."""
+        config = {'symbol': 'BTC/USDT', 'timeframes': ['1h'], 'start_date': '2024-01-01', 'end_date': '2024-01-31'}
+        engine = BTBacktestEngine(config)
+        analysis = {'total': {'closed': 0}, 'won': {'total': 0}, 'lost': {'total': 0}}
+        self.assertEqual(engine._calculate_win_rate(analysis), 0.0)
+
+    def test_profit_factor_zero_loss(self):
+        """Profit factor should be inf when won > 0 and lost == 0."""
+        config = {'symbol': 'BTC/USDT', 'timeframes': ['1h'], 'start_date': '2024-01-01', 'end_date': '2024-01-31'}
+        engine = BTBacktestEngine(config)
+        analysis = {'won': {'pnl': {'total': 100.0}}, 'lost': {'pnl': {'total': 0.0}}}
+        self.assertEqual(engine._calculate_profit_factor(analysis), float('inf'))
+
+    def test_profit_factor_zero_won_zero_loss(self):
+        """Profit factor should be 0 when both won and lost are 0."""
+        config = {'symbol': 'BTC/USDT', 'timeframes': ['1h'], 'start_date': '2024-01-01', 'end_date': '2024-01-31'}
+        engine = BTBacktestEngine(config)
+        analysis = {'won': {'pnl': {'total': 0.0}}, 'lost': {'pnl': {'total': 0.0}}}
+        self.assertEqual(engine._calculate_profit_factor(analysis), 0.0)
+
+
+class TestEngineDateValidation(unittest.TestCase):
+    """Test engine handles missing start/end dates."""
+
+    def test_missing_dates_use_defaults(self):
+        config = {
+            "symbol": "BTC/USDT",
+            "timeframes": ["1h"],
+            "initial_capital": 10000,
+        }
+        engine = BTBacktestEngine(config)
+        mock_df = pd.DataFrame({
+            "open": [100.0] * 100,
+            "high": [105.0] * 100,
+            "low": [95.0] * 100,
+            "close": [101.0] * 100,
+            "volume": [1000] * 100,
+        }, index=pd.date_range("2024-01-01", periods=100, freq="h"))
+
+        engine.data_loader = MagicMock()
+        engine.data_loader.get_data = MagicMock(return_value=mock_df)
+
+        engine.add_data()
+        calls = engine.data_loader.get_data.call_args_list
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][0][2], "2024-01-01")
+        self.assertEqual(calls[0][0][3], "2024-12-31")
+
+
 class TestEngineColumnValidation(unittest.TestCase):
     """Test that engine validates required columns."""
 

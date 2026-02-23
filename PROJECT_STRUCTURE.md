@@ -156,9 +156,10 @@ Backtrader strategy using TA-Lib for high-performance indicator calculations and
 
 **Methods:**
 - `next()`: Main strategy logic executed per bar.
-- `_is_bullish_pinbar()`: Pattern detection executed manually using pure OHLCV formulas.
-- `_enter_long()`: Executing trades using OCO-linked Bracket Orders (`buy`, `sell` with `oco=` keyword).
-- `_manage_trailing_stop()`: Manages OCO recreation when trailing a stop or moving to breakeven.
+- `_is_bullish_pinbar()`, `_is_bearish_pinbar()`, `_is_bullish_engulfing()`, `_is_bearish_engulfing()`: Pattern detection using pure OHLCV formulas.
+- `_enter_long()`, `_enter_short()`: Execute trades using OCO-linked Bracket Orders.
+- `_build_entry_context(reason, direction)`: Returns why_entry + indicators_at_entry (ATR, EMA, RSI, ADX).
+- `_build_exit_context(exit_reason)`: Returns why_exit + indicators_at_exit.
 ---
 
 ### 3. smc_strategy.py
@@ -345,10 +346,12 @@ Maps liquidity zones and detects liquidity sweeps.
 }
 ```
 
-### Position Object:
-- id, direction, entry_price, size, stop_loss, take_profit
-- entry_time, exit_time, exit_price, exit_reason
-- realized_pnl, unrealized_pnl, risk_amount, risk_reward_ratio
+### Trade Object (from analyzer):
+- id, direction, entry_price, exit_price, size, stop_loss, take_profit
+- entry_time, exit_time, exit_reason, realized_pnl
+- reason, narrative, sl_calculation, tp_calculation, sl_history
+- entry_context: { why_entry, indicators_at_entry }
+- exit_context: { why_exit, indicators_at_exit }
 - take_profit_levels, tp_hit, trailing_active, breakeven_moved
 - Various flags for exit management
 
@@ -381,16 +384,23 @@ FastAPI backend that bridges the Python trading engine with the React frontend.
 **Endpoints:**
 - `/config`: Read/Write JSON configuration
 - `/backtest/start`: Triggers `BacktestEngine` in a background thread
-- `/ws`: WebSocket for real-time log streaming from `Logger`
+- `/backtest/status/{run_id}`, `/backtest/results/{run_id}`, `DELETE /backtest/{run_id}`
+- `/api/ohlcv`: OHLCV candles + indicators (EMA, RSI, ADX, ATR). Params: symbol, timeframe, start, end, backtest_start, backtest_end, exchange_type, ema_period, rsi_period, adx_period, atr_period. When backtest_start/end provided, uses DataLoader cache.
+- `/api/backtest/history`: Paginated backtest history
+- `/ws`: WebSocket for real-time log streaming
 
 ### 2. src/App.tsx
 Main React component handling strategy selection, configuration forms, and simulation control.
 
-### 3. src/components/BacktestHistoryList.tsx
-Displays historical backtest runs with:
-- Dedicated columns for Strategy and Period
-- Expandable rows showing full configuration diffs
-- PnL and other performance metrics
+### 3. Trade Details Modal (`features/trade-details/ui/TradeDetailsModal.tsx`)
+Modal showing full trade analysis:
+- Price chart with entry/exit markers, SL/TP, trailing stop history
+- PnL calculation breakdown
+- **TRADE ANALYSIS**: Narrative + entry summary (reason, why_entry, indicators_at_entry) + exit summary (reason, why_exit, indicators_at_exit)
+- For old backtests without `exit_context`, indicators at exit are fetched from `/api/ohlcv`
+
+### 4. BacktestHistoryList
+Displays historical backtest runs with expandable rows, config diffs, PnL. Passes symbol, timeframes, strategyConfig, exchangeType, backtestStart, backtestEnd to TradeDetailsModal.
 
 ---
 

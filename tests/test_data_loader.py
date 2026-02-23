@@ -11,7 +11,7 @@ import sys
 import os
 import pytest
 import pandas as pd
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 # Add project root to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
@@ -109,7 +109,28 @@ class TestDataCaching:
 
 class TestDataValidation:
     """Test data validation and integrity checks."""
-    
+
+    def test_fetch_ohlcv_raises_on_none_dates(self):
+        """fetch_ohlcv must raise ValueError when start_date or end_date is None."""
+        from engine.data_loader import DataLoader
+        with patch.object(DataLoader, "_initialize_exchange", return_value=MagicMock()):
+            loader = DataLoader()
+
+        with pytest.raises(ValueError, match="start_date and end_date are required"):
+            loader.fetch_ohlcv("BTC/USDT", "1h", None, "2024-01-31")
+
+        with pytest.raises(ValueError, match="start_date and end_date are required"):
+            loader.fetch_ohlcv("BTC/USDT", "1h", "2024-01-01", None)
+
+    def test_fetch_ohlcv_raises_when_start_after_end(self):
+        """fetch_ohlcv must raise ValueError when start_date > end_date."""
+        from engine.data_loader import DataLoader
+        with patch.object(DataLoader, "_initialize_exchange", return_value=MagicMock()):
+            loader = DataLoader()
+
+        with pytest.raises(ValueError, match="start_date.*must be <= end_date"):
+            loader.fetch_ohlcv("BTC/USDT", "1h", "2024-12-31", "2024-01-01")
+
     def test_ohlcv_data_integrity(self, sample_ohlcv_data):
         """Test OHLCV data passes integrity checks."""
         df = sample_ohlcv_data

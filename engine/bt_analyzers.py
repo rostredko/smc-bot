@@ -41,23 +41,22 @@ class TradeListAnalyzer(bt.Analyzer):
                 "commission": pnl - pnlcomm
             }
 
-            # Attempt to retrieve enriched data from strategy if available
-            if hasattr(self.strategy, 'get_trade_info'):
-                 info = self.strategy.get_trade_info(trade.ref)
-                 if info:
-                     trade_record.update(info)
-                     # If size was 0 from closed trade object, try to get it from metadata
-                     if size == 0 and 'size' in info:
-                         size = info['size']
-                     
-                     # Update exit reason if available
-                     if 'exit_reason' in info:
-                         trade_record['exit_reason'] = info['exit_reason']
-                     elif trade_record['realized_pnl'] > 0:
-                         trade_record['exit_reason'] = "Take Profit (Approx)"
-                     else:
-                         trade_record['exit_reason'] = "Stop Loss (Approx)"
-            
+            info = self.strategy.get_trade_info(trade.ref) if hasattr(self.strategy, 'get_trade_info') else {}
+            if info:
+                trade_record.update(info)
+                if size == 0 and 'size' in info:
+                    size = info['size']
+                if 'exit_reason' in info:
+                    trade_record['exit_reason'] = info['exit_reason']
+                elif trade_record['realized_pnl'] > 0:
+                    trade_record['exit_reason'] = "Take Profit (Approx)"
+                else:
+                    trade_record['exit_reason'] = "Stop Loss (Approx)"
+                if 'sl_calculation' in info:
+                    trade_record['sl_calculation'] = info['sl_calculation']
+                if 'tp_calculation' in info:
+                    trade_record['tp_calculation'] = info['tp_calculation']
+
             # Finalize exit price calculation with correct size
             if size != 0:
                 pnl_per_unit = pnl / size
@@ -68,17 +67,8 @@ class TradeListAnalyzer(bt.Analyzer):
                 
                 trade_record["size"] = size
             else:
-                 trade_record["exit_price"] = trade.price
-                 trade_record["size"] = 0
-            
-            # Extract calculation details if available
-            if hasattr(self.strategy, 'get_trade_info'):
-                 info = self.strategy.get_trade_info(trade.ref)
-                 if info:
-                     if 'sl_calculation' in info:
-                         trade_record['sl_calculation'] = info['sl_calculation']
-                     if 'tp_calculation' in info:
-                         trade_record['tp_calculation'] = info['tp_calculation']
+                trade_record["exit_price"] = trade.price
+                trade_record["size"] = 0
 
             self.trades.append(trade_record)
 

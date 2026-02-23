@@ -48,7 +48,7 @@ const BacktestHistoryList: React.FC = () => {
     const [detailedResults, setDetailedResults] = useState<Record<string, any>>({});
     const [selectedTrade, setSelectedTrade] = useState<any | null>(null);
     const [isTradeModalOpen, setIsTradeModalOpen] = useState(false);
-    const [tradeModalConfig, setTradeModalConfig] = useState<{ symbol: string; timeframes: string[]; strategyConfig: Record<string, any> } | null>(null);
+    const [tradeModalConfig, setTradeModalConfig] = useState<{ symbol: string; timeframes: string[]; strategyConfig: Record<string, any>; exchangeType: string; backtestStart?: string; backtestEnd?: string } | null>(null);
     const [expandedForChart, setExpandedForChart] = useState<Record<string, boolean>>({});
 
     const loadData = useCallback(async (currentPage: number = 1) => {
@@ -132,6 +132,9 @@ const BacktestHistoryList: React.FC = () => {
                     return Array.isArray(tf) ? tf : ['1h'];
                 })(),
                 strategyConfig: config?.strategy_config ?? config?.strategyConfig ?? {},
+                exchangeType: getConfigValue(config, 'exchange_type') ?? 'future',
+                backtestStart: getConfigValue(config, 'start_date'),
+                backtestEnd: getConfigValue(config, 'end_date'),
             } : null);
             setIsTradeModalOpen(true);
         }
@@ -428,6 +431,9 @@ const BacktestHistoryList: React.FC = () => {
                     symbol={tradeModalConfig?.symbol ?? 'BTC/USDT'}
                     timeframes={tradeModalConfig?.timeframes ?? ['1h']}
                     strategyConfig={tradeModalConfig?.strategyConfig ?? {}}
+                    exchangeType={tradeModalConfig?.exchangeType ?? 'future'}
+                    backtestStart={tradeModalConfig?.backtestStart}
+                    backtestEnd={tradeModalConfig?.backtestEnd}
                 />
             </CardContent>
         </Card>

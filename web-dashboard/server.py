@@ -12,7 +12,6 @@ from datetime import datetime
 from typing import Dict, List, Optional, Any
 from pathlib import Path
 
-# Add parent directory to path to import engine modules
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect
@@ -22,33 +21,28 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from engine.bt_backtest_engine import BTBacktestEngine
+from engine.data_loader import DataLoader
 from strategies.bt_price_action import PriceActionStrategy
-# Central logging — must import AFTER sys.path is set up
 from engine.logger import get_logger, setup_logging, ws_log_queue
 
-# Bootstrap project logging (console only at startup; WS handler added per-run)
 setup_logging(enable_ws=False)
 logger = get_logger("server")
 
-# Configuration - Use absolute paths for cross-platform compatibility
 BASE_DIR = Path(__file__).parent.parent.absolute()
 DATA_DIR = str(BASE_DIR / "data_cache")
 RESULTS_DIR = str(BASE_DIR / "results")
 USER_CONFIGS_DIR = str(BASE_DIR / "user_configs")
 
-# Ensure directories exist
 os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(RESULTS_DIR, exist_ok=True)
 os.makedirs(USER_CONFIGS_DIR, exist_ok=True)
 
-# FastAPI app
 app = FastAPI(
     title="Backtrade Machine API",
     description="REST API for Backtrade Machine",
     version="1.0.0"
 )
 
-# CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -57,12 +51,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Mount static files
 if os.path.exists("dist"):
     app.mount("/static", StaticFiles(directory="dist"), name="static")
 
 
-# Pydantic models
 class BacktestConfig(BaseModel):
     initial_capital: float = 10000
     risk_per_trade: float = 1.5
@@ -106,14 +98,10 @@ class BacktestStatus(BaseModel):
         arbitrary_types_allowed = True
 
 
-# Global state for running backtests
 running_backtests: Dict[str, BacktestStatus] = {}
-
-# WebSocket connections - for real-time message broadcasting
 active_connections: List[WebSocket] = []
 connection_lock = threading.Lock()
 
-# Cache for strategy schemas to avoid re-importing
 strategy_schema_cache: Dict[str, Dict[str, Any]] = {}
 
 
@@ -154,7 +142,6 @@ def load_available_strategies():
         for file in strategies_dir.glob("*.py"):
             if file.name != "__init__.py" and file.name != "base_strategy.py":
                 strategy_name = file.stem
-                # Get schema (will be cached after first call)
                 config_schema = get_strategy_config_schema(strategy_name)
                 strategies.append({
                     "name": strategy_name,
@@ -171,53 +158,42 @@ def get_strategy_config_schema(strategy_name: str):
     if strategy_name in strategy_schema_cache:
         return strategy_schema_cache[strategy_name]
     
-    # Return hardcoded schemas for known strategies without importing
     default_schemas = {
         "smc_strategy": {
-            # Core
             "mode": {"type": "string", "default": "spot"},
             "allow_short": {"type": "boolean", "default": False},
-            # Timeframes
             "high_timeframe": {"type": "string", "default": "4h"},
             "low_timeframe": {"type": "string", "default": "15m"},
-            # Risk
             "risk_per_trade_pct": {"type": "number", "default": 0.3},
             "max_concurrent_positions": {"type": "number", "default": 3},
             "min_required_rr": {"type": "number", "default": 2.0},
             "max_stop_distance_pct": {"type": "number", "default": 0.04},
-            # Volatility
             "volatility_filter_enabled": {"type": "boolean", "default": True},
             "atr_period": {"type": "number", "default": 14},
             "atr_percentile_min": {"type": "number", "default": 30},
             "atr_percentile_max": {"type": "number", "default": 70},
             "sl_atr_multiplier": {"type": "number", "default": 2.0},
             "min_signal_confidence": {"type": "number", "default": 0.4},
-            # Technical
             "ema_filter_period": {"type": "number", "default": 50},
             "rsi_period": {"type": "number", "default": 14},
             "min_rsi_long": {"type": "number", "default": 35},
             "max_rsi_long": {"type": "number", "default": 70},
             "volume_threshold": {"type": "number", "default": 1.3},
-            # Partial TPs
             "use_partial_tp": {"type": "boolean", "default": True},
             "tp1_r": {"type": "number", "default": 1.0},
             "tp1_pct": {"type": "number", "default": 0.5},
             "tp2_r": {"type": "number", "default": 2.0},
             "tp2_pct": {"type": "number", "default": 0.3},
             "runner_pct": {"type": "number", "default": 0.2},
-            # Exit Management
             "trailing_stop_enabled": {"type": "boolean", "default": True},
             "trail_start": {"type": "number", "default": 1.5},
             "trail_step": {"type": "number", "default": 0.3},
             "breakeven_move_enabled": {"type": "boolean", "default": True},
-            # Market Structure
             "require_structure_confirmation": {"type": "boolean", "default": True},
             "support_level_lookback_bars": {"type": "number", "default": 20},
-            # Cooldown & Psychology
             "cooldown_after_loss_bars": {"type": "number", "default": 10},
             "reduce_risk_after_loss": {"type": "boolean", "default": True},
             "risk_reduction_after_loss": {"type": "number", "default": 0.6},
-            # Exchange
             "min_notional": {"type": "number", "default": 10.0},
             "taker_fee": {"type": "number", "default": 0.0004},
             "slippage_bp": {"type": "number", "default": 2},
@@ -230,7 +206,6 @@ def get_strategy_config_schema(strategy_name: str):
             "rsi_threshold": {"type": "number", "default": 30}
         },
         "bt_price_action": {
-            # Pattern Settingsical Entry Filters
             "use_trend_filter": {"type": "boolean", "default": True},
             "trend_ema_period": {"type": "number", "default": 200},
             
@@ -245,8 +220,6 @@ def get_strategy_config_schema(strategy_name: str):
             "use_adx_filter": {"type": "boolean", "default": False},
             "adx_period": {"type": "number", "default": 14},
             "adx_threshold": {"type": "number", "default": 25},
-            
-            # Pattern Settings
             "min_range_factor": {"type": "number", "default": 0.8},
             "min_wick_to_range": {"type": "number", "default": 0.6},
             "max_body_to_range": {"type": "number", "default": 0.3},
@@ -256,7 +229,6 @@ def get_strategy_config_schema(strategy_name: str):
         }
     }
     
-    # Backward compatibility for legacy config name
     default_schemas["price_action_strategy"] = default_schemas["bt_price_action"]
     
     schema = default_schemas.get(strategy_name, {})
@@ -304,7 +276,6 @@ async def get_config():
         with open(config_path, 'r') as f:
             config = json.load(f)
         
-        # Flatten the config structure for frontend
         flat_config = {
             "initial_capital": config.get("account", {}).get("initial_capital", 10000),
             "risk_per_trade": config.get("account", {}).get("risk_per_trade", 2.0),
@@ -332,13 +303,11 @@ async def update_config(config: Dict[str, Any]):
     """Update configuration."""
     config_path = BASE_DIR / "config" / "backtest_config.json"
     
-    # Load existing config to preserve structure
     existing_config = {}
     if config_path.exists():
         with open(config_path, 'r') as f:
             existing_config = json.load(f)
     
-    # Update the config with new values while preserving structure
     if "account" not in existing_config:
         existing_config["account"] = {}
     if "trading" not in existing_config:
@@ -348,7 +317,6 @@ async def update_config(config: Dict[str, Any]):
     if "strategy" not in existing_config:
         existing_config["strategy"] = {}
     
-    # Update account settings
     if "initial_capital" in config:
         existing_config["account"]["initial_capital"] = config["initial_capital"]
     if "risk_per_trade" in config:
@@ -360,23 +328,19 @@ async def update_config(config: Dict[str, Any]):
     if "leverage" in config:
         existing_config["account"]["leverage"] = config["leverage"]
     
-    # Update trading settings
     if "symbol" in config:
         existing_config["trading"]["symbol"] = config["symbol"]
     if "timeframes" in config:
         existing_config["trading"]["timeframes"] = config["timeframes"]
     
-    # Update period settings
     if "start_date" in config:
         existing_config["period"]["start_date"] = config["start_date"]
     if "end_date" in config:
         existing_config["period"]["end_date"] = config["end_date"]
     
-    # Update strategy settings
     if "strategy" in config:
         existing_config["strategy"]["name"] = config["strategy"]
         
-    # Update root level settings
     if "min_risk_reward" in config:
         existing_config["min_risk_reward"] = config["min_risk_reward"]
     if "trailing_stop_distance" in config:
@@ -388,7 +352,6 @@ async def update_config(config: Dict[str, Any]):
     if "dynamic_position_sizing" in config:
         existing_config["dynamic_position_sizing"] = config["dynamic_position_sizing"]
     
-    # Save updated config
     with open(config_path, 'w') as f:
         json.dump(existing_config, f, indent=2)
     
@@ -409,7 +372,6 @@ async def list_user_configs():
 @app.get("/api/user-configs/{name}")
 async def get_user_config(name: str):
     """Get a specific user configuration."""
-    # Basic path traversal protection
     if "/" in name or "\\" in name or ".." in name:
         raise HTTPException(status_code=400, detail="Invalid configuration name")
     
@@ -461,18 +423,15 @@ async def start_backtest(request: BacktestRequest, background_tasks: BackgroundT
     """Start a new backtest."""
     run_id = request.run_id or f"backtest_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     
-    # Check if already running
     if run_id in running_backtests:
         raise HTTPException(status_code=400, detail=f"Backtest {run_id} is already running")
     
-    # Memory Cleanup: Limit running_backtests to last 20 items to prevent leaks
     if len(running_backtests) > 20:
         keys_to_remove = list(running_backtests.keys())[:-20]
         for k in keys_to_remove:
             if k in running_backtests:
                 del running_backtests[k]
 
-    # Initialize status
     running_backtests[run_id] = BacktestStatus(
         run_id=run_id,
         status="running",
@@ -480,7 +439,6 @@ async def start_backtest(request: BacktestRequest, background_tasks: BackgroundT
         message="Starting backtest..."
     )
     
-    # Start background task
     background_tasks.add_task(run_backtest_task, run_id, request.config.dict())
     
     return {"run_id": run_id, "status": "started"}
@@ -493,7 +451,6 @@ async def get_backtest_status(run_id: str):
         raise HTTPException(status_code=404, detail="Backtest not found")
     
     status = running_backtests[run_id]
-    # Return status without engine field (which is not serializable)
     return {
         "run_id": status.run_id,
         "status": status.status,
@@ -536,6 +493,8 @@ def _default_configuration_for_legacy_backtest() -> Dict[str, Any]:
     return {
         "symbol": "BTC/USDT",
         "timeframes": ["1h"],
+        "exchange": "binance",
+        "exchange_type": "future",
         "strategy": "bt_price_action",
         "_legacy_default": True,  # Marks that real config was not saved; these are assumed defaults
         "strategy_config": {
@@ -564,7 +523,6 @@ async def get_result_file(filename: str):
         with open(file_path, 'r') as f:
             data = json.load(f)
         
-        # Backfill configuration for legacy backtests (no configuration saved)
         if not data.get("configuration"):
             default_cfg = _default_configuration_for_legacy_backtest()
             data["configuration"] = default_cfg
@@ -587,11 +545,9 @@ async def get_backtest_history(page: int = 1, page_size: int = 10):
     history = []
     
     if os.path.exists(RESULTS_DIR):
-        # Get list of JSON files with their modification times
         files = []
         for name in os.listdir(RESULTS_DIR):
             if name.endswith(".json") and name.startswith("backtest_"):
-                # Skip log files and generic result files
                 if "_logs" in name or name == "backtest_results.json":
                     continue
                     
@@ -602,33 +558,25 @@ async def get_backtest_history(page: int = 1, page_size: int = 10):
                 except OSError:
                     continue
         
-        # Sort by modification time (descending)
         files.sort(key=lambda x: x[1], reverse=True)
         
-        # Calculate pagination
         total_count = len(files)
         total_pages = (total_count + page_size - 1) // page_size  # Ceiling division
         
-        # Validate page number
         if page < 1:
             page = 1
         if page > total_pages and total_pages > 0:
             page = total_pages
             
-        # Calculate offset
         offset = (page - 1) * page_size
-        
-        # Get files for current page
         page_files = files[offset:offset + page_size]
         
-        # Process files for current page
         for filename, mtime in page_files:
             try:
                 file_path = os.path.join(RESULTS_DIR, filename)
                 with open(file_path, 'r') as f:
                     data = json.load(f)
                 
-                # Extract simplified summary stats
                 summary = {
                     "filename": filename,
                     "timestamp": datetime.fromtimestamp(mtime).isoformat(),
@@ -645,7 +593,6 @@ async def get_backtest_history(page: int = 1, page_size: int = 10):
                     "winning_trades": data.get("winning_trades", 0),
                     "losing_trades": data.get("losing_trades", 0),
                     "strategy": data.get("configuration", {}).get("strategy", "Unknown"),
-                    # Pass full configuration for detailed view
                     "configuration": data.get("configuration", {})
                 }
                 history.append(summary)
@@ -676,7 +623,6 @@ async def cancel_backtest(run_id: str):
     status = running_backtests[run_id]
     if status.status == "running":
         status.should_cancel = True  # Set flag to signal cancellation
-        # Also set the flag on the engine itself for graceful shutdown
         if status.engine:
             status.engine.should_cancel = True
         status.message = "Cancellation requested..."
@@ -687,7 +633,6 @@ async def cancel_backtest(run_id: str):
 @app.delete("/api/backtest/history/{filename}")
 async def delete_backtest_result(filename: str):
     """Delete a specific backtest result file."""
-    # Security check: ensure filename contains only safe characters
     if not filename.endswith(".json") or "/" in filename or "\\" in filename:
         raise HTTPException(status_code=400, detail="Invalid filename")
         
@@ -699,18 +644,11 @@ async def delete_backtest_result(filename: str):
     try:
         os.remove(file_path)
         
-        # Also try to remove the corresponding trades file if it exists
-        # Pattern: backtest_TIMESTAMP_results.json -> backtest_TIMESTAMP_trades.json
         if "_results.json" in filename:
             trades_file = filename.replace("_results.json", "_trades.json")
             trades_path = os.path.join(RESULTS_DIR, trades_file)
             if os.path.exists(trades_path):
                 os.remove(trades_path)
-                
-        # Also try to remove logs file
-        # Pattern: backtest_TIMESTAMP_results.json -> backtest_TIMESTAMP_logs.json (sometimes)
-        # But commonly logs are just backtest_logs.json (overwritten) or separate. 
-        # For now, we just delete the main result file and trades file.
         
         return {"message": f"Successfully deleted {filename}"}
     except Exception as e:
@@ -726,7 +664,6 @@ async def websocket_endpoint(websocket: WebSocket):
         active_connections.append(websocket)
     
     try:
-        # Keep the connection open
         while True:
             await asyncio.sleep(1)
     except WebSocketDisconnect:
@@ -737,7 +674,6 @@ async def websocket_endpoint(websocket: WebSocket):
 
 async def broadcast_message(message: str):
     """Broadcast message to all connected WebSocket clients."""
-    # Make a copy of connections to avoid iteration issues
     with connection_lock:
         connections_copy = active_connections.copy()
     
@@ -745,7 +681,6 @@ async def broadcast_message(message: str):
         try:
             await connection.send_text(message)
         except Exception:
-            # Silently remove dead connections
             with connection_lock:
                 if connection in active_connections:
                     active_connections.remove(connection)
@@ -755,16 +690,13 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
     """Background task to run backtest."""
     
     try:
-        # Update status
         running_backtests[run_id].message = "Initializing engine..."
         running_backtests[run_id].progress = 10.0
         await broadcast_message(f"[{run_id}] Initializing engine...\n")
         
-        # Calculate commission from taker_fee (e.g. 0.04 -> 0.0004)
         taker_fee_pct = config.get('taker_fee', 0.04)
         commission = taker_fee_pct / 100.0
         
-        # Convert config to engine format
         engine_config = {
             'initial_capital': config.get('initial_capital', 10000),
             'risk_per_trade': config.get('risk_per_trade', 2.0),
@@ -773,6 +705,8 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
             'leverage': config.get('leverage', 10.0),
             'symbol': config.get('symbol', 'BTC/USDT'),
             'timeframes': config.get('timeframes', ['4h', '15m']),
+            'exchange': config.get('exchange', 'binance'),
+            'exchange_type': config.get('exchange_type', 'future'),
             'start_date': config.get('start_date', '2023-01-01'),
             'end_date': config.get('end_date', '2023-12-31'),
             'strategy': config.get('strategy', 'smc_strategy'),
@@ -797,14 +731,9 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
             'trades_file': 'results/trades_history.json'
         }
         
-        # CRITICAL: Sync dashboard timeframes with strategy config
-        # The strategy uses 'high_timeframe' and 'low_timeframe' keys, while engine uses 'timeframes' list
         if len(engine_config['timeframes']) >= 1:
-             # Just ensure the engine has timeframes set (already done via 'timeframes' key)
              pass
         
-        
-        # Log configuration details
         await broadcast_message(f"[{run_id}] ============================================================\n")
         await broadcast_message(f"[{run_id}] BACKTEST CONFIGURATION\n")
         await broadcast_message(f"[{run_id}] ============================================================\n")
@@ -825,14 +754,9 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
             await broadcast_message(f"[{run_id}] Strategy Config: {engine_config['strategy_config']}\n")
         await broadcast_message(f"[{run_id}] ============================================================\n")
         
-        # Activate WebSocket log delivery for this run.
-        # setup_logging adds a QueueHandler that formats every log record with
-        # the run_id prefix and puts it into ws_log_queue, which broadcast_from_queue()
-        # drains every 50 ms and sends to all connected WebSocket clients.
         import logging as _logging
         setup_logging(level=_logging.INFO, run_id=run_id, enable_ws=True)
 
-        # Track signals count via a lightweight log handler
         class _SignalCounter(_logging.Handler):
             def __init__(self):
                 super().__init__()
@@ -847,17 +771,10 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
         _root_logger.addHandler(signal_counter)
 
         try:
-            # Create engine
             await broadcast_message(f"[{run_id}] Creating engine instance...\n")
             engine = BTBacktestEngine(engine_config)
             
-            # Add Strategy
-            # Use 'price_action' or default to PriceActionStrategy class
-            # We only have one strategy for now in BT migration
             st_config = engine_config.get('strategy_config', {})
-            
-            # Inject general settings that are actually strategy parameters
-            # These are defined at the top level in the UI but needed by the strategy
             st_config['trailing_stop_distance'] = engine_config.get('trailing_stop_distance', 0.0)
             st_config['breakeven_trigger_r'] = engine_config.get('breakeven_trigger_r', 0.0)
             st_config['risk_per_trade'] = engine_config.get('risk_per_trade', 1.0)
@@ -867,47 +784,36 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
             
             engine.add_strategy(PriceActionStrategy, **st_config)
             
-
-            
-            # Store engine reference for cancellation support
             running_backtests[run_id].engine = engine
             
             await broadcast_message(f"[{run_id}] ✅ Engine created\n")
             
-            # Update status
             running_backtests[run_id].message = "Loading data..."
             running_backtests[run_id].progress = 30.0
             
-            # Check if cancellation was requested
             if running_backtests[run_id].should_cancel:
                 running_backtests[run_id].status = "cancelled"
                 running_backtests[run_id].message = "Backtest cancelled"
                 await broadcast_message(f"[{run_id}] Backtest cancelled by user\n")
                 return
             
-            # Run backtest
             await broadcast_message(f"[{run_id}] Starting engine.run_backtest()...\n")
             
-            # Run backtest in a separate thread
             loop = asyncio.get_event_loop()
             metrics = await loop.run_in_executor(None, engine.run_backtest)
             
             await broadcast_message(f"[{run_id}] ✅ engine.run_backtest() completed\n")
             
-            # Initialize mapped_metrics to ensure scope visibility
             mapped_metrics = None
             
             try:
-                # Count signals generated during this run
                 metrics['signals_generated'] = signal_counter.count
                 
-                # Convert Dictionary trades to expected format
                 trades_data = []
                 for i, trade in enumerate(engine.closed_trades):
                     entry_time = datetime.fromisoformat(trade['entry_time']) if trade['entry_time'] else None
                     exit_time = datetime.fromisoformat(trade['exit_time']) if trade['exit_time'] else None
                     
-                    # Format duration string (remove '0 days ' artifact)
                     duration_str = None
                     if exit_time and entry_time:
                         diff = exit_time - entry_time
@@ -935,14 +841,13 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
                         'sl_calculation': trade.get('sl_calculation', None), # Add SL Calc
                         'tp_calculation': trade.get('tp_calculation', None), # Add TP Calc
                         'sl_history': trade.get('sl_history', []), # Add SL History
-                        'metadata': {}
+                        'entry_context': trade.get('entry_context', None),  # Why entry + indicators at entry
+                        'exit_context': trade.get('exit_context', None),    # Why exit + indicators at exit
+                        'metadata': trade.get('metadata', {})
                     }
                     trades_data.append(trade_dict)
                 
-                # Convert equity curve to serializable format with downsampling
                 equity_data = []
-                
-                # Downsample to max 100 points
                 total_points = len(engine.equity_curve)
                 step = max(1, int(total_points / 100))
                 
@@ -954,9 +859,6 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
                         }
                         equity_data.append(equity_dict)
                 
-                # Map metrics from PerformanceReporter to frontend format
-                # PerformanceReporter uses: win_count, loss_count, total_pnl
-                # Frontend expects: winning_trades, losing_trades, total_pnl
                 mapped_metrics = {
                     'total_pnl': metrics.get('total_pnl', 0),
                     'winning_trades': metrics.get('win_count', 0),
@@ -970,20 +872,17 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
                     'avg_loss': metrics.get('avg_loss', 0),
                     'initial_capital': engine_config.get('initial_capital', 10000),
                     'final_capital': metrics.get('final_capital', 0),
-                    'signals_generated': signal_counter.count,  # signals counted by _SignalCounter handler
+                    'signals_generated': signal_counter.count,
                     'equity_curve': equity_data,
                     'trades': trades_data,
                     'strategy': engine_config.get('strategy', 'Unknown'),
                     'configuration': engine_config
                 }
                 
-                # Update metrics with mapped values
                 metrics.update(mapped_metrics)
                 
-                # logs field: reserved for future structured log export
                 metrics['logs'] = []
                 
-                # Store results in running_backtests IMMEDIATELY so frontend can access them
                 running_backtests[run_id].results = metrics
                 running_backtests[run_id].progress = 100.0
                 
@@ -992,13 +891,10 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
                 error_trace = traceback.format_exc()
                 logger.error(f"Error processing backtest data: {e}\n{error_trace}")
                 await broadcast_message(f"[{run_id}] ⚠️ Error processing backtest data: {str(e)}\n")
-                # Don't raise, try to continue if possible, but mapped_metrics might be None
             
-            # Update status
             running_backtests[run_id].message = "Generating report..."
             await broadcast_message(f"[{run_id}] Generating report...\n")
             
-            # Save results first to get the path
             result_file = os.path.join(RESULTS_DIR, f"{run_id}.json")
             try:
                 with open(result_file, 'w') as f:
@@ -1010,11 +906,7 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
                 logger.error(f"Error saving results: {e}\n{traceback.format_exc()}")
                 await broadcast_message(f"[{run_id}] ⚠️ Error saving results: {str(e)}\n")
             
-            # Restore WS logging to console-only (no more per-run prefix needed)
             setup_logging(enable_ws=False)
-            
-            # Broadcast results summary to logs
-            # Broadcast results summary to logs
 
             try:
                 if mapped_metrics is None:
@@ -1022,7 +914,6 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
                 else:
                     await broadcast_message(f"[{run_id}] Generating detailed report...\n")
                     
-                    # Safe calculations for summary
                     init_cap = mapped_metrics.get('initial_capital', 1)
                     if init_cap == 0: init_cap = 1 # Avoid division by zero
                     
@@ -1031,7 +922,6 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
                     
                     return_pct = (total_pnl / init_cap) * 100
                     
-                    # Construct summary lines
                     summary_lines = [
                         "============================================================",
                         "BACKTEST RESULTS SUMMARY",
@@ -1049,23 +939,17 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
                         "============================================================"
                     ]
                     
-                    # Broadcast line by line to ensure reliability with explicit delay
                     await broadcast_message(f"[{run_id}] Backtest Summary:\n")
                     await asyncio.sleep(0.1)
                     
                     for line in summary_lines:
                          await broadcast_message(f"[{run_id}] {line}\n")
-                         # Explicit delay to prevent flooding/race conditions
                          await asyncio.sleep(0.2)
                     
-                    # Also log to file for debugging
                     logger.info(f"[{run_id}] Backtest Summary Generated")
-
-                    # Allow extended time for logs to flush to WebSocket BEFORE marking as completed
                     await broadcast_message(f"[{run_id}] Report generated. Finalizing...\n")
                     await asyncio.sleep(1.0)
                 
-                # Update status to completed FINAL step
                 if not engine.should_cancel:
                      running_backtests[run_id].status = "completed"
                      running_backtests[run_id].message = "Backtest completed successfully"
@@ -1080,13 +964,10 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
                 running_backtests[run_id].message = f"Report generation failed: {str(e)}"
         
         finally:
-            # Clean up signal counter handler to avoid accumulation across runs
             _root_logger.removeHandler(signal_counter)
-            # Restore WS logging to console-only after cleanup
             setup_logging(enable_ws=False)
         
     except Exception as e:
-        # Update status with error
         running_backtests[run_id].status = "failed"
         running_backtests[run_id].message = f"Backtest failed: {str(e)}"
         running_backtests[run_id].error = str(e)
@@ -1096,8 +977,6 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
 
 import ccxt
 
-# Global cache for symbols
-# structure: { "data": ["BTC/USDT", ...], "timestamp": 1234567890.0 }
 SYMBOLS_CACHE = {
     "data": [],
     "timestamp": 0.0
@@ -1113,22 +992,15 @@ async def get_top_symbols(limit: int = 10):
     global SYMBOLS_CACHE
     now = datetime.now().timestamp()
     
-    # Check cache
     if SYMBOLS_CACHE["data"] and (now - SYMBOLS_CACHE["timestamp"] < CACHE_DURATION_SECONDS):
         return {"symbols": SYMBOLS_CACHE["data"][:limit]}
 
     try:
-        # Run synchronous ccxt code in a thread to avoid blocking loop
         def fetch_from_exchange():
             exchange = ccxt.binance({'enableRateLimit': True})
             tickers = exchange.fetch_tickers()
             
-            # Filter and sort
             valid_pairs = []
-            # Filter and sort
-            valid_pairs = []
-            
-            # Symbols to exclude (Stablecoins, Fiat pairs, Special tokens)
             EXCLUDED_PATTERNS = ['UP/', 'DOWN/', 'BEAR/', 'BULL/']
             EXCLUDED_EXACT = [
                 'USDC/USDT', 'FDUSD/USDT', 'TUSD/USDT', 'USDP/USDT', 'BUSD/USDT', 
@@ -1140,7 +1012,6 @@ async def get_top_symbols(limit: int = 10):
                 if not symbol.endswith('/USDT'):
                     continue
                     
-                # Check exclusions
                 if symbol in EXCLUDED_EXACT:
                     continue
                     
@@ -1156,16 +1027,13 @@ async def get_top_symbols(limit: int = 10):
                 if quote_vol:
                      valid_pairs.append((symbol, quote_vol))
             
-            # Sort by volume desc
             valid_pairs.sort(key=lambda x: x[1], reverse=True)
             
-            return [p[0] for p in valid_pairs[:50]] # Keep top 50 in cache
+            return [p[0] for p in valid_pairs[:50]]  # Keep top 50 in cache
 
-        # Execute in threadpool
         loop = asyncio.get_event_loop()
         top_symbols = await loop.run_in_executor(None, fetch_from_exchange)
         
-        # Update cache
         SYMBOLS_CACHE = {
             "data": top_symbols,
             "timestamp": now
@@ -1175,20 +1043,14 @@ async def get_top_symbols(limit: int = 10):
         
     except Exception as e:
         logger.error(f"Error fetching top symbols: {e}")
-        # Return fallback if cache empty, or old cache if available
         if SYMBOLS_CACHE["data"]:
              return {"symbols": SYMBOLS_CACHE["data"][:limit]}
         return {"symbols": ["BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT"]}
 
 
-# ---------------------------------------------------------------------------
-# OHLCV endpoint — fetches candlestick data for trade chart visualisation
-# ---------------------------------------------------------------------------
-
 from collections import OrderedDict
 from datetime import timezone
 
-# Simple LRU cache: max 30 entries, each key = "symbol|timeframe|start|end"
 _OHLCV_CACHE: OrderedDict = OrderedDict()
 _OHLCV_CACHE_MAX = 30
 
@@ -1212,7 +1074,6 @@ def _ohlcv_cache_set(key: str, value: list):
         _OHLCV_CACHE.popitem(last=False)
 
 
-# Map friendly timeframe strings to millisecond durations for window expansion
 _TF_MS: dict = {
     "1m": 60_000,
     "3m": 180_000,
@@ -1238,35 +1099,22 @@ async def get_ohlcv(
     start: str = "",
     end: str = "",
     context_bars: int = 25,
-    # ── Indicator knobs (0 = disabled) ──────────────────────────────────────
-    ema_period: int = 0,        # EMA overlay on price (e.g. 200)
-    ema_timeframe: str = "",    # Timeframe for EMA computation (defaults to main timeframe)
-    rsi_period: int = 0,        # RSI subplot (e.g. 14)
+    exchange_type: str = "future",
+    backtest_start: str = "",
+    backtest_end: str = "",
+    ema_period: int = 0,
+    ema_timeframe: str = "",
+    rsi_period: int = 0,
     rsi_overbought: float = 70,
     rsi_oversold: float = 30,
-    adx_period: int = 0,        # ADX subplot (e.g. 14)
+    adx_period: int = 0,
     adx_threshold: float = 25,
+    atr_period: int = 0,
 ):
     """
     Fetch OHLCV candlestick data + optional TA-Lib indicators.
-
-    Indicator params (pass 0 to skip):
-      ema_period       - EMA on price panel (trend filter line)
-      rsi_period       - RSI subplot
-      rsi_overbought   - upper reference line (default 70)
-      rsi_oversold     - lower reference line (default 30)
-      adx_period       - ADX subplot
-      adx_threshold    - reference line (default 25)
-
-    Returns:
-      {
-        candles: [{time, open, high, low, close, volume}],
-        indicators: {
-          ema?:  [{time, value}],
-          rsi?:  [{time, value}], rsi_ob, rsi_os,
-          adx?:  [{time, value}], adx_threshold
-        }
-      }
+    Indicator params (pass 0 to skip): ema_period, rsi_period, adx_period, atr_period.
+    Returns candles and indicators (ema, rsi, adx, atr) with values per bar.
     """
     try:
         def to_ms(iso_str: str) -> int:
@@ -1288,14 +1136,13 @@ async def get_ohlcv(
         else:
             until_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
 
-        # TA-Lib needs a warmup window so it has enough data for the first valid value.
-        # Fetch an extra 300 bars before the visible window for warmup, then trim.
         warmup_bars = 300
         fetch_since_ms = since_ms - bar_ms * warmup_bars
 
-        # Cache key includes indicator config so different param combos are cached separately
-        ind_key = f"ema{ema_period}_rsi{rsi_period}-{rsi_overbought}-{rsi_oversold}_adx{adx_period}-{adx_threshold}"
-        cache_key = _ohlcv_cache_key(symbol, timeframe, since_ms, until_ms) + "|" + ind_key
+        ind_key = f"ema{ema_period}_rsi{rsi_period}-{rsi_overbought}-{rsi_oversold}_adx{adx_period}-{adx_threshold}_atr{atr_period}"
+        cache_key = _ohlcv_cache_key(symbol, timeframe, since_ms, until_ms) + f"|{exchange_type}|" + ind_key
+        if backtest_start and backtest_end:
+            cache_key += f"|bt_{backtest_start}_{backtest_end}"
 
         cached = _ohlcv_cache_get(cache_key)
         if cached is not None:
@@ -1307,23 +1154,51 @@ async def get_ohlcv(
         def fetch_and_compute():
             import numpy as np
 
-            # ── 1. Fetch raw OHLCV ──────────────────────────────────────────
-            exchange = ccxt.binance({"enableRateLimit": True})
-            raw = exchange.fetch_ohlcv(symbol, timeframe, since=fetch_since_ms, limit=min(num_bars, 1500))
+            use_loader = bool(backtest_start and backtest_end)
+            if use_loader:
+                try:
+                    loader = DataLoader(exchange_name="binance", exchange_type=exchange_type)
+                    df_full = loader.get_data(symbol, timeframe, backtest_start[:10], backtest_end[:10])
+                    if df_full is None or df_full.empty:
+                        use_loader = False
+                    else:
+                        since_dt = datetime.fromtimestamp(since_ms / 1000, tz=timezone.utc)
+                        until_dt = datetime.fromtimestamp(until_ms / 1000, tz=timezone.utc)
+                        warmup_dt = datetime.fromtimestamp((since_ms - bar_ms * warmup_bars) / 1000, tz=timezone.utc)
+                        df = df_full[(df_full.index >= warmup_dt) & (df_full.index <= until_dt)]
+                        if df.empty:
+                            return {"candles": [], "indicators": {}}
+                        timestamps = [int(ts.timestamp() * 1000) for ts in df.index]
+                        opens   = df["open"].values.astype(float)
+                        highs   = df["high"].values.astype(float)
+                        lows    = df["low"].values.astype(float)
+                        closes  = df["close"].values.astype(float)
+                        volumes = df["volume"].values.astype(float)
+                        exchange = None
+                        fetch_symbol = symbol
+                except Exception as e:
+                    logger.warning(f"DataLoader fallback failed ({e}), using exchange fetch")
+                    use_loader = False
+            if not use_loader:
+                if exchange_type == "future":
+                    exchange = ccxt.binanceusdm({"enableRateLimit": True})
+                    exchange.load_markets()
+                    fetch_symbol = symbol if symbol in exchange.markets else f"{symbol}:USDT"
+                else:
+                    exchange = ccxt.binance({"enableRateLimit": True})
+                    fetch_symbol = symbol
+                raw = exchange.fetch_ohlcv(fetch_symbol, timeframe, since=fetch_since_ms, limit=min(num_bars, 1500))
+                if not raw:
+                    return {"candles": [], "indicators": {}}
+                timestamps = [bar[0] for bar in raw]
+                opens   = np.array([bar[1] for bar in raw], dtype=float)
+                highs   = np.array([bar[2] for bar in raw], dtype=float)
+                lows    = np.array([bar[3] for bar in raw], dtype=float)
+                closes  = np.array([bar[4] for bar in raw], dtype=float)
+                volumes = np.array([bar[5] for bar in raw], dtype=float)
 
-            if not raw:
-                return {"candles": [], "indicators": {}}
-
-            timestamps = [bar[0] for bar in raw]
-            opens      = np.array([bar[1] for bar in raw], dtype=float)
-            highs      = np.array([bar[2] for bar in raw], dtype=float)
-            lows       = np.array([bar[3] for bar in raw], dtype=float)
-            closes     = np.array([bar[4] for bar in raw], dtype=float)
-            volumes    = np.array([bar[5] for bar in raw], dtype=float)
-
-            # ── 2. Compute indicators (full array, then trim) ───────────────
             indicators_raw: dict = {}
-            indicators_out: dict = {}   # ← must be defined before HTF EMA block writes into it
+            indicators_out: dict = {}
 
             try:
                 import talib  # TA-Lib is installed in deps/requirements.txt
@@ -1337,24 +1212,33 @@ async def get_ohlcv(
                     logger.warning("TA-Lib not available — indicators skipped")
 
             if has_talib:
-                # ── EMA: optionally on a different (higher) timeframe ─────────
                 if ema_period > 0:
                     effective_ema_tf = ema_timeframe if ema_timeframe else timeframe
                     if effective_ema_tf != timeframe:
-                        # Fetch HTF OHLCV for EMA — needs its own warmup window
                         htf_bar_ms    = _TF_MS.get(effective_ema_tf, bar_ms)
                         htf_fetch_ms  = since_ms - htf_bar_ms * (ema_period + 100)
                         htf_limit     = max(1, int((until_ms - htf_fetch_ms) / htf_bar_ms)) + 5
-                        raw_htf = exchange.fetch_ohlcv(
-                            symbol, effective_ema_tf,
-                            since=htf_fetch_ms,
-                            limit=min(htf_limit, 1000)
-                        )
-                        htf_closes    = np.array([b[4] for b in raw_htf], dtype=float)
-                        htf_timestamps = [b[0] for b in raw_htf]
-                        htf_ema_arr   = talib.EMA(htf_closes, timeperiod=ema_period)
+                        if use_loader and backtest_start and backtest_end:
+                            df_htf = loader.get_data(symbol, effective_ema_tf, backtest_start[:10], backtest_end[:10])
+                            if df_htf is not None and not df_htf.empty:
+                                htf_fetch_dt = datetime.fromtimestamp(htf_fetch_ms / 1000, tz=timezone.utc)
+                                until_dt = datetime.fromtimestamp(until_ms / 1000, tz=timezone.utc)
+                                df_htf = df_htf[(df_htf.index >= htf_fetch_dt) & (df_htf.index <= until_dt)]
+                                htf_closes = df_htf["close"].values.astype(float)
+                                htf_timestamps = [int(ts.timestamp() * 1000) for ts in df_htf.index]
+                            else:
+                                htf_closes = np.array([])
+                                htf_timestamps = []
+                        else:
+                            raw_htf = exchange.fetch_ohlcv(
+                                fetch_symbol, effective_ema_tf,
+                                since=htf_fetch_ms,
+                                limit=min(htf_limit, 1000)
+                            )
+                            htf_closes    = np.array([b[4] for b in raw_htf], dtype=float)
+                            htf_timestamps = [b[0] for b in raw_htf]
+                        htf_ema_arr   = talib.EMA(htf_closes, timeperiod=ema_period) if len(htf_closes) > 0 else np.array([])
 
-                        # Build EMA series for the visible window (HTF timestamps)
                         ema_series: list = []
                         for j, ts_ms_htf in enumerate(htf_timestamps):
                             if ts_ms_htf < since_ms or ts_ms_htf > until_ms:
@@ -1371,7 +1255,6 @@ async def get_ohlcv(
                             "timeframe": effective_ema_tf,
                         }
                     else:
-                        # Same timeframe — compute EMA on the main LTF closes array
                         indicators_raw["ema"] = talib.EMA(closes, timeperiod=ema_period)
 
                 if rsi_period > 0:
@@ -1380,7 +1263,9 @@ async def get_ohlcv(
                 if adx_period > 0:
                     indicators_raw["adx"] = talib.ADX(highs, lows, closes, timeperiod=adx_period)
 
-            # ── 3. Build visible candles (trim warmup) ──────────────────────
+                if atr_period > 0:
+                    indicators_raw["atr"] = talib.ATR(highs, lows, closes, timeperiod=atr_period)
+
             candles = []
             indicator_series: dict = {k: [] for k in indicators_raw}
 
@@ -1389,7 +1274,6 @@ async def get_ohlcv(
                     break
                 dt_iso = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).isoformat()
 
-                # Only include candles in the visible window (after warmup)
                 if ts_ms >= since_ms:
                     candles.append({
                         "time":   dt_iso,
@@ -1400,14 +1284,11 @@ async def get_ohlcv(
                         "volume": volumes[i],
                     })
 
-                    # Include indicator values for visible range (LTF indicators only)
                     for key, arr in indicators_raw.items():
                         val = float(arr[i]) if (i < len(arr) and not np.isnan(arr[i])) else None
                         if val is not None:
                             indicator_series[key].append({"time": dt_iso, "value": val})
 
-            # ── 4. Build response ────────────────────────────────────────────
-            # EMA may already be in indicators_out (HTF case); only add LTF EMA if not yet set
             if "ema" not in indicators_out and "ema" in indicator_series and indicator_series["ema"]:
                 indicators_out["ema"] = {
                     "values":    indicator_series["ema"],
@@ -1428,6 +1309,12 @@ async def get_ohlcv(
                     "values":    indicator_series["adx"],
                     "period":    adx_period,
                     "threshold": adx_threshold,
+                }
+
+            if "atr" in indicator_series and indicator_series["atr"]:
+                indicators_out["atr"] = {
+                    "values": indicator_series["atr"],
+                    "period": atr_period,
                 }
 
             return {"candles": candles, "indicators": indicators_out}

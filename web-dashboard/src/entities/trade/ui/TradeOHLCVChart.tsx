@@ -1,24 +1,8 @@
-/**
- * TradeOHLCVChart
- *
- * Renders a Plotly candlestick chart with optional indicator subplots.
- * Indicators are fetched from the backend (/api/ohlcv?ema_period=...&rsi_period=...&adx_period=...)
- * and computed there using TA-Lib — identical to what the strategy used during backtesting.
- *
- * Only indicators that are **enabled** in strategyConfig are displayed:
- *   use_trend_filter → EMA overlay on price
- *   use_rsi_filter   → RSI subplot
- *   use_adx_filter   → ADX subplot
- *
- * Trade markers / SL / TP / trailing stop are shown on the price panel.
- */
 import React, { useEffect, useState, useMemo } from 'react';
 import Plot from 'react-plotly.js';
 import { Box, CircularProgress, Typography } from '@mui/material';
 import { API_BASE } from '../../../shared/api/config';
 import type { OHLCVCandle } from '../../../shared/model/types';
-
-// ─── Types ────────────────────────────────────────────────────────────────────
 
 interface IndicatorSeries {
     values: Array<{ time: string; value: number }>;
@@ -41,31 +25,21 @@ interface OHLCVResponse {
 export interface TradeOHLCVChartProps {
     trade: any;
     symbol: string;
-    /** LTF timeframe for candles + RSI/ADX */
     timeframe: string;
-    /** HTF timeframe for EMA (e.g. '4h' when candles are '1h'); defaults to timeframe */
     emaTimeframe?: string;
-    /** strategy_config from backtest results — controls which indicators to show */
     strategyConfig?: Record<string, any>;
+    exchangeType?: string;
+    backtestStart?: string;
+    backtestEnd?: string;
     height?: number;
 }
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
 function toIso(str: string | null | undefined): string {
     if (!str) return '';
-    // Normalize space separator and strip microseconds
     const s = str.replace(' ', 'T').split('.')[0];
-    // If no timezone offset present, treat as UTC by appending 'Z'.
-    // Backtrader/server timestamps are stored in UTC without tz-info.
-    // Without this, JS Date() parses naive strings as LOCAL time,
-    // causing a 2-bar (2-hour) offset on UTC+2 systems.
     if (!s.endsWith('Z') && !s.includes('+')) return s + 'Z';
     return s;
 }
-
-
-// ─── Component ────────────────────────────────────────────────────────────────
 
 const TradeOHLCVChart: React.FC<TradeOHLCVChartProps> = ({
     trade,
@@ -73,14 +47,15 @@ const TradeOHLCVChart: React.FC<TradeOHLCVChartProps> = ({
     timeframe,
     emaTimeframe,
     strategyConfig = {},
+    exchangeType = 'future',
+    backtestStart,
+    backtestEnd,
     height = 500,
 }) => {
     const [data, setData] = useState<OHLCVResponse | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
 
-    // ── Derive indicator params from strategy config ─────────────────────────
-    // For old backtests (no configuration), show all indicators with defaults
     const indParams = useMemo(() => {
         const cfg = strategyConfig;
         const hasConfig = cfg && Object.keys(cfg).length > 0;
@@ -95,7 +70,6 @@ const TradeOHLCVChart: React.FC<TradeOHLCVChartProps> = ({
         };
     }, [strategyConfig]);
 
-    // ── Fetch OHLCV + indicators ─────────────────────────────────────────────
     useEffect(() => {
         if (!trade) return;
 
@@ -110,9 +84,11 @@ const TradeOHLCVChart: React.FC<TradeOHLCVChartProps> = ({
             symbol,
             timeframe,
             context_bars: '25',
+            exchange_type: exchangeType,
+            ...(backtestStart ? { backtest_start: backtestStart } : {}),
+            ...(backtestEnd ? { backtest_end: backtestEnd } : {}),
             ...(entryIso ? { start: entryIso } : {}),
             ...(exitIso ? { end: exitIso } : {}),
-            // Indicator params (0 = disabled on backend)
             ema_period: String(indParams.emaPeriod),
             ...(emaTimeframe ? { ema_timeframe: emaTimeframe } : {}),
             rsi_period: String(indParams.rsiPeriod),
@@ -131,9 +107,8 @@ const TradeOHLCVChart: React.FC<TradeOHLCVChartProps> = ({
             .catch(err => { if (!cancelled) { setError(err.message ?? 'Failed to load'); setLoading(false); } });
 
         return () => { cancelled = true; };
-    }, [trade, symbol, timeframe, emaTimeframe, indParams]);
+    }, [trade, symbol, timeframe, emaTimeframe, exchangeType, backtestStart, backtestEnd, indParams]);
 
-    // ── Build Plotly figure ──────────────────────────────────────────────────
     const figure = useMemo(() => {
         if (!data?.candles.length || !trade) return null;
 
@@ -147,21 +122,16 @@ const TradeOHLCVChart: React.FC<TradeOHLCVChartProps> = ({
         const hasRsi = Boolean(indicators.rsi?.values?.length);
         const hasAdx = Boolean(indicators.adx?.values?.length);
 
-        // Layout: price panel is taller; RSI + ADX each get a small panel below
         const subplotCount = 1 + (hasRsi ? 1 : 0) + (hasAdx ? 1 : 0);
         const priceRatio = subplotCount === 1 ? 1 : subplotCount === 2 ? 0.65 : 0.55;
         const smallRatio = subplotCount === 3 ? 0.2 : 0.3;
 
-        // Build row heights
         const rowHeights: number[] = [priceRatio];
         if (hasRsi) rowHeights.push(smallRatio);
         if (hasAdx) rowHeights.push(smallRatio);
 
         const totalChartHeight = height;
 
-        // ── Traces ────────────────────────────────────────────────────────
-
-        // 1. Candlestick (row 1)
         const traces: any[] = [
             {
                 type: 'candlestick',
@@ -174,7 +144,6 @@ const TradeOHLCVChart: React.FC<TradeOHLCVChartProps> = ({
             },
         ];
 
-        // 2. EMA overlay on price panel
         if (indicators.ema?.values?.length) {
             const emaData = indicators.ema;
             const emaLabel = `EMA ${emaData.period}${emaData.timeframe ? ` (${emaData.timeframe})` : ''}`;
@@ -210,7 +179,6 @@ const TradeOHLCVChart: React.FC<TradeOHLCVChartProps> = ({
             }
         );
 
-        // 4. Trailing SL step-line
         if (trade.sl_history?.length) {
             const slTimes: string[] = [];
             const slPrices: number[] = [];
@@ -234,7 +202,6 @@ const TradeOHLCVChart: React.FC<TradeOHLCVChartProps> = ({
             });
         }
 
-        // 5. RSI
         let rsiAxisIdx = 2;
         if (hasRsi) {
             const rsiData = indicators.rsi!;
@@ -250,10 +217,9 @@ const TradeOHLCVChart: React.FC<TradeOHLCVChartProps> = ({
                     hovertemplate: `RSI: %{y:.1f}<extra></extra>`,
                 }
             );
-            if (hasAdx) rsiAxisIdx = 2; // RSI is always y2 if present
+            if (hasAdx) rsiAxisIdx = 2;
         }
 
-        // 6. ADX
         if (hasAdx) {
             const adxData = indicators.adx!;
             const adxAxisIdx = hasRsi ? 3 : 2;
@@ -269,7 +235,6 @@ const TradeOHLCVChart: React.FC<TradeOHLCVChartProps> = ({
             });
         }
 
-        // ── SL / TP shapes & annotations ──────────────────────────────────
         const xMin = times[0];
         const xMax = times[times.length - 1];
         const shapes: any[] = [];
@@ -284,7 +249,6 @@ const TradeOHLCVChart: React.FC<TradeOHLCVChartProps> = ({
             annotations.push({ x: xMax, y: trade.take_profit, xanchor: 'right', yanchor: 'bottom', xref: 'x', yref: 'y', text: `TP $${trade.take_profit.toFixed(2)}`, showarrow: false, font: { color: '#4caf50', size: 11 } });
         }
 
-        // RSI reference lines
         if (hasRsi) {
             const rsiData = indicators.rsi!;
             const rsiY = `y${rsiAxisIdx}`;
@@ -298,7 +262,6 @@ const TradeOHLCVChart: React.FC<TradeOHLCVChartProps> = ({
             );
         }
 
-        // ADX threshold line
         if (hasAdx) {
             const adxAxisIdx = hasRsi ? 3 : 2;
             const adxY = `y${adxAxisIdx}`;
@@ -310,10 +273,6 @@ const TradeOHLCVChart: React.FC<TradeOHLCVChartProps> = ({
             });
         }
 
-        // ── Shared helper: snap trade entry/exit to nearest indicator candle ─
-        // The trade timestamps may lack timezone info while OHLCV times are UTC.
-        // Using the snapped candle time for BOTH vertical lines and markers
-        // guarantees they always align perfectly.
         const entryIsoTime = toIso(trade.entry_time);
         const exitIsoTime = toIso(trade.exit_time);
 
@@ -330,22 +289,37 @@ const TradeOHLCVChart: React.FC<TradeOHLCVChartProps> = ({
                 return best;
             };
 
-        // Snap entry/exit to nearest RSI candle (empty array if RSI disabled)
+        const entryIndicators = trade?.entry_context?.indicators_at_entry ?? {};
+        const exitIndicators = trade?.exit_context?.indicators_at_exit ?? {};
+        const rsiAtEntryFromNarrative = entryIndicators.RSI != null ? Number(entryIndicators.RSI) : null;
+        const adxAtEntryFromNarrative = entryIndicators.ADX != null ? Number(entryIndicators.ADX) : null;
+        const rsiAtExitFromNarrative = exitIndicators.RSI != null ? Number(exitIndicators.RSI) : null;
+        const adxAtExitFromNarrative = exitIndicators.ADX != null ? Number(exitIndicators.ADX) : null;
+
         const rsiNearestFn = hasRsi
             ? makeNearestFinder(indicators.rsi!.values)
             : () => null;
-        const rsiEntry = rsiNearestFn(entryIsoTime);
-        const rsiExit = rsiNearestFn(exitIsoTime);
+        let rsiEntry = rsiNearestFn(entryIsoTime);
+        let rsiExit = rsiNearestFn(exitIsoTime);
+        if (rsiEntry && rsiAtEntryFromNarrative != null) {
+            rsiEntry = { ...rsiEntry, value: rsiAtEntryFromNarrative };
+        }
+        if (rsiExit && rsiAtExitFromNarrative != null) {
+            rsiExit = { ...rsiExit, value: rsiAtExitFromNarrative };
+        }
 
-        // Snap entry/exit to nearest ADX candle
         const adxNearestFn = hasAdx
             ? makeNearestFinder(indicators.adx!.values)
             : () => null;
-        const adxEntry = adxNearestFn(entryIsoTime);
-        const adxExit = adxNearestFn(exitIsoTime);
+        let adxEntry = adxNearestFn(entryIsoTime);
+        let adxExit = adxNearestFn(exitIsoTime);
+        if (adxEntry && adxAtEntryFromNarrative != null) {
+            adxEntry = { ...adxEntry, value: adxAtEntryFromNarrative };
+        }
+        if (adxExit && adxAtExitFromNarrative != null) {
+            adxExit = { ...adxExit, value: adxAtExitFromNarrative };
+        }
 
-        // ── Entry / Exit vertical lines on indicator subpanels ────────────
-        // Using snapped times so lines and dots are always co-located.
         const subpanelAxes: Array<{ yAxis: string; snappedEntry: string | null; snappedExit: string | null }> = [];
         if (hasRsi) subpanelAxes.push({ yAxis: `y${rsiAxisIdx}`, snappedEntry: rsiEntry?.time ?? null, snappedExit: rsiExit?.time ?? null });
         if (hasAdx) subpanelAxes.push({ yAxis: `y${hasRsi ? 3 : 2}`, snappedEntry: adxEntry?.time ?? null, snappedExit: adxExit?.time ?? null });
@@ -369,7 +343,6 @@ const TradeOHLCVChart: React.FC<TradeOHLCVChartProps> = ({
             }
         });
 
-        // ── RSI marker dots at entry/exit ─────────────────────────────────
         if (hasRsi && (rsiEntry || rsiExit)) {
             const rsiAxis = `y${rsiAxisIdx}`;
             const xs = [rsiEntry?.time, rsiExit?.time].filter(Boolean) as string[];
@@ -391,7 +364,6 @@ const TradeOHLCVChart: React.FC<TradeOHLCVChartProps> = ({
             } as any);
         }
 
-        // ── ADX marker dots at entry/exit ─────────────────────────────────
         if (hasAdx && (adxEntry || adxExit)) {
             const adxAxisIdx = hasRsi ? 3 : 2;
             const adxAxis = `y${adxAxisIdx}`;
@@ -414,12 +386,8 @@ const TradeOHLCVChart: React.FC<TradeOHLCVChartProps> = ({
             } as any);
         }
 
-        // ── Layout ────────────────────────────────────────────────────────
-
-        // Build yaxis definitions dynamically
         const commonAxisStyle = { gridcolor: '#2a2a2a', linecolor: '#333', showgrid: true, zeroline: false };
 
-        // Calculate subplot domains bottom-up
         const totalRatio = rowHeights.reduce((s, v) => s + v, 0);
         const gap = 0.02;
         const domains: Array<[number, number]> = [];
@@ -429,7 +397,6 @@ const TradeOHLCVChart: React.FC<TradeOHLCVChartProps> = ({
             domains.unshift([cursor, cursor + h - gap]);
             cursor += h;
         }
-        // domains[0] = price (topmost), domains[1] = rsi if present, domains[2] = adx if present
 
         const layoutYAxes: Record<string, any> = {
             yaxis: {
@@ -473,7 +440,7 @@ const TradeOHLCVChart: React.FC<TradeOHLCVChartProps> = ({
                 gridcolor: '#2a2a2a',
                 linecolor: '#333',
                 showgrid: true,
-                anchor: 'free',    // span all rows
+                anchor: 'free',
                 overlaying: undefined,
             },
             ...layoutYAxes,
@@ -498,7 +465,6 @@ const TradeOHLCVChart: React.FC<TradeOHLCVChartProps> = ({
         return { traces, layout };
     }, [data, trade, symbol, height]);
 
-    // ── Render ───────────────────────────────────────────────────────────────
     if (loading) {
         return (
             <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height }}>

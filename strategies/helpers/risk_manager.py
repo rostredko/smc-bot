@@ -32,7 +32,7 @@ class RiskManager:
         Returns:
             float: Position size in units (e.g. BTC).
         """
-        if entry_price <= 0:
+        if entry_price <= 0 or account_value is None or account_value <= 0:
             return 0.0
 
         if not dynamic_sizing:
