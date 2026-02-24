@@ -77,6 +77,13 @@ const TradeOHLCVChart: React.FC<TradeOHLCVChartProps> = ({
         setLoading(true);
         setError(null);
 
+        // Prefer chart_data from backtest result (single source of truth — same DataLoader as strategy)
+        if (trade.chart_data?.candles?.length) {
+            setData(trade.chart_data as OHLCVResponse);
+            setLoading(false);
+            return;
+        }
+
         const entryIso = toIso(trade.entry_time);
         const exitIso = toIso(trade.exit_time);
 
@@ -301,9 +308,8 @@ const TradeOHLCVChart: React.FC<TradeOHLCVChartProps> = ({
             : () => null;
         let rsiEntry = rsiNearestFn(entryIsoTime);
         let rsiExit = rsiNearestFn(exitIsoTime);
-        if (rsiEntry && rsiAtEntryFromNarrative != null) {
-            rsiEntry = { ...rsiEntry, value: rsiAtEntryFromNarrative };
-        }
+        // Marker at execution bar (entry_time) — use chart value so marker sits on the line.
+        // Tooltip shows both: signal (decision bar) and execution bar values.
         if (rsiExit && rsiAtExitFromNarrative != null) {
             rsiExit = { ...rsiExit, value: rsiAtExitFromNarrative };
         }
@@ -313,9 +319,6 @@ const TradeOHLCVChart: React.FC<TradeOHLCVChartProps> = ({
             : () => null;
         let adxEntry = adxNearestFn(entryIsoTime);
         let adxExit = adxNearestFn(exitIsoTime);
-        if (adxEntry && adxAtEntryFromNarrative != null) {
-            adxEntry = { ...adxEntry, value: adxAtEntryFromNarrative };
-        }
         if (adxExit && adxAtExitFromNarrative != null) {
             adxExit = { ...adxExit, value: adxAtExitFromNarrative };
         }
@@ -346,7 +349,19 @@ const TradeOHLCVChart: React.FC<TradeOHLCVChartProps> = ({
         if (hasRsi && (rsiEntry || rsiExit)) {
             const rsiAxis = `y${rsiAxisIdx}`;
             const xs = [rsiEntry?.time, rsiExit?.time].filter(Boolean) as string[];
-            const ys = [rsiEntry?.value, rsiExit?.value].filter(v => v !== undefined) as number[];
+            const ys = [rsiEntry?.value, rsiExit?.value].filter((v): v is number => v !== undefined);
+            const rsiCustomData = [
+                ...(rsiEntry ? [[rsiAtEntryFromNarrative ?? 0]] : []),
+                ...(rsiExit ? [[0]] : []),
+            ];
+            const rsiHoverTemplates = [
+                ...(rsiEntry ? [
+                    rsiAtEntryFromNarrative != null
+                        ? 'RSI at signal (decision bar): %{customdata[0]:.1f}<br>RSI at execution bar: %{y:.1f}<extra></extra>'
+                        : 'RSI at execution bar: %{y:.1f}<extra></extra>',
+                ] : []),
+                ...(rsiExit ? ['RSI at exit: %{y:.1f}<extra></extra>'] : []),
+            ];
             traces.push({
                 type: 'scatter', xaxis: 'x', yaxis: rsiAxis,
                 x: xs, y: ys,
@@ -360,7 +375,8 @@ const TradeOHLCVChart: React.FC<TradeOHLCVChartProps> = ({
                     symbol: ['triangle-up', 'triangle-down'],
                     line: { color: '#fff', width: 1.5 },
                 },
-                hovertemplate: 'RSI @ signal: %{y:.1f}<extra></extra>',
+                customdata: rsiCustomData.length ? rsiCustomData : undefined,
+                hovertemplate: rsiHoverTemplates.length > 1 ? rsiHoverTemplates : rsiHoverTemplates[0],
             } as any);
         }
 
@@ -368,7 +384,19 @@ const TradeOHLCVChart: React.FC<TradeOHLCVChartProps> = ({
             const adxAxisIdx = hasRsi ? 3 : 2;
             const adxAxis = `y${adxAxisIdx}`;
             const xs = [adxEntry?.time, adxExit?.time].filter(Boolean) as string[];
-            const ys = [adxEntry?.value, adxExit?.value].filter(v => v !== undefined) as number[];
+            const ys = [adxEntry?.value, adxExit?.value].filter((v): v is number => v !== undefined);
+            const adxCustomData = [
+                ...(adxEntry ? [[adxAtEntryFromNarrative ?? 0]] : []),
+                ...(adxExit ? [[0]] : []),
+            ];
+            const adxHoverTemplates = [
+                ...(adxEntry ? [
+                    adxAtEntryFromNarrative != null
+                        ? 'ADX at signal (decision bar): %{customdata[0]:.1f}<br>ADX at execution bar: %{y:.1f}<extra></extra>'
+                        : 'ADX at execution bar: %{y:.1f}<extra></extra>',
+                ] : []),
+                ...(adxExit ? ['ADX at exit: %{y:.1f}<extra></extra>'] : []),
+            ];
             traces.push({
                 type: 'scatter', xaxis: 'x', yaxis: adxAxis,
                 x: xs, y: ys,
@@ -382,7 +410,8 @@ const TradeOHLCVChart: React.FC<TradeOHLCVChartProps> = ({
                     symbol: ['triangle-up', 'triangle-down'],
                     line: { color: '#fff', width: 1.5 },
                 },
-                hovertemplate: 'ADX @ signal: %{y:.1f}<extra></extra>',
+                customdata: adxCustomData.length ? adxCustomData : undefined,
+                hovertemplate: adxHoverTemplates.length > 1 ? adxHoverTemplates : adxHoverTemplates[0],
             } as any);
         }
 

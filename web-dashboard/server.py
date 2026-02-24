@@ -812,10 +812,17 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
                         'tp_calculation': trade.get('tp_calculation', None), # Add TP Calc
                         'sl_history': trade.get('sl_history', []), # Add SL History
                         'entry_context': trade.get('entry_context', None),  # Why entry + indicators at entry
+                        'execution_bar_indicators': trade.get('execution_bar_indicators', None),  # RSI/ADX at bar N+1
                         'exit_context': trade.get('exit_context', None),    # Why exit + indicators at exit
                         'metadata': trade.get('metadata', {})
                     }
                     trades_data.append(trade_dict)
+
+                # Enrich trades with chart_data from SAME DataLoader as backtest (single source of truth)
+                try:
+                    _build_chart_data_for_trades(trades_data, engine_config, context_bars=25)
+                except Exception as chart_err:
+                    logger.warning(f"chart_data build failed: {chart_err}")
                 
                 equity_data = []
                 total_points = len(engine.equity_curve)
@@ -1017,6 +1024,9 @@ from datetime import timezone
 _OHLCV_CACHE: OrderedDict = OrderedDict()
 _OHLCV_CACHE_MAX = 30
 
+# Clear cache on startup so backtest chart always gets fresh DataLoader data
+_OHLCV_CACHE.clear()
+
 
 def _ohlcv_cache_key(symbol: str, timeframe: str, since_ms: int, until_ms: int) -> str:
     return f"{symbol}|{timeframe}|{since_ms}|{until_ms}"
@@ -1053,6 +1063,162 @@ _TF_MS: dict = {
     "3d": 259_200_000,
     "1w": 604_800_000,
 }
+
+
+def _build_chart_data_for_trades(
+    trades: List[Dict],
+    config: Dict[str, Any],
+    context_bars: int = 25,
+) -> None:
+    """
+    Enrich each trade with chart_data (candles + indicators) from the SAME DataLoader
+    used by the backtest. Single source of truth — chart shows exactly what the strategy saw.
+    Modifies trades in place.
+    """
+    if not trades:
+        return
+    import numpy as np
+    try:
+        import talib
+    except ImportError:
+        try:
+            import TA_Lib as talib
+        except ImportError:
+            logger.warning("TA-Lib not available — chart_data skipped")
+            return
+
+    symbol = config.get("symbol", "BTC/USDT")
+    timeframes = config.get("timeframes", ["1h"])
+    start_date = config.get("start_date", "")[:10]
+    end_date = config.get("end_date", "")[:10]
+    strat_cfg = config.get("strategy_config", {})
+    exchange_type = config.get("exchange_type", "future")
+
+    chart_tf = min(timeframes, key=lambda t: _TF_MS.get(t, 3600000)) if timeframes else "1h"
+    ema_tf = max(timeframes, key=lambda t: _TF_MS.get(t, 0)) if len(timeframes) > 1 else chart_tf
+    ema_period = 200 if strat_cfg.get("use_trend_filter", True) else 0
+    rsi_period = strat_cfg.get("rsi_period", 14) or 14
+    adx_period = strat_cfg.get("adx_period", 14) or 14
+    atr_period = strat_cfg.get("atr_period", 14) or 14
+
+    if not start_date or not end_date:
+        return
+
+    loader = DataLoader(exchange_name="binance", exchange_type=exchange_type)
+    df_full = loader.get_data(symbol, chart_tf, start_date, end_date)
+    if df_full is None or df_full.empty:
+        return
+
+    bar_ms = _TF_MS.get(chart_tf, 3_600_000)
+    timestamps = [int(ts.timestamp() * 1000) for ts in df_full.index]
+    opens = df_full["open"].values.astype(float)
+    highs = df_full["high"].values.astype(float)
+    lows = df_full["low"].values.astype(float)
+    closes = df_full["close"].values.astype(float)
+    volumes = df_full["volume"].values.astype(float)
+
+    indicators_raw = {}
+    if ema_period > 0:
+        if ema_tf != chart_tf:
+            df_htf = loader.get_data(symbol, ema_tf, start_date, end_date)
+            if df_htf is not None and not df_htf.empty:
+                htf_closes = df_htf["close"].values.astype(float)
+                htf_ema = talib.EMA(htf_closes, timeperiod=ema_period)
+                htf_ts = [int(ts.timestamp() * 1000) for ts in df_htf.index]
+                indicators_raw["_ema_htf"] = (htf_ts, htf_ema)
+        else:
+            indicators_raw["ema"] = talib.EMA(closes, timeperiod=ema_period)
+    if rsi_period > 0:
+        indicators_raw["rsi"] = talib.RSI(closes, timeperiod=rsi_period)
+    if adx_period > 0:
+        indicators_raw["adx"] = talib.ADX(highs, lows, closes, timeperiod=adx_period)
+    if atr_period > 0:
+        indicators_raw["atr"] = talib.ATR(highs, lows, closes, timeperiod=atr_period)
+
+    def to_ms(iso: str) -> int:
+        dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return int(dt.timestamp() * 1000)
+
+    pad_ms = bar_ms * max(1, context_bars)
+
+    for trade in trades:
+        entry_iso = trade.get("entry_time") or ""
+        exit_iso = trade.get("exit_time") or ""
+        if not entry_iso or not exit_iso:
+            continue
+        since_ms = to_ms(entry_iso) - pad_ms
+        until_ms = to_ms(exit_iso) + pad_ms
+
+        out_candles = []
+        out_indicators = {"ema": [], "rsi": [], "adx": [], "atr": []}
+
+        for i, ts_ms in enumerate(timestamps):
+            if ts_ms < since_ms:
+                continue
+            if ts_ms > until_ms:
+                break
+            dt_iso = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).isoformat()
+            out_candles.append({
+                "time": dt_iso,
+                "open": float(opens[i]),
+                "high": float(highs[i]),
+                "low": float(lows[i]),
+                "close": float(closes[i]),
+                "volume": float(volumes[i]),
+            })
+            for key in ["rsi", "adx", "atr"]:
+                if key in indicators_raw:
+                    arr = indicators_raw[key]
+                    val = float(arr[i]) if i < len(arr) and not np.isnan(arr[i]) else None
+                    if val is not None:
+                        out_indicators[key].append({"time": dt_iso, "value": val})
+            if "ema" in indicators_raw:
+                arr = indicators_raw["ema"]
+                val = float(arr[i]) if i < len(arr) and not np.isnan(arr[i]) else None
+                if val is not None:
+                    out_indicators["ema"].append({"time": dt_iso, "value": val})
+            elif "_ema_htf" in indicators_raw:
+                htf_ts, htf_ema = indicators_raw["_ema_htf"]
+                candidates = [idx for idx in range(len(htf_ts)) if htf_ts[idx] <= ts_ms]
+                j = candidates[-1] if candidates else 0
+                if j < len(htf_ema) and not np.isnan(htf_ema[j]):
+                    out_indicators["ema"].append({"time": dt_iso, "value": float(htf_ema[j])})
+
+        indicators_out = {}
+        if out_indicators["ema"]:
+            indicators_out["ema"] = {"values": out_indicators["ema"], "period": ema_period, "timeframe": ema_tf}
+        if out_indicators["rsi"]:
+            indicators_out["rsi"] = {"values": out_indicators["rsi"], "period": rsi_period, "overbought": 70, "oversold": 30}
+        if out_indicators["adx"]:
+            indicators_out["adx"] = {"values": out_indicators["adx"], "period": adx_period, "threshold": 25}
+        if out_indicators["atr"]:
+            indicators_out["atr"] = {"values": out_indicators["atr"], "period": atr_period}
+
+        trade["chart_data"] = {"candles": out_candles, "indicators": indicators_out}
+
+    logger.info(f"chart_data added to {len(trades)} trades (single source: DataLoader)")
+
+
+@app.post("/api/ohlcv/cache/clear")
+async def clear_ohlcv_cache(disk: bool = False):
+    """Clear OHLCV caches. disk=True also removes data_cache/*.csv (forces re-fetch from exchange)."""
+    _OHLCV_CACHE.clear()
+    logger.info("OHLCV in-memory cache cleared")
+    msg = "In-memory cache cleared"
+    if disk and os.path.isdir(DATA_DIR):
+        removed = 0
+        for f in os.listdir(DATA_DIR):
+            if f.endswith(".csv"):
+                try:
+                    os.remove(os.path.join(DATA_DIR, f))
+                    removed += 1
+                except OSError:
+                    pass
+        logger.info(f"Removed {removed} files from data_cache")
+        msg += f"; {removed} data_cache files removed"
+    return {"message": msg}
 
 
 @app.get("/api/ohlcv")
@@ -1103,14 +1269,16 @@ async def get_ohlcv(
         fetch_since_ms = since_ms - bar_ms * warmup_bars
 
         ind_key = f"ema{ema_period}_rsi{rsi_period}-{rsi_overbought}-{rsi_oversold}_adx{adx_period}-{adx_threshold}_atr{atr_period}"
+        use_cache = not (backtest_start and backtest_end)  # Never cache backtest requests — always use fresh DataLoader data
         cache_key = _ohlcv_cache_key(symbol, timeframe, since_ms, until_ms) + f"|{exchange_type}|" + ind_key
         if backtest_start and backtest_end:
             cache_key += f"|bt_{backtest_start}_{backtest_end}"
 
-        cached = _ohlcv_cache_get(cache_key)
-        if cached is not None:
-            logger.debug(f"OHLCV+indicators cache hit: {cache_key}")
-            return cached
+        if use_cache:
+            cached = _ohlcv_cache_get(cache_key)
+            if cached is not None:
+                logger.debug(f"OHLCV+indicators cache hit: {cache_key}")
+                return cached
 
         num_bars = max(1, int((until_ms - fetch_since_ms) / bar_ms)) + 2
 
@@ -1125,18 +1293,13 @@ async def get_ohlcv(
                     if df_full is None or df_full.empty:
                         use_loader = False
                     else:
-                        since_dt = datetime.fromtimestamp(since_ms / 1000, tz=timezone.utc)
-                        until_dt = datetime.fromtimestamp(until_ms / 1000, tz=timezone.utc)
-                        warmup_dt = datetime.fromtimestamp((since_ms - bar_ms * warmup_bars) / 1000, tz=timezone.utc)
-                        df = df_full[(df_full.index >= warmup_dt) & (df_full.index <= until_dt)]
-                        if df.empty:
-                            return {"candles": [], "indicators": {}}
-                        timestamps = [int(ts.timestamp() * 1000) for ts in df.index]
-                        opens   = df["open"].values.astype(float)
-                        highs   = df["high"].values.astype(float)
-                        lows    = df["low"].values.astype(float)
-                        closes  = df["close"].values.astype(float)
-                        volumes = df["volume"].values.astype(float)
+                        logger.info(f"OHLCV using DataLoader (backtest range {backtest_start[:10]}–{backtest_end[:10]}): {len(df_full)} bars")
+                        timestamps = [int(ts.timestamp() * 1000) for ts in df_full.index]
+                        opens   = df_full["open"].values.astype(float)
+                        highs   = df_full["high"].values.astype(float)
+                        lows    = df_full["low"].values.astype(float)
+                        closes  = df_full["close"].values.astype(float)
+                        volumes = df_full["volume"].values.astype(float)
                         exchange = None
                         fetch_symbol = symbol
                 except Exception as e:
@@ -1185,9 +1348,6 @@ async def get_ohlcv(
                         if use_loader and backtest_start and backtest_end:
                             df_htf = loader.get_data(symbol, effective_ema_tf, backtest_start[:10], backtest_end[:10])
                             if df_htf is not None and not df_htf.empty:
-                                htf_fetch_dt = datetime.fromtimestamp(htf_fetch_ms / 1000, tz=timezone.utc)
-                                until_dt = datetime.fromtimestamp(until_ms / 1000, tz=timezone.utc)
-                                df_htf = df_htf[(df_htf.index >= htf_fetch_dt) & (df_htf.index <= until_dt)]
                                 htf_closes = df_htf["close"].values.astype(float)
                                 htf_timestamps = [int(ts.timestamp() * 1000) for ts in df_htf.index]
                             else:
@@ -1235,24 +1395,25 @@ async def get_ohlcv(
             indicator_series: dict = {k: [] for k in indicators_raw}
 
             for i, ts_ms in enumerate(timestamps):
+                if ts_ms < since_ms:
+                    continue
                 if ts_ms > until_ms:
                     break
                 dt_iso = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).isoformat()
 
-                if ts_ms >= since_ms:
-                    candles.append({
-                        "time":   dt_iso,
-                        "open":   opens[i],
-                        "high":   highs[i],
-                        "low":    lows[i],
-                        "close":  closes[i],
-                        "volume": volumes[i],
-                    })
+                candles.append({
+                    "time":   dt_iso,
+                    "open":   opens[i],
+                    "high":   highs[i],
+                    "low":    lows[i],
+                    "close":  closes[i],
+                    "volume": volumes[i],
+                })
 
-                    for key, arr in indicators_raw.items():
-                        val = float(arr[i]) if (i < len(arr) and not np.isnan(arr[i])) else None
-                        if val is not None:
-                            indicator_series[key].append({"time": dt_iso, "value": val})
+                for key, arr in indicators_raw.items():
+                    val = float(arr[i]) if (i < len(arr) and not np.isnan(arr[i])) else None
+                    if val is not None:
+                        indicator_series[key].append({"time": dt_iso, "value": val})
 
             if "ema" not in indicators_out and "ema" in indicator_series and indicator_series["ema"]:
                 indicators_out["ema"] = {
@@ -1288,7 +1449,8 @@ async def get_ohlcv(
         loop = asyncio.get_event_loop()
         result = await loop.run_in_executor(None, fetch_and_compute)
 
-        _ohlcv_cache_set(cache_key, result)
+        if use_cache:
+            _ohlcv_cache_set(cache_key, result)
         logger.info(
             f"OHLCV fetched: {symbol} {timeframe} → {len(result['candles'])} candles, "
             f"indicators: {list(result['indicators'].keys())}"

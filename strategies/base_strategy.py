@@ -108,6 +108,10 @@ class BaseStrategy(bt.Strategy):
             current_size = abs(trade.size)
             if self.pending_metadata:
                 self.pending_metadata['size'] = current_size
+                if hasattr(self, 'get_execution_bar_indicators') and callable(getattr(self, 'get_execution_bar_indicators')):
+                    exec_inds = self.get_execution_bar_indicators()
+                    if exec_inds:
+                        self.pending_metadata['execution_bar_indicators'] = exec_inds
                 self.trade_map[trade.ref] = self.pending_metadata
                 self.pending_metadata = None
             else:

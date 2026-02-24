@@ -442,6 +442,20 @@ const TradeDetailsModal: React.FC<TradeDetailsModalProps> = ({
 
                                     <Box sx={{ pt: 2, borderTop: '1px solid rgba(255,255,255,0.1)' }}>
                                         <Typography variant="caption" sx={{ color: '#fff', opacity: 0.7 }} gutterBottom display="block">ENTRY</Typography>
+                                        {(() => {
+                                            const sig = selectedTrade.entry_context?.indicators_at_entry ?? {};
+                                            const exec = selectedTrade.execution_bar_indicators ?? {};
+                                            const parts: string[] = [];
+                                            for (const k of ['RSI', 'ADX']) {
+                                                const s = sig[k], e = exec[k];
+                                                if (s != null && e != null) parts.push(`${k} ${s}→${e}`);
+                                            }
+                                            return parts.length > 0 ? (
+                                                <Typography variant="body2" sx={{ color: '#81c784', mb: 1, fontSize: '0.85rem' }}>
+                                                    Signal (N) → execution (N+1): {parts.join(', ')}
+                                                </Typography>
+                                            ) : null;
+                                        })()}
                                         <Typography variant="body2" color="#e0e0e0" sx={{ mb: 1 }}>
                                             {selectedTrade.reason || 'No specific reason recorded'}
                                         </Typography>

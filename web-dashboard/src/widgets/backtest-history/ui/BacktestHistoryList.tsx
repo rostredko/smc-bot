@@ -115,10 +115,11 @@ const BacktestHistoryList: React.FC = () => {
 
     const getConfigValue = useCallback((config: any, key: string) => {
         if (!config) return undefined;
-        if (key in config) return config[key];
-        if (key in (config.strategy_config || {})) return config.strategy_config[key];
-        if (key in (config.account || {})) return config.account[key];
-        if (key in (config.trading || {})) return config.trading[key];
+        const c = config.configuration ?? config;
+        if (key in c) return c[key];
+        if (key in (c.strategy_config || {})) return c.strategy_config[key];
+        if (key in (c.account || {})) return c.account[key];
+        if (key in (c.trading || {})) return c.trading[key];
         return undefined;
     }, []);
 

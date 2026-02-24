@@ -18,7 +18,7 @@ export const TOOLTIP_HINTS: Record<string, string> = {
 
     // Strategy Specific
     primary_timeframe: "The main timeframe for candle analysis (e.g. 4h, 1h)",
-    min_range_factor: "Minimum size of a candle relative to recent average",
+    min_range_factor: "Minimum candle range (high-low) relative to ATR. Candle range must be ≥ ATR × this factor. Filters flat markets.",
     use_trend_filter: "Enable/Disable trading only in direction of EMA trend",
     trend_ema_period: "Period for Exponential Moving Average to determine trend direction",
     risk_reward_ratio: "Target Profit/Risk ratio for trade exits",
@@ -27,9 +27,9 @@ export const TOOLTIP_HINTS: Record<string, string> = {
     rsi_period: "Lookback period for RSI indicator",
     rsi_overbought: "RSI level above which Longs are avoided (Too high)",
     rsi_oversold: "RSI level below which Shorts are avoided (Too low)",
-    min_wick_to_range: "Minimum wick size relative to candle body (for Pin Bars)",
+    min_wick_to_range: "Minimum wick size relative to candle range (for Pin Bars). Wick must be ≥ this % of high-low.",
 
-    max_body_to_range: "Maximum body size relative to total range (for Pin Bars)",
+    max_body_to_range: "Maximum body size relative to total range (for Pin Bars). Body must be ≤ this % of high-low.",
     use_adx_filter: "Enable/Disable ADX (Trend Strength) Filter",
     adx_period: "Lookback period for ADX indicator",
     adx_threshold: "Minimum ADX value required to enter a trade (Trend Strength)",

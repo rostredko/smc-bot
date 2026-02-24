@@ -58,8 +58,14 @@ class PriceActionStrategy(BaseStrategy):
         self.close = self.data_ltf.close
         self.last_entry_bar = -1
 
-
-
+    def get_execution_bar_indicators(self):
+        """Called at trade.justopened (bar N+1). Returns RSI/ADX at execution bar for narrative."""
+        ind = {}
+        if self.params.use_rsi_filter or self.params.use_rsi_momentum:
+            ind['RSI'] = round(self.rsi[0], 1)
+        if self.params.use_adx_filter:
+            ind['ADX'] = round(self.adx[0], 1)
+        return ind if ind else None
 
     def next(self):
         if self.order:
@@ -410,14 +416,41 @@ class PriceActionStrategy(BaseStrategy):
         )
 
     def _has_significant_range(self):
+        """Candle range must be at least min_range_factor * ATR (filters flat markets)."""
         rng = self.high[0] - self.low[0]
         return rng >= (self.atr[0] * self.params.min_range_factor)
 
+    def _meets_pinbar_wick_body_ratio(self, is_bullish: bool) -> bool:
+        """
+        Pin bar must have: long wick (>= min_wick_to_range of range) and small body (<= max_body_to_range).
+        Bullish: lower wick. Bearish: upper wick.
+        """
+        rng = self.high[0] - self.low[0]
+        if rng <= 0:
+            return False
+        body = abs(self.close[0] - self.open[0])
+        if body / rng > self.params.max_body_to_range:
+            return False
+        if is_bullish:
+            lower_wick = min(self.open[0], self.close[0]) - self.low[0]
+            return lower_wick / rng >= self.params.min_wick_to_range
+        else:
+            upper_wick = self.high[0] - max(self.open[0], self.close[0])
+            return upper_wick / rng >= self.params.min_wick_to_range
+
     def _is_bullish_pinbar(self):
-        return self.cdl_hammer[0] == 100 and self._has_significant_range()
+        return (
+            self.cdl_hammer[0] == 100
+            and self._has_significant_range()
+            and self._meets_pinbar_wick_body_ratio(is_bullish=True)
+        )
 
     def _is_bearish_pinbar(self):
-        return self.cdl_shootingstar[0] == -100 and self._has_significant_range()
+        return (
+            self.cdl_shootingstar[0] == -100
+            and self._has_significant_range()
+            and self._meets_pinbar_wick_body_ratio(is_bullish=False)
+        )
 
     def _is_bullish_engulfing(self):
         return self.cdl_engulfing[0] == 100 and self._has_significant_range()

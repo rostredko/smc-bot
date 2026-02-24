@@ -57,8 +57,17 @@ class TradeNarrator:
         # Build narrative parts
         lines = []
         
-        # Line 1: Entry context
-        lines.append(f"Entry: {direction} position opened on \"{reason}\" pattern at ${entry_price:,.2f}.")
+        # Line 1: Entry context (signal bar N → execution bar N+1)
+        entry_context = stored_info.get('entry_context', {})
+        exec_inds = stored_info.get('execution_bar_indicators', {})
+        sig_inds = entry_context.get('indicators_at_entry', {})
+        n_n1_parts = []
+        for k in ('RSI', 'ADX'):
+            s, e = sig_inds.get(k), exec_inds.get(k)
+            if s is not None and e is not None:
+                n_n1_parts.append(f"{k} {s}→{e}")
+        n_n1_str = f" Signal (N) → execution (N+1): {', '.join(n_n1_parts)}." if n_n1_parts else ""
+        lines.append(f"Entry: {direction} position opened on \"{reason}\" pattern at ${entry_price:,.2f}.{n_n1_str}")
         
         # Line 2: Risk setup
         if initial_sl and initial_tp:
