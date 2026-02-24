@@ -36,11 +36,9 @@ class RiskManager:
             return 0.0
 
         if not dynamic_sizing:
-            # Fixed: allocate risk_per_trade_pct% of account as position value
             target_value = account_value * (risk_per_trade_pct / 100.0)
             size = target_value / entry_price
         else:
-            # Dynamic: risk exactly risk_per_trade_pct% of account on this trade
             risk_amount = account_value * (risk_per_trade_pct / 100.0)
             risk_per_unit = abs(entry_price - stop_loss)
 
@@ -49,7 +47,6 @@ class RiskManager:
 
             size = risk_amount / risk_per_unit
 
-        # Cap at maximum allowable notional position (account equity * leverage)
         max_pos_value = account_value * leverage
         current_pos_value = size * entry_price
 

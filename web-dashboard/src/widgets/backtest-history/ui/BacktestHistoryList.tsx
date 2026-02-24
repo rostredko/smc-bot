@@ -15,7 +15,6 @@ import TradeAnalysisChart from '../../../entities/trade/ui/TradeAnalysisChart';
 import TradeDetailsModal from '../../../features/trade-details/ui/TradeDetailsModal';
 import { useConfigContext } from '../../../app/providers/config/ConfigProvider';
 
-// General Settings mapping
 const GENERAL_SETTINGS = [
     { label: "Initial Capital", key: "initial_capital", format: (v: any) => `$${v}` },
     { label: "Risk Per Trade", key: "risk_per_trade", suffix: "%" },
@@ -77,12 +76,10 @@ const BacktestHistoryList: React.FC = () => {
         return () => clearInterval(interval);
     }, [loadData, page]);
 
-    // Reset expandedForChart when page changes to avoid stale state
     useEffect(() => {
         setExpandedForChart({});
     }, [page]);
 
-    // Trim detailedResults cache when page changes: keep only current page's files
     useEffect(() => {
         if (history.length === 0) return;
         const currentFilenames = new Set(history.map((h) => h.filename));
@@ -178,7 +175,7 @@ const BacktestHistoryList: React.FC = () => {
         }
         try {
             await saveUserConfigTemplate(saveTemplateName, itemToSave.configuration);
-            loadUserConfigs(); // Update context so the load dialog sees it
+            loadUserConfigs();
             setSaveDialogOpen(false);
             setItemToSave(null);
         } catch (error: any) {

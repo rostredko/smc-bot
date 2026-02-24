@@ -1,12 +1,10 @@
 export const TOOLTIP_HINTS: Record<string, string> = {
-    // Account
     initial_capital: "Starting account balance in USD",
     risk_per_trade: "Percentage of capital risked per single trade (e.g. 1.0 = 1%)",
     max_drawdown: "Maximum allowed decline in account equity before stopping",
     leverage: "Multiplier for position size (technical use only, risk is controlled by % per trade)",
     max_positions: "Maximum number of simultaneous open trades",
 
-    // General
     symbol: "Trading pair to backtest (e.g. BTC/USDT)",
     start_date: "Backtest start date",
     end_date: "Backtest end date",
@@ -16,7 +14,6 @@ export const TOOLTIP_HINTS: Record<string, string> = {
     breakeven_trigger_r: "Profit multiplier to trigger move to breakeven (e.g. 1.0 = Move stop to entry when profit hits 1R)",
     dynamic_position_sizing: "Adjust position size based on current capital/risk",
 
-    // Strategy Specific
     primary_timeframe: "The main timeframe for candle analysis (e.g. 4h, 1h)",
     min_range_factor: "Minimum candle range (high-low) relative to ATR. Candle range must be ≥ ATR × this factor. Filters flat markets.",
     use_trend_filter: "Enable/Disable trading only in direction of EMA trend",

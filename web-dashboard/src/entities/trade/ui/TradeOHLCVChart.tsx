@@ -77,7 +77,6 @@ const TradeOHLCVChart: React.FC<TradeOHLCVChartProps> = ({
         setLoading(true);
         setError(null);
 
-        // Prefer chart_data from backtest result (single source of truth — same DataLoader as strategy)
         if (trade.chart_data?.candles?.length) {
             setData(trade.chart_data as OHLCVResponse);
             setLoading(false);
@@ -167,7 +166,6 @@ const TradeOHLCVChart: React.FC<TradeOHLCVChartProps> = ({
             });
         }
 
-        // 3. Entry / exit markers
         const isWin = trade.pnl >= 0;
         traces.push(
             {
@@ -308,8 +306,6 @@ const TradeOHLCVChart: React.FC<TradeOHLCVChartProps> = ({
             : () => null;
         let rsiEntry = rsiNearestFn(entryIsoTime);
         let rsiExit = rsiNearestFn(exitIsoTime);
-        // Marker at execution bar (entry_time) — use chart value so marker sits on the line.
-        // Tooltip shows both: signal (decision bar) and execution bar values.
         if (rsiExit && rsiAtExitFromNarrative != null) {
             rsiExit = { ...rsiExit, value: rsiAtExitFromNarrative };
         }

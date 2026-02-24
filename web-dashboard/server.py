@@ -531,7 +531,7 @@ async def get_backtest_history(page: int = 1, page_size: int = 10):
         files.sort(key=lambda x: x[1], reverse=True)
         
         total_count = len(files)
-        total_pages = (total_count + page_size - 1) // page_size  # Ceiling division
+        total_pages = (total_count + page_size - 1) // page_size
         
         if page < 1:
             page = 1
@@ -811,14 +811,13 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
                         'sl_calculation': trade.get('sl_calculation', None), # Add SL Calc
                         'tp_calculation': trade.get('tp_calculation', None), # Add TP Calc
                         'sl_history': trade.get('sl_history', []), # Add SL History
-                        'entry_context': trade.get('entry_context', None),  # Why entry + indicators at entry
-                        'execution_bar_indicators': trade.get('execution_bar_indicators', None),  # RSI/ADX at bar N+1
-                        'exit_context': trade.get('exit_context', None),    # Why exit + indicators at exit
+                        'entry_context': trade.get('entry_context', None),
+                        'execution_bar_indicators': trade.get('execution_bar_indicators', None),
+                        'exit_context': trade.get('exit_context', None),
                         'metadata': trade.get('metadata', {})
                     }
                     trades_data.append(trade_dict)
 
-                # Enrich trades with chart_data from SAME DataLoader as backtest (single source of truth)
                 try:
                     _build_chart_data_for_trades(trades_data, engine_config, context_bars=25)
                 except Exception as chart_err:
@@ -1023,9 +1022,6 @@ from datetime import timezone
 
 _OHLCV_CACHE: OrderedDict = OrderedDict()
 _OHLCV_CACHE_MAX = 30
-
-# Clear cache on startup so backtest chart always gets fresh DataLoader data
-_OHLCV_CACHE.clear()
 
 
 def _ohlcv_cache_key(symbol: str, timeframe: str, since_ms: int, until_ms: int) -> str:

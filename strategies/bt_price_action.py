@@ -145,8 +145,7 @@ class PriceActionStrategy(BaseStrategy):
                      'price': new_sl,
                      'reason': new_reason
                  })
-                 
-                 # Recreate both orders linked via OCO
+
                  if self.position.size > 0:
                      self.stop_order = self.sell(price=new_sl, exectype=bt.Order.Stop, size=self.position.size)
                      if tp_price_val is not None:
@@ -297,9 +296,8 @@ class PriceActionStrategy(BaseStrategy):
             'entry_context': entry_context
         }
         self.initial_sl = sl_price
-        self.stop_reason = "Stop Loss" # Reset stop reason for new trade
-        
-        # Initialize SL history with full ISO datetime for chart visualisation
+        self.stop_reason = "Stop Loss"
+
         self.sl_history = [{
             'time': self.data_ltf.datetime.datetime(0).isoformat(),
             'price': sl_price,
@@ -312,17 +310,14 @@ class PriceActionStrategy(BaseStrategy):
             exectype=bt.Order.Market,
             size=size
         )
-        
-        # Handle potential nested list return from bracket order
+
         if len(orders) > 0 and isinstance(orders[0], list):
              orders = orders[0]
-        
-        # Expecting [Main, Stop, Limit] from bracket
+
         self.order = orders[0]
         self.stop_order = orders[1]
         self.tp_order = orders[2] if len(orders) > 2 else None
-             
-        # Add metadata to the main order for the analyzer to pick up
+
         self.order.addinfo(
             reason=reason,
             stop_loss=sl_price,
@@ -339,20 +334,14 @@ class PriceActionStrategy(BaseStrategy):
         risk = sl_price - self.close[0]
         tp_distance = risk * self.params.risk_reward_ratio
         tp_price = self.close[0] - tp_distance
-        
-        # Churn prevention
+
         self.last_entry_bar = len(self.data_ltf)
-        
-        # Calculate Position Size
         size = self._calculate_position_size(self.close[0], sl_price)
         
         dt_str = self.data_ltf.datetime.date(0).isoformat()
         logger.info(f"[{dt_str}] SIGNAL GENERATED: SHORT Entry={self.close[0]:.2f} SL={sl_price:.2f} TP={tp_price:.2f} Size={size:.4f} Reason={reason}")
-        
-        # Entry context for detailed trade view
+
         entry_context = self._build_entry_context(reason, 'short')
-        
-        # Calculation strings for tooltip
         sl_calc = (
             f"Math: High ({self.high[0]:.2f}) + (ATR ({atr:.2f}) * Buffer ({self.params.sl_buffer_atr}))\n"
             f"Result: {sl_price:.2f}\n"
@@ -379,15 +368,14 @@ class PriceActionStrategy(BaseStrategy):
             'entry_context': entry_context
         }
         self.initial_sl = sl_price
-        self.stop_reason = "Stop Loss" # Reset stop reason for new trade
-        
-        # Initialize SL history with full ISO datetime for chart visualisation
+        self.stop_reason = "Stop Loss"
+
         self.sl_history = [{
             'time': self.data_ltf.datetime.datetime(0).isoformat(),
             'price': sl_price,
             'reason': 'Initial Stop Loss'
         }]
-        
+
         orders = self.sell_bracket(
             price=self.close[0], 
             stopprice=sl_price, 
@@ -395,17 +383,14 @@ class PriceActionStrategy(BaseStrategy):
             exectype=bt.Order.Market,
             size=size
         )
-        
-        # Handle potential nested list return from bracket order
+
         if len(orders) > 0 and isinstance(orders[0], list):
              orders = orders[0]
-        
-        # Expecting [Main, Stop, Limit] from bracket
+
         self.order = orders[0]
         self.stop_order = orders[1]
         self.tp_order = orders[2] if len(orders) > 2 else None
 
-        # Add metadata to the main order for the analyzer to pick up
         self.order.addinfo(
             reason=reason,
             stop_loss=sl_price,
