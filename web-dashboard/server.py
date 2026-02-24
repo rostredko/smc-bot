@@ -826,7 +826,7 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
                     trades_data.append(trade_dict)
 
                 try:
-                    _build_chart_data_for_trades(trades_data, engine_config, context_bars=25)
+                    _build_chart_data_for_trades(trades_data, engine_config, data_loader=engine.data_loader, context_bars=25)
                 except Exception as chart_err:
                     logger.warning(f"chart_data build failed: {chart_err}")
                 
@@ -1071,12 +1071,14 @@ _TF_MS: dict = {
 def _build_chart_data_for_trades(
     trades: List[Dict],
     config: Dict[str, Any],
+    data_loader: Optional[Any] = None,
     context_bars: int = 25,
 ) -> None:
     """
     Enrich each trade with chart_data (candles + indicators) from the SAME DataLoader
     used by the backtest. Single source of truth — chart shows exactly what the strategy saw.
     Modifies trades in place.
+    Pass data_loader from engine to avoid re-initializing exchange and re-loading data.
     """
     if not trades:
         return
@@ -1107,7 +1109,7 @@ def _build_chart_data_for_trades(
     if not start_date or not end_date:
         return
 
-    loader = DataLoader(exchange_name="binance", exchange_type=exchange_type)
+    loader = data_loader if data_loader is not None else DataLoader(exchange_name="binance", exchange_type=exchange_type)
     df_full = loader.get_data(symbol, chart_tf, start_date, end_date)
     if df_full is None or df_full.empty:
         return

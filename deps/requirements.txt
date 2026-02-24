@@ -16,6 +16,7 @@ TA-Lib>=0.6.8
 fastapi>=0.95.0
 uvicorn>=0.20.0
 websockets>=11.0.0
+httpx>=0.24.0
 
 # Development and testing
 pytest>=7.0.0
