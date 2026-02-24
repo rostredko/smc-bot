@@ -225,7 +225,14 @@ def get_strategy_config_schema(strategy_name: str):
             "max_body_to_range": {"type": "number", "default": 0.3},
 
             "risk_reward_ratio": {"type": "number", "default": 2.5},
-            "sl_buffer_atr": {"type": "number", "default": 1.0}
+            "sl_buffer_atr": {"type": "number", "default": 1.0},
+
+            "pattern_hammer": {"type": "boolean", "default": True},
+            "pattern_inverted_hammer": {"type": "boolean", "default": True},
+            "pattern_shooting_star": {"type": "boolean", "default": True},
+            "pattern_hanging_man": {"type": "boolean", "default": True},
+            "pattern_bullish_engulfing": {"type": "boolean", "default": True},
+            "pattern_bearish_engulfing": {"type": "boolean", "default": True}
         }
     }
     

@@ -34,13 +34,36 @@ const ConfigPanel: React.FC = () => {
             ]
         },
         {
-            title: "Pattern Settings",
-            keys: ["min_range_factor", "min_wick_to_range", "max_body_to_range"]
+            title: "Patterns",
+            keys: [
+                "pattern_hammer", "pattern_inverted_hammer",
+                "pattern_shooting_star", "pattern_hanging_man",
+                "pattern_bullish_engulfing", "pattern_bearish_engulfing"
+            ]
         },
     ];
 
+    const PATTERN_LABELS: Record<string, string> = {
+        pattern_hammer: "Hammer (Bullish Pinbar)",
+        pattern_inverted_hammer: "Inverted Hammer (Bullish Pinbar)",
+        pattern_shooting_star: "Shooting Star (Bearish Pinbar)",
+        pattern_hanging_man: "Hanging Man (Bearish Pinbar)",
+        pattern_bullish_engulfing: "Bullish Engulfing",
+        pattern_bearish_engulfing: "Bearish Engulfing",
+    };
+
+    const PATTERN_DESCRIPTIONS: Record<string, string> = {
+        pattern_hammer: "Small body with long lower wick at bottom of downtrend; bullish reversal.",
+        pattern_inverted_hammer: "Small body with long upper wick at bottom of downtrend; bullish reversal.",
+        pattern_shooting_star: "Small body with long upper wick at top of uptrend; bearish reversal.",
+        pattern_hanging_man: "Small body with long lower wick at top of uptrend; bearish reversal.",
+        pattern_bullish_engulfing: "Second candle fully engulfs the first; bullish reversal.",
+        pattern_bearish_engulfing: "Second candle fully engulfs the first; bearish reversal.",
+    };
+
     const generalStrategyKeys = [
         "risk_reward_ratio", "sl_buffer_atr", "atr_period",
+        "min_range_factor", "min_wick_to_range", "max_body_to_range",
         "trailing_stop_distance", "breakeven_trigger_r",
     ];
 
@@ -296,12 +319,17 @@ const ConfigPanel: React.FC = () => {
                                                 }
                                             }
 
+                                            const label = PATTERN_LABELS[key] ?? key.replace(/_/g, " ").replace(/\b\w/g, (l: string) => l.toUpperCase());
+                                            const description = PATTERN_DESCRIPTIONS[key];
+                                            const isPatternsSection = section.title === "Patterns";
                                             return (
                                                 <StrategyField
                                                     key={key} fieldKey={key} schema={schema} value={strategyConfig[key]}
-                                                    label={key.replace(/_/g, " ").replace(/\b\w/g, (l: string) => l.toUpperCase())}
+                                                    label={label}
+                                                    description={description}
                                                     tooltip={TOOLTIP_HINTS[key] || "No description available"}
                                                     isDisabled={isDisabled} onChange={handleStrategyConfigChange}
+                                                    compact={isPatternsSection}
                                                 />
                                             );
                                         })}

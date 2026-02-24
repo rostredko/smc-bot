@@ -250,7 +250,8 @@ python server.py
 #### Features
 
 - 🎯 **Visual Strategy Selection** - Choose from available strategies
-- ⚙️ **Parameter Editor** - Adjust all settings in UI
+- ⚙️ **Parameter Editor** - Adjust all settings in UI (Filters, Patterns, Entry & Risk)
+- 📋 **Configurable Patterns** - Enable/disable each candlestick pattern (Hammer, Inverted Hammer, Shooting Star, Hanging Man, Engulfing) with short descriptions
 - 📊 **Live Console Output** - See logs in real-time via WebSocket
 - 📈 **Interactive Charts** - Equity curve, trade distribution, analysis
 - 🎨 **Modern UI** - Beautiful Material-UI design
@@ -391,15 +392,19 @@ web-dashboard/
 
 ```
 GET  /                           - Web dashboard
-GET  /strategies                 - List available strategies
+GET  /strategies                 - List available strategies (includes config_schema with pattern toggles)
 GET  /config                     - Get current config
 POST /config                     - Update config
 POST /backtest/start             - Start backtest
-GET  /backtest/status/{run_id}  - Get status
+GET  /backtest/status/{run_id}   - Get status
 DELETE /backtest/{run_id}        - Cancel backtest
-GET  /backtest/results/{run_id} - Get results
-GET  /api/ohlcv                 - OHLCV + indicators (EMA, RSI, ADX, ATR) for chart
-GET  /api/backtest/history      - Paginated backtest history
+GET  /backtest/results/{run_id}  - Get results
+GET  /api/ohlcv                  - OHLCV + indicators (EMA, RSI, ADX, ATR) for chart
+GET  /api/backtest/history       - Paginated backtest history
+GET  /api/user-configs           - List saved config templates
+GET  /api/user-configs/{name}    - Load saved config
+POST /api/user-configs/{name}    - Save config template
+DELETE /api/user-configs/{name}  - Delete config template
 WebSocket /ws                    - Live console output
 ```
 
@@ -446,7 +451,7 @@ After each backtest, results are saved to `results/{run_id}.json`:
     "end_date": "2025-10-20"
   },
   "strategy": {
-    "name": "smc_strategy"
+    "name": "bt_price_action"
   }
 }
 ```
@@ -462,9 +467,10 @@ After each backtest, results are saved to `results/{run_id}.json`:
 | `timeframes` | Supported timeframes | ["4h", "15m"] |
 | `start_date` | Backtest start date | - |
 | `end_date` | Backtest end date | - |
-| `strategy.name` | Strategy to use | smc_strategy |
-| `trailing_stop_distance` | Trailing stop distance (e.g., 0.02 for 2%) | 0.02 |
+| `strategy.name` | Strategy to use | bt_price_action |
+| `trailing_stop_distance` | Trailing stop distance (e.g., 0.04 for 4%) | 0.04 |
 | `breakeven_trigger_r` | R-multiple to move SL to breakeven | 1.0 |
+| `pattern_hammer`, `pattern_inverted_hammer`, etc. | Enable/disable each candlestick pattern | true |
 
 ---
 
@@ -490,9 +496,11 @@ Backtest data comes from **Binance USD-M Futures** (perpetual contracts), the sa
 **File**: `strategies/bt_price_action.py`
 
 **Key Features**:
-- **Pattern Recognition**: Detects precise candlestick formations using strict OHLCV formulas:
-    - **Bullish/Bearish Pinbars**: Filtered by minimum wick-to-range ratio (e.g. wick > 60% of candle length) and maximum body-to-range ratio to ensure valid rejection.
-    - **Bullish/Bearish Engulfing**: Requires the engulfing body to strictly cover the previous candle's body, alongside a minimum volatility range check (`min_range_factor`) to avoid signals in flat markets.
+- **Pattern Recognition**: Detects candlestick formations using TA-Lib (CDLHAMMER, CDLINVERTEDHAMMER, CDLSHOOTINGSTAR, CDLHANGINGMAN, CDLENGULFING). Each pattern can be enabled/disabled from the dashboard:
+    - **Bullish Pinbar**: Hammer (lower wick) or Inverted Hammer (upper wick) at bottom of downtrend
+    - **Bearish Pinbar**: Shooting Star (upper wick) or Hanging Man (lower wick) at top of uptrend
+    - **Bullish/Bearish Engulfing**: Two-candle reversal patterns
+- **Pattern Filters**: `min_wick_to_range` and `max_body_to_range` ensure valid pin bar geometry (e.g. wick ≥ 60% of range, body ≤ 30%).
 - **TA-Lib Indicators**: Uses C-compiled `TA-Lib` bindings (`SMA`, `EMA`, `RSI`, `ATR`, `ADX`) instead of native Backtrader lines for enormous speed gains and trading accuracy.
 - **Trend Filtering**: Uses EMA (200) and ADX to trade only with strong trends.
 - **Momentum Filters**: RSI Momentum logic (Long > 60, Short < 40) to enter on strength.

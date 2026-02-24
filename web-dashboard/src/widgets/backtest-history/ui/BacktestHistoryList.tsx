@@ -31,7 +31,8 @@ const GENERAL_SETTINGS = [
 
 const STRATEGY_SECTIONS = [
     { title: "Technical Entry Filters", keys: ["use_rsi_filter", "rsi_period", "rsi_overbought", "rsi_oversold", "use_rsi_momentum", "rsi_momentum_threshold", "use_adx_filter", "adx_period", "adx_threshold", "use_trend_filter", "trend_ema_period"] },
-    { title: "Pattern Settings", keys: ["min_range_factor", "min_wick_to_range", "max_body_to_range", "risk_reward_ratio", "sl_buffer_atr", "atr_period"] },
+    { title: "Entry & Risk", keys: ["min_range_factor", "min_wick_to_range", "max_body_to_range", "risk_reward_ratio", "sl_buffer_atr", "atr_period"] },
+    { title: "Patterns", keys: ["pattern_hammer", "pattern_inverted_hammer", "pattern_shooting_star", "pattern_hanging_man", "pattern_bullish_engulfing", "pattern_bearish_engulfing"] },
     { title: "Exit Management", keys: ["trailing_stop_distance", "breakeven_trigger_r"] },
 ];
 

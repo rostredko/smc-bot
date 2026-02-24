@@ -1,5 +1,5 @@
 import { memo } from 'react';
-import { Grid, Box, TextField, FormControlLabel, Switch, Tooltip as MuiTooltip } from '@mui/material';
+import { Grid, Box, TextField, FormControlLabel, Switch, Tooltip as MuiTooltip, Typography } from '@mui/material';
 
 interface StrategyFieldProps {
     fieldKey: string;
@@ -9,29 +9,36 @@ interface StrategyFieldProps {
     tooltip: string;
     isDisabled: boolean;
     onChange: (key: string, value: any) => void;
+    description?: string;
+    compact?: boolean;
 }
 
-const StrategyField = memo(({ fieldKey, schema, value, label, tooltip, isDisabled, onChange }: StrategyFieldProps) => {
+const StrategyField = memo(({ fieldKey, schema, value, label, tooltip, isDisabled, onChange, description, compact }: StrategyFieldProps) => {
     const isBoolean = schema?.type === "boolean" || typeof value === "boolean" || value === "true" || value === "false";
-
-    // Debouncing logic could be added here if memoization isn't enough, 
-    // but memoizaion usually solves the "render whole app on single char type" issue.
+    const gridMd = isBoolean ? (compact ? 6 : 12) : 6;
 
     return (
-        <Grid item xs={12} md={isBoolean ? 12 : 6}>
+        <Grid item xs={12} md={gridMd}>
             <MuiTooltip title={tooltip} arrow placement="top">
                 <Box>
                     {isBoolean ? (
-                        <FormControlLabel
-                            control={
-                                <Switch
-                                    checked={value !== undefined ? Boolean(value === true || value === "true") : Boolean(schema?.default)}
-                                    onChange={e => onChange(fieldKey, e.target.checked)}
-                                    disabled={isDisabled}
-                                />
-                            }
-                            label={label}
-                        />
+                        <Box>
+                            <FormControlLabel
+                                control={
+                                    <Switch
+                                        checked={value !== undefined ? Boolean(value === true || value === "true") : Boolean(schema?.default)}
+                                        onChange={e => onChange(fieldKey, e.target.checked)}
+                                        disabled={isDisabled}
+                                    />
+                                }
+                                label={label}
+                            />
+                            {description && (
+                                <Typography variant="caption" display="block" sx={{ color: 'text.secondary', mt: 0.5, pl: 7 }}>
+                                    {description}
+                                </Typography>
+                            )}
+                        </Box>
                     ) : (
                         <TextField
                             label={label}

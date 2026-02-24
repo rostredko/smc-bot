@@ -32,4 +32,11 @@ export const TOOLTIP_HINTS: Record<string, string> = {
     adx_threshold: "Minimum ADX value required to enter a trade (Trend Strength)",
     use_rsi_momentum: "Enable/Disable RSI Momentum (Long if > 50, Short if < 50)",
     rsi_momentum_threshold: "Threshold for RSI Momentum (usually 50)",
+
+    pattern_hammer: "Hammer: bullish pin bar with long lower wick at bottom of trend",
+    pattern_inverted_hammer: "Inverted Hammer: bullish pin bar with long upper wick at bottom of trend",
+    pattern_shooting_star: "Shooting Star: bearish pin bar with long upper wick at top of trend",
+    pattern_hanging_man: "Hanging Man: bearish pin bar with long lower wick at top of trend",
+    pattern_bullish_engulfing: "Bullish Engulfing: two-candle bullish reversal pattern",
+    pattern_bearish_engulfing: "Bearish Engulfing: two-candle bearish reversal pattern",
 };

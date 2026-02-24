@@ -152,11 +152,12 @@ Contains trading strategies and analysis logic.
 Backtrader strategy using TA-Lib for high-performance indicator calculations and candlestick patterns.
 
 **params:**
-- trend_ema_period, rsi_period, etc.
+- trend_ema_period, rsi_period, adx_threshold, min_range_factor, min_wick_to_range, max_body_to_range
+- `pattern_hammer`, `pattern_inverted_hammer`, `pattern_shooting_star`, `pattern_hanging_man`, `pattern_bullish_engulfing`, `pattern_bearish_engulfing` — enable/disable each pattern (default: true)
 
 **Methods:**
 - `next()`: Main strategy logic executed per bar.
-- `_is_bullish_pinbar()`, `_is_bearish_pinbar()`, `_is_bullish_engulfing()`, `_is_bearish_engulfing()`: Pattern detection using pure OHLCV formulas.
+- `_is_bullish_pinbar()`, `_is_bearish_pinbar()`, `_is_bullish_engulfing()`, `_is_bearish_engulfing()`: Pattern detection via TA-Lib (CDLHAMMER, CDLINVERTEDHAMMER, CDLSHOOTINGSTAR, CDLHANGINGMAN, CDLENGULFING), filtered by `_meets_pinbar_wick_body_ratio()` and pattern toggles.
 - `_enter_long()`, `_enter_short()`: Execute trades using OCO-linked Bracket Orders.
 - `_build_entry_context(reason, direction)`: Returns why_entry + indicators_at_entry (ATR, EMA, RSI, ADX).
 - `_build_exit_context(exit_reason)`: Returns why_exit + indicators_at_exit.
@@ -364,13 +365,11 @@ Maps liquidity zones and detects liquidity sweeps.
 - symbol, timeframes, start_date, end_date, strategy
 - min_risk_reward, leverage, exchange
 
-### Strategy Config:
-- timeframes: high_timeframe, low_timeframe
-- risk_management: risk_per_trade_pct, max_concurrent_positions, min_required_rr, max_stop_distance_pct
-- volatility_filter: volatility_filter_enabled, atr_period, atr_percentile_min/max
-- partial_take_profits: tp1_r, tp1_pct, tp2_r, tp2_pct, runner_pct
-- exit_management: trailing_stop_enabled, breakeven_move_enabled
-- filters: volume_threshold, rsi_period, ema_filter_period, min_signal_confidence
+### Strategy Config (bt_price_action):
+- filters: use_trend_filter, trend_ema_period, use_rsi_filter, rsi_period, rsi_overbought, rsi_oversold, use_adx_filter, adx_threshold
+- entry & risk: min_range_factor, min_wick_to_range, max_body_to_range, risk_reward_ratio, sl_buffer_atr, atr_period
+- patterns: pattern_hammer, pattern_inverted_hammer, pattern_shooting_star, pattern_hanging_man, pattern_bullish_engulfing, pattern_bearish_engulfing (boolean toggles)
+- exit: trailing_stop_distance, breakeven_trigger_r
 
 
 
@@ -400,7 +399,7 @@ Modal showing full trade analysis:
 - For old backtests without `exit_context`, indicators at exit are fetched from `/api/ohlcv`
 
 ### 4. BacktestHistoryList
-Displays historical backtest runs with expandable rows, config diffs, PnL. Passes symbol, timeframes, strategyConfig, exchangeType, backtestStart, backtestEnd to TradeDetailsModal.
+Displays historical backtest runs with expandable rows, config diffs (Filters, Entry & Risk, Patterns, Exit Management), PnL. Passes symbol, timeframes, strategyConfig, exchangeType, backtestStart, backtestEnd to TradeDetailsModal.
 
 ---
 

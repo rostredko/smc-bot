@@ -32,6 +32,12 @@ class PriceActionStrategy(BaseStrategy):
         ('leverage', 1.0),
         ('dynamic_position_sizing', True),
         ('max_drawdown', 50.0),
+        ('pattern_hammer', True),
+        ('pattern_inverted_hammer', True),
+        ('pattern_shooting_star', True),
+        ('pattern_hanging_man', True),
+        ('pattern_bullish_engulfing', True),
+        ('pattern_bearish_engulfing', True),
     )
 
     def __init__(self):
@@ -51,7 +57,9 @@ class PriceActionStrategy(BaseStrategy):
         self.adx = bt.talib.ADX(self.data_ltf.high, self.data_ltf.low, self.data_ltf.close, timeperiod=self.params.adx_period)
         self.cdl_engulfing = bt.talib.CDLENGULFING(self.data_ltf.open, self.data_ltf.high, self.data_ltf.low, self.data_ltf.close)
         self.cdl_hammer = bt.talib.CDLHAMMER(self.data_ltf.open, self.data_ltf.high, self.data_ltf.low, self.data_ltf.close)
+        self.cdl_invertedhammer = bt.talib.CDLINVERTEDHAMMER(self.data_ltf.open, self.data_ltf.high, self.data_ltf.low, self.data_ltf.close)
         self.cdl_shootingstar = bt.talib.CDLSHOOTINGSTAR(self.data_ltf.open, self.data_ltf.high, self.data_ltf.low, self.data_ltf.close)
+        self.cdl_hangingman = bt.talib.CDLHANGINGMAN(self.data_ltf.open, self.data_ltf.high, self.data_ltf.low, self.data_ltf.close)
         self.open = self.data_ltf.open
         self.high = self.data_ltf.high
         self.low = self.data_ltf.low
@@ -163,17 +171,14 @@ class PriceActionStrategy(BaseStrategy):
         if self._is_bullish_pinbar():
             if self._check_filters_long():
                 self._enter_long("Bullish Pinbar")
-        
         elif self._is_bearish_pinbar():
             if self._check_filters_short():
                 self._enter_short("Bearish Pinbar")
-        
         elif self._is_bullish_engulfing():
-             if self._check_filters_long():
+            if self._check_filters_long():
                 self._enter_long("Bullish Engulfing")
-        
         elif self._is_bearish_engulfing():
-             if self._check_filters_short():
+            if self._check_filters_short():
                 self._enter_short("Bearish Engulfing")
 
     def _build_entry_context(self, reason, direction):
@@ -405,10 +410,10 @@ class PriceActionStrategy(BaseStrategy):
         rng = self.high[0] - self.low[0]
         return rng >= (self.atr[0] * self.params.min_range_factor)
 
-    def _meets_pinbar_wick_body_ratio(self, is_bullish: bool) -> bool:
+    def _meets_pinbar_wick_body_ratio(self, check_lower_wick: bool) -> bool:
         """
         Pin bar must have: long wick (>= min_wick_to_range of range) and small body (<= max_body_to_range).
-        Bullish: lower wick. Bearish: upper wick.
+        check_lower_wick: True = Hammer/Hanging Man (lower wick), False = Inverted Hammer/Shooting Star (upper wick).
         """
         rng = self.high[0] - self.low[0]
         if rng <= 0:
@@ -416,7 +421,7 @@ class PriceActionStrategy(BaseStrategy):
         body = abs(self.close[0] - self.open[0])
         if body / rng > self.params.max_body_to_range:
             return False
-        if is_bullish:
+        if check_lower_wick:
             lower_wick = min(self.open[0], self.close[0]) - self.low[0]
             return lower_wick / rng >= self.params.min_wick_to_range
         else:
@@ -424,24 +429,30 @@ class PriceActionStrategy(BaseStrategy):
             return upper_wick / rng >= self.params.min_wick_to_range
 
     def _is_bullish_pinbar(self):
-        return (
-            self.cdl_hammer[0] == 100
-            and self._has_significant_range()
-            and self._meets_pinbar_wick_body_ratio(is_bullish=True)
-        )
+        """Bullish pin bar: Hammer (lower wick) OR Inverted Hammer (upper wick) at bottom of trend."""
+        if not self._has_significant_range():
+            return False
+        if self.params.pattern_hammer and self.cdl_hammer[0] == 100 and self._meets_pinbar_wick_body_ratio(check_lower_wick=True):
+            return True
+        if self.params.pattern_inverted_hammer and self.cdl_invertedhammer[0] == 100 and self._meets_pinbar_wick_body_ratio(check_lower_wick=False):
+            return True
+        return False
 
     def _is_bearish_pinbar(self):
-        return (
-            self.cdl_shootingstar[0] == -100
-            and self._has_significant_range()
-            and self._meets_pinbar_wick_body_ratio(is_bullish=False)
-        )
+        """Bearish pin bar: Shooting Star (upper wick) OR Hanging Man (lower wick) at top of trend."""
+        if not self._has_significant_range():
+            return False
+        if self.params.pattern_shooting_star and self.cdl_shootingstar[0] == -100 and self._meets_pinbar_wick_body_ratio(check_lower_wick=False):
+            return True
+        if self.params.pattern_hanging_man and self.cdl_hangingman[0] == -100 and self._meets_pinbar_wick_body_ratio(check_lower_wick=True):
+            return True
+        return False
 
     def _is_bullish_engulfing(self):
-        return self.cdl_engulfing[0] == 100 and self._has_significant_range()
+        return self.params.pattern_bullish_engulfing and self.cdl_engulfing[0] == 100 and self._has_significant_range()
 
     def _is_bearish_engulfing(self):
-        return self.cdl_engulfing[0] == -100 and self._has_significant_range()
+        return self.params.pattern_bearish_engulfing and self.cdl_engulfing[0] == -100 and self._has_significant_range()
 
     def _check_filters_long(self):
         if self.position: return False
