@@ -34,11 +34,14 @@ Concrete implementation for live trading (Stage 2 placeholder/skeleton).
 
 ### 4. bt_analyzers.py
 #### Class: TradeListAnalyzer
-Custom Backtrader analyzer to capture detailed trade history in a format compatible with the web dashboard.
+Custom Backtrader analyzer to capture detailed trade history (narrative, entry/exit context, sl_history) in a format compatible with the web dashboard.
+
+#### Class: EquityCurveAnalyzer
+Captures equity curve data for chart visualization.
 
 ---
 
-### 2. data_loader.py
+### 5. data_loader.py
 
 #### Class: DataLoader
 Fetches and caches historical market data via ccxt.
@@ -50,12 +53,9 @@ Fetches and caches historical market data via ccxt.
 **Methods:**
 - `_initialize_exchange() -> ccxt.Exchange` - Creates and tests exchange connection (sets defaultType)
 - `fetch_ohlcv(symbol, timeframe, start_date, end_date) -> pd.DataFrame` - Fetches raw OHLCV data with caching
-- `get_data(symbol, timeframe, start_date, end_date) -> pd.DataFrame` - High-level method to get formatted data with indicators
+- `get_data(symbol, timeframe, start_date, end_date) -> pd.DataFrame` - High-level method to get formatted data (indicators via TA-Lib in strategy)
 - `get_data_multi(symbol, timeframes, start_date, end_date) -> Dict[str, pd.DataFrame]` - Fetches multiple timeframes
 - `_ohlcv_to_dataframe(ohlcv) -> pd.DataFrame` - Converts OHLCV list to DataFrame
-- `_add_technical_indicators(df) -> pd.DataFrame` - Adds ATR, SMA, EMA, MACD, RSI, volume indicators
-- `_calculate_atr(df, period=14) -> pd.Series` - Calculates Average True Range
-- `_calculate_rsi(prices, period=14) -> pd.Series` - Calculates Relative Strength Index
 - `_rate_limit()` - Implements rate limiting between requests
 - `_get_cache_file(symbol, timeframe, start_date, end_date) -> str` - Generates cache file path
 - `clear_cache()` - Clears all cached data
@@ -64,13 +64,7 @@ Fetches and caches historical market data via ccxt.
 
 ---
 
-### 5. data_loader.py
-# (Remains mostly same, adapter logic added in engine)
-# ...
-
----
-
-### 4. logger.py
+### 6. logger.py
 
 #### Class: Logger
 Handles structured logging of trading events.
@@ -116,26 +110,7 @@ Calculates comprehensive performance metrics.
 
 ---
 
-### 5. metrics.py
-
-#### Class: PerformanceReporter
-(Similar to logger.py PerformanceReporter - appears to be duplicate)
-
-**Methods:**
-- `compute_metrics(closed_trades, equity_curve) -> Dict`
-- `_empty_metrics() -> Dict`
-- `_calculate_max_drawdown(equity_curve) -> float`
-- `_calculate_sharpe_ratio(closed_trades) -> float`
-- `_calculate_consecutive_trades(closed_trades) -> tuple[int, int]`
-- `_calculate_monthly_returns(equity_curve) -> List[float]`
-- `_calculate_expectancy(avg_win, avg_loss, win_rate) -> float`
-- `_calculate_recovery_factor(total_pnl, max_drawdown) -> float`
-- `_calculate_calmar_ratio(total_pnl, max_drawdown) -> float`
-- `generate_report(metrics) -> str`
-
----
-
-# Removed legacy Position and RiskManager classes (functionality moved to Backtrader internals).
+**Removed:** `engine/metrics.py`, `engine/position.py`, `engine/risk_manager.py` — functionality moved to Backtrader analyzers and `strategies/helpers/risk_manager.py`.
 
 ---
 
@@ -143,12 +118,14 @@ Calculates comprehensive performance metrics.
 
 ### STRATEGIES MODULE (`strategies/`)
 
-Contains trading strategies and analysis logic.
+Contains trading strategies and helpers.
 
 - **`bt_price_action.py`**: **(PRIMARY)** Backtrader implementation of Price Action Strategy.
-- **`smc_analysis.py`**: Library of SMC analysis components (Reuse attempted in BT or pending migration).
+- **`base_strategy.py`**: Base class for Backtrader strategies (extends `bt.Strategy`).
+- **`helpers/risk_manager.py`**: Dynamic position sizing based on risk_per_trade and ATR.
+- **`helpers/narrative_generator.py`**: Trade outcome narrative generation.
 
-#### Class: PriceActionStrategy (extends bt.Strategy)
+#### Class: PriceActionStrategy (extends BaseStrategy → bt.Strategy)
 Backtrader strategy using TA-Lib for high-performance indicator calculations and candlestick patterns.
 
 **params:**
@@ -161,167 +138,32 @@ Backtrader strategy using TA-Lib for high-performance indicator calculations and
 - `_enter_long()`, `_enter_short()`: Execute trades using OCO-linked Bracket Orders.
 - `_build_entry_context(reason, direction)`: Returns why_entry + indicators_at_entry (ATR, EMA, RSI, ADX).
 - `_build_exit_context(exit_reason)`: Returns why_exit + indicators_at_exit.
----
 
-### 3. smc_strategy.py
-
-#### Class: SMCStrategy (extends StrategyBase)
-Smart Money Concepts based trading strategy.
-
-**__init__(self, config: Optional[Dict] = None)**
-- Initializes with comprehensive SMC configuration
-- Sets up market bias, zones, performance tracking
-
-**Core Methods:**
-- `generate_signals(market_data) -> List[Dict[str, Any]]` - Main signal generation method
-  - Updates market bias from higher timeframe
-  - Checks volatility filter
-  - Updates zones and levels
-  - Looks for entry opportunities
-
-**Market Analysis Methods:**
-- `_calculate_atr(df, period=None) -> float` - Calculates ATR
-- `_calculate_minimum_stop_distance(low_df, high_df) -> float` - Calculates min SL distance based on ATR
-- `_calculate_adaptive_stop_loss(low_df, high_df, current_price, direction) -> float` - Adaptive SL based on support/resistance
-- `_is_volatility_acceptable(high_df) -> bool` - Checks if volatility is in acceptable range
-- `_calculate_rsi(df, period=None) -> float` - Calculates RSI
-- `_calculate_ema(df, period) -> float` - Calculates EMA
-- `_calculate_macd(df, fast=None, slow=None, signal=None)` - Calculates MACD
-- `_update_market_bias(high_df)` - Determines market bias using weighted scoring (EMA alignment, RSI, structure, MACD)
-- `_analyze_market_structure(high_df)` - Analyzes market structure for bias
-- `_update_zones_and_levels(high_df, low_df)` - Updates order blocks, FVGs, liquidity levels
-- `_cleanup_old_zones(low_df)` - Removes old zones
-
-**Entry Methods:**
-- `_look_for_entries(low_df, high_df) -> List[Dict[str, Any]]` - Looks for LONG/SHORT entries based on bias
-- `_look_for_long_entries(low_df, high_df, current_price) -> List[Dict[str, Any]]` - Finds LONG entries with mandatory SMC factors
-- `_look_for_short_entries(low_df, high_df, current_price) -> List[Dict[str, Any]]` - Finds SHORT entries
-
-**Signal Creation Methods:**
-- `_create_long_signal(low_df, high_df, current_price, confluence_factors, atr) -> Dict[str, Any]` - Creates LONG signal with partial TPs
-- `_create_short_signal(low_df, high_df, current_price, confluence_factors, atr) -> Dict[str, Any]` - Creates SHORT signal
-- `_create_exit_signal(current_price, reason) -> Dict[str, Any]` - Creates exit signal
-
-**Filter Methods:**
-- `_is_in_discount_zone(price) -> bool` - Checks if price in discount zone
-- `_is_in_premium_zone(price) -> bool` - Checks if price in premium zone
-- `_has_volume_confirmation(low_df) -> bool` - Checks for volume confirmation
-- `_has_strong_volume_confirmation(low_df) -> bool` - Checks for strong volume
-- `_has_very_bullish_price_action(low_df) -> bool` - Checks for very bullish PA
-- `_has_bearish_price_action(low_df) -> bool` - Checks for bearish PA
-- `_is_near_liquidity_level(current_price, direction) -> bool` - Checks proximity to liquidity level
-- `_has_liquidity_sweep(low_df, direction) -> bool` - Checks for liquidity sweep
-- `_is_in_fibonacci_retracement_zone(low_df, current_price, direction) -> bool` - Checks Fibonacci zones
-- `_get_fibonacci_level(low_df, current_price) -> Optional[str]` - Gets closest Fibonacci level
-- `_has_bullish_structure_break(low_df) -> bool` - Checks for bullish structure break
-- `_has_bearish_structure_break(low_df) -> bool` - Checks for bearish structure break
-- `_enhanced_signal_filter(signal, low_df, high_df) -> bool` - Enhanced signal filtering (RSI, trend, volume, time, volatility, confidence, micro-trend)
-- `_is_strong_trend_aligned(direction, high_df, low_df) -> bool` - Checks trend alignment on both TFs
-- `_is_optimal_volatility(low_df, high_df) -> bool` - Checks optimal volatility range
-- `_is_good_trading_time() -> bool` - Checks trading time (avoids low liquidity)
-- `_is_aligned_with_lower_tf_trend(direction, low_df) -> bool` - Checks lower TF trend alignment
-- `_has_increasing_volume(low_df) -> bool` - Checks for increasing volume
-
-**Management Methods:**
-- `on_trade_exit(position)` - Handles trade exit, updates loss counter, invalidates zones
-- `get_strategy_config() -> Dict[str, Any]` - Gets strategy configuration for web interface
-- `get_strategy_info() -> Dict[str, Any]` - Gets strategy info with market bias, zones, performance
-- `manage_open_positions(current_price, current_time)` - Manages open positions with trailing stops
-- `_manage_long_position(position, current_price, current_time)` - Manages long position with trailing stop
-
----
-
-### 4. smc_analysis.py
-
-#### Data Classes:
-- `SwingPoint` - Represents swing high/low point (index, price, timestamp, type)
-- `OrderBlock` - Order block zone (start_index, end_index, high, low, type, strength, timestamp, zone_id, used)
-- `FairValueGap` - FVG/imbalance (start_index, end_index, high, low, type, filled, timestamp, zone_id, used)
-- `LiquidityZone` - Liquidity zone (price, type, strength, timestamp, swept)
-
-#### Class: MarketStructureAnalyzer
-Analyzes market structure for BOS and CHOCH.
-
-**__init__(self, lookback_period: int = 20)**
-
-**Methods:**
-- `identify_trend(df) -> str` - Identifies trend ('Bullish', 'Bearish', 'Sideways')
-- `find_swing_points(df) -> List[SwingPoint]` - Finds swing highs and lows
-- `detect_structure_breaks(df) -> Dict[str, bool]` - Detects Break of Structure events
-- `detect_choch(df) -> Dict[str, bool]` - Detects Change of Character events
-- `get_market_bias(df) -> str` - Determines market bias ('Bullish', 'Bearish', 'Neutral')
-
-#### Class: OrderBlockDetector
-Detects order blocks (supply/demand zones).
-
-**__init__(self, min_strength: float = 0.6)**
-
-**Methods:**
-- `find_order_blocks(df) -> List[OrderBlock]` - Finds order blocks in price data
-- `_is_strong_bullish_move(df, index) -> bool` - Checks for strong bullish move
-- `_is_strong_bearish_move(df, index) -> bool` - Checks for strong bearish move
-- `_create_demand_block(df, index) -> Optional[OrderBlock]` - Creates demand order block
-- `_create_supply_block(df, index) -> Optional[OrderBlock]` - Creates supply order block
-- `_calculate_volume_strength(df, index) -> float` - Calculates volume strength
-- `_calculate_price_strength(df, index, block_type) -> float` - Calculates price action strength
-- `find_premium_discount_zones(df) -> Dict[str, Dict]` - Finds premium/discount zones
-- `is_price_in_zone(price, zone) -> bool` - Checks if price is in zone
-
-#### Class: FairValueGapDetector
-Detects Fair Value Gaps (FVGs).
-
-**__init__(self, min_gap_size: float = 0.001)**
-
-**Methods:**
-- `scan_for_gaps(df) -> List[FairValueGap]` - Scans for FVGs in price data
-- `_detect_bullish_gap(df, index) -> Optional[FairValueGap]` - Detects bullish FVG
-- `_detect_bearish_gap(df, index) -> Optional[FairValueGap]` - Detects bearish FVG
-- `check_gap_fill(df, gap) -> bool` - Checks if FVG has been filled
-- `get_active_gaps(df) -> List[FairValueGap]` - Gets all unfilled FVGs
-
-#### Class: LiquidityZoneMapper
-Maps liquidity zones and detects liquidity sweeps.
-
-**__init__(self, sweep_threshold: float = 0.002)**
-
-**Methods:**
-- `identify_liquidity_sweeps(df) -> List[LiquidityZone]` - Identifies liquidity sweeps
-- `find_liquidity_levels(df, lookback=50) -> List[LiquidityZone]` - Finds potential liquidity levels
+**Removed:** `smc_strategy.py`, `smc_analysis.py` — SMC strategy not supported in current Backtrader branch.
 
 ---
 
 ## KEY CONCEPTS
 
 ### Trading Flow:
-1. BacktestEngine loads data and strategy
-2. For each bar: strategy generates signals based on market data
-3. Engine validates signals (risk/reward, position limits)
-4. Positions are created with laddered exits (TP1: 50%, TP2: 30%, Runner: 20%)
-5. Positions are updated each bar (check SL/TP, trailing stops)
-6. Performance metrics calculated at end
+1. BTBacktestEngine loads data via DataLoader and adds strategy to Cerebro
+2. For each bar: PriceActionStrategy `next()` runs (pattern detection, filters, entry/exit)
+3. RiskManager (strategies/helpers) calculates position size from risk_per_trade and ATR
+4. OCO-linked bracket orders (SL + TP) for atomic execution
+5. Breakeven and trailing stop updates via order cancel/replace
+6. TradeListAnalyzer captures trades; metrics from Backtrader analyzers
 
 ### Risk Management:
-- Position sizing based on risk_per_trade percentage
-- Maximum drawdown protection
-- Cooldown after stop loss
-- Consecutive loss tracking with risk reduction
-- Maximum concurrent positions limit
+- Position sizing via `strategies/helpers/risk_manager.py` (risk_per_trade %, ATR-based SL)
+- Maximum drawdown protection inside strategy (`max_drawdown` param)
+- Leverage cap applied in RiskManager
 
-### SMC Strategy Features:
-- Multi-timeframe analysis (4h for bias, 15m for entries)
-- Order blocks, Fair Value Gaps, Liquidity zones
-- Premium/Discount zone filtering
-- Fibonacci retracement levels
-- Market structure analysis (BOS, CHOCH)
-- Volatility filtering
-- Multiple confluence factors required for entry
-- Enhanced signal filtering (RSI, trend, volume, time filters)
-
-### Position Management:
-- Laddered exits with partial take profits
-- Breakeven move after TP1
-- Trailing stop for runner position
-- Adaptive stop loss based on ATR and support/resistance
+### Price Action Strategy Features:
+- Multi-timeframe analysis (e.g. 4h for trend, 1h/15m for entries)
+- TA-Lib candlestick patterns: Hammer, Inverted Hammer, Shooting Star, Hanging Man, Engulfing
+- Configurable pattern toggles and geometry filters (min_wick_to_range, max_body_to_range)
+- Trend filter (EMA), RSI filter, ADX filter
+- Breakeven trigger (breakeven_trigger_r) and trailing stop (trailing_stop_distance)
 
 ---
 
@@ -360,10 +202,12 @@ Maps liquidity zones and detects liquidity sweeps.
 
 ## CONFIGURATION
 
+**Config file:** `config/backtest_config.json` (default for CLI and web dashboard)
+
 ### Backtest Config:
 - initial_capital, risk_per_trade, max_drawdown, max_positions
-- symbol, timeframes, start_date, end_date, strategy
-- min_risk_reward, leverage, exchange
+- symbol, timeframes, start_date, end_date, strategy (e.g. `bt_price_action`)
+- leverage, exchange, exchange_type
 
 ### Strategy Config (bt_price_action):
 - filters: use_trend_filter, trend_ema_period, use_rsi_filter, rsi_period, rsi_overbought, rsi_oversold, use_adx_filter, adx_threshold

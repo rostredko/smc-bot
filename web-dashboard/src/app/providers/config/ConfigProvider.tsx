@@ -241,7 +241,7 @@ export const ConfigProvider: React.FC<{ children: React.ReactNode }> = ({ childr
             setStrategyConfig({});
             setIsConfigDisabled(false);
         }
-    }, [strategyMap]);
+    }, [strategyMap, getStrategyDefaults]);
 
     const handleConfigChange = useCallback((key: string, value: any) => {
         setConfig(prev => ({ ...prev, [key]: value }));

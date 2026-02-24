@@ -194,11 +194,11 @@ Fast backtesting from command line without UI.
 ```bash
 # Linux/macOS
 source venv/bin/activate
-python main.py backtest config/config.json
+python main.py backtest config/backtest_config.json
 
 # Windows
 venv\Scripts\activate
-python main.py backtest config\config.json
+python main.py backtest config\backtest_config.json
 ```
 
 **Advantages**:
@@ -430,7 +430,7 @@ After each backtest, results are saved to `results/{run_id}.json`:
 
 ## Configuration
 
-### Main Config (`config/config.json`)
+### Main Config (`config/backtest_config.json`)
 
 ```json
 {
@@ -553,7 +553,7 @@ class MyStrategy(StrategyBase):
         return signals
 ```
 
-Then update `config/config.json`:
+Then update `config/backtest_config.json`:
 ```json
 {
   "strategy": {

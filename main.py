@@ -42,7 +42,7 @@ def create_default_config() -> Dict[str, Any]:
         "start_date": "2023-01-01",
         "end_date": "2023-12-31",
         # Strategy settings
-        "strategy": "price_action",
+        "strategy": "bt_price_action",
         "strategy_config": {
             "trend_ema_period": 50,
             "rsi_period": 14,
@@ -79,7 +79,7 @@ def load_config_from_json(config_file: str) -> Dict[str, Any]:
             strategy_name = strategy_conf.get("name", "")
 
         if not strategy_name:
-            strategy_name = "price_action"
+            strategy_name = "bt_price_action"
 
         config = {
             "initial_capital": json_config.get("account", {}).get("initial_capital", json_config.get("initial_capital", 10000)),
@@ -176,7 +176,7 @@ def export_trades(trades: list, filename: str):
         logger.error(f"❌ Error exporting trades: {e}")
 
 
-def run_backtest(config_file: str = "config/config.json"):
+def run_backtest(config_file: str = "config/backtest_config.json"):
     """
     Run backtest from JSON configuration file.
 
@@ -295,7 +295,7 @@ def show_help():
     print()
     print("🔧 Backtest Commands:")
     print("  python main.py backtest                    # Run with default config")
-    print("  python main.py backtest config/config.json  # Run with custom config")
+    print("  python main.py backtest config/backtest_config.json  # Run with custom config")
     print()
     print("📈 Live Trading Commands:")
     print("  python main.py live                        # Start live trading")

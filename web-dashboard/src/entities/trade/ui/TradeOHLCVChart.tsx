@@ -304,7 +304,7 @@ const TradeOHLCVChart: React.FC<TradeOHLCVChartProps> = ({
         const rsiNearestFn = hasRsi
             ? makeNearestFinder(indicators.rsi!.values)
             : () => null;
-        let rsiEntry = rsiNearestFn(entryIsoTime);
+        const rsiEntry = rsiNearestFn(entryIsoTime);
         let rsiExit = rsiNearestFn(exitIsoTime);
         if (rsiExit && rsiAtExitFromNarrative != null) {
             rsiExit = { ...rsiExit, value: rsiAtExitFromNarrative };
@@ -313,7 +313,7 @@ const TradeOHLCVChart: React.FC<TradeOHLCVChartProps> = ({
         const adxNearestFn = hasAdx
             ? makeNearestFinder(indicators.adx!.values)
             : () => null;
-        let adxEntry = adxNearestFn(entryIsoTime);
+        const adxEntry = adxNearestFn(entryIsoTime);
         let adxExit = adxNearestFn(exitIsoTime);
         if (adxExit && adxAtExitFromNarrative != null) {
             adxExit = { ...adxExit, value: adxAtExitFromNarrative };
