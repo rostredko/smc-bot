@@ -133,24 +133,24 @@ async def broadcast_from_queue():
         await asyncio.sleep(0.05)
 
 
+_EXCLUDED_STRATEGY_FILES = frozenset({"__init__.py", "base_strategy.py"})
+
+
 def load_available_strategies():
     """Load available strategies from strategies directory."""
-    strategies = []
     strategies_dir = BASE_DIR / "strategies"
-    
-    if strategies_dir.exists():
-        for file in strategies_dir.glob("*.py"):
-            if file.name != "__init__.py" and file.name != "base_strategy.py":
-                strategy_name = file.stem
-                config_schema = get_strategy_config_schema(strategy_name)
-                strategies.append({
-                    "name": strategy_name,
-                    "display_name": strategy_name.replace("_", " ").title(),
-                    "description": f"{strategy_name} strategy",
-                    "config_schema": config_schema
-                })
-    
-    return strategies
+    if not strategies_dir.exists():
+        return []
+    return [
+        {
+            "name": f.stem,
+            "display_name": f.stem.replace("_", " ").title(),
+            "description": f"{f.stem} strategy",
+            "config_schema": get_strategy_config_schema(f.stem),
+        }
+        for f in strategies_dir.glob("*.py")
+        if f.name not in _EXCLUDED_STRATEGY_FILES
+    ]
 
 
 def get_strategy_config_schema(strategy_name: str):
@@ -275,19 +275,22 @@ async def get_config():
     if config_path.exists():
         with open(config_path, 'r') as f:
             config = json.load(f)
-        
+        account = config.get("account", {})
+        trading = config.get("trading", {})
+        period = config.get("period", {})
+        strategy_section = config.get("strategy", {})
         flat_config = {
-            "initial_capital": config.get("account", {}).get("initial_capital", 10000),
-            "risk_per_trade": config.get("account", {}).get("risk_per_trade", 2.0),
-            "max_drawdown": config.get("account", {}).get("max_drawdown", 15.0),
-            "max_positions": config.get("account", {}).get("max_positions", 1),
-            "leverage": config.get("account", {}).get("leverage", 10.0),
-            "symbol": config.get("trading", {}).get("symbol", "BTC/USDT"),
-            "timeframes": config.get("trading", {}).get("timeframes", ["4h", "15m"]),
-            "start_date": config.get("period", {}).get("start_date", "2023-01-01"),
-            "end_date": config.get("period", {}).get("end_date", "2023-12-31"),
-            "strategy": config.get("strategy", {}).get("name", "smc_strategy"),
-            "strategy_config": config.get("strategy", {}).get("config", {}),
+            "initial_capital": account.get("initial_capital", 10000),
+            "risk_per_trade": account.get("risk_per_trade", 2.0),
+            "max_drawdown": account.get("max_drawdown", 15.0),
+            "max_positions": account.get("max_positions", 1),
+            "leverage": account.get("leverage", 10.0),
+            "symbol": trading.get("symbol", "BTC/USDT"),
+            "timeframes": trading.get("timeframes", ["4h", "15m"]),
+            "start_date": period.get("start_date", "2023-01-01"),
+            "end_date": period.get("end_date", "2023-12-31"),
+            "strategy": strategy_section.get("name", "smc_strategy"),
+            "strategy_config": strategy_section.get("config", {}),
             "min_risk_reward": config.get("min_risk_reward", 2.5),
             "trailing_stop_distance": config.get("trailing_stop_distance", 0.04),
             "breakeven_trigger_r": config.get("breakeven_trigger_r", 1.5),
@@ -308,49 +311,24 @@ async def update_config(config: Dict[str, Any]):
         with open(config_path, 'r') as f:
             existing_config = json.load(f)
     
-    if "account" not in existing_config:
-        existing_config["account"] = {}
-    if "trading" not in existing_config:
-        existing_config["trading"] = {}
-    if "period" not in existing_config:
-        existing_config["period"] = {}
-    if "strategy" not in existing_config:
-        existing_config["strategy"] = {}
-    
-    if "initial_capital" in config:
-        existing_config["account"]["initial_capital"] = config["initial_capital"]
-    if "risk_per_trade" in config:
-        existing_config["account"]["risk_per_trade"] = config["risk_per_trade"]
-    if "max_drawdown" in config:
-        existing_config["account"]["max_drawdown"] = config["max_drawdown"]
-    if "max_positions" in config:
-        existing_config["account"]["max_positions"] = config["max_positions"]
-    if "leverage" in config:
-        existing_config["account"]["leverage"] = config["leverage"]
-    
-    if "symbol" in config:
-        existing_config["trading"]["symbol"] = config["symbol"]
-    if "timeframes" in config:
-        existing_config["trading"]["timeframes"] = config["timeframes"]
-    
-    if "start_date" in config:
-        existing_config["period"]["start_date"] = config["start_date"]
-    if "end_date" in config:
-        existing_config["period"]["end_date"] = config["end_date"]
-    
+    for section in ("account", "trading", "period", "strategy"):
+        if section not in existing_config:
+            existing_config[section] = {}
+
+    for key in ("initial_capital", "risk_per_trade", "max_drawdown", "max_positions", "leverage"):
+        if key in config:
+            existing_config["account"][key] = config[key]
+    for key in ("symbol", "timeframes"):
+        if key in config:
+            existing_config["trading"][key] = config[key]
+    for key in ("start_date", "end_date"):
+        if key in config:
+            existing_config["period"][key] = config[key]
     if "strategy" in config:
         existing_config["strategy"]["name"] = config["strategy"]
-        
-    if "min_risk_reward" in config:
-        existing_config["min_risk_reward"] = config["min_risk_reward"]
-    if "trailing_stop_distance" in config:
-        existing_config["trailing_stop_distance"] = config["trailing_stop_distance"]
-    if "breakeven_trigger_r" in config:
-        existing_config["breakeven_trigger_r"] = config["breakeven_trigger_r"]
-    if "max_total_risk_percent" in config:
-        existing_config["max_total_risk_percent"] = config["max_total_risk_percent"]
-    if "dynamic_position_sizing" in config:
-        existing_config["dynamic_position_sizing"] = config["dynamic_position_sizing"]
+    for key in ("min_risk_reward", "trailing_stop_distance", "breakeven_trigger_r", "max_total_risk_percent", "dynamic_position_sizing"):
+        if key in config:
+            existing_config[key] = config[key]
     
     with open(config_path, 'w') as f:
         json.dump(existing_config, f, indent=2)
@@ -361,12 +339,10 @@ async def update_config(config: Dict[str, Any]):
 @app.get("/api/user-configs")
 async def list_user_configs():
     """List all saved user configurations."""
-    configs = []
-    if os.path.exists(USER_CONFIGS_DIR):
-        for name in os.listdir(USER_CONFIGS_DIR):
-            if name.endswith(".json"):
-                configs.append(name[:-5])  # Remove .json extension
-    return {"configs": sorted(configs)}
+    if not os.path.exists(USER_CONFIGS_DIR):
+        return {"configs": []}
+    configs = sorted(name[:-5] for name in os.listdir(USER_CONFIGS_DIR) if name.endswith(".json"))
+    return {"configs": configs}
 
 
 @app.get("/api/user-configs/{name}")
@@ -427,10 +403,8 @@ async def start_backtest(request: BacktestRequest, background_tasks: BackgroundT
         raise HTTPException(status_code=400, detail=f"Backtest {run_id} is already running")
     
     if len(running_backtests) > 20:
-        keys_to_remove = list(running_backtests.keys())[:-20]
-        for k in keys_to_remove:
-            if k in running_backtests:
-                del running_backtests[k]
+        for k in list(running_backtests.keys())[:-20]:
+            del running_backtests[k]
 
     running_backtests[run_id] = BacktestStatus(
         run_id=run_id,
@@ -478,14 +452,10 @@ async def get_backtest_results(run_id: str):
 @app.get("/results")
 async def get_results():
     """Get all backtest results."""
-    results = []
-    
-    if os.path.exists(RESULTS_DIR):
-        for name in os.listdir(RESULTS_DIR):
-            if name.endswith(".json"):
-                results.append(name)
-    
-    return {"results": sorted(results)}
+    if not os.path.exists(RESULTS_DIR):
+        return {"results": []}
+    results = sorted(name for name in os.listdir(RESULTS_DIR) if name.endswith(".json"))
+    return {"results": results}
 
 
 def _default_configuration_for_legacy_backtest() -> Dict[str, Any]:
@@ -576,24 +546,24 @@ async def get_backtest_history(page: int = 1, page_size: int = 10):
                 file_path = os.path.join(RESULTS_DIR, filename)
                 with open(file_path, 'r') as f:
                     data = json.load(f)
-                
+                cfg = data.get("configuration", {})
                 summary = {
                     "filename": filename,
                     "timestamp": datetime.fromtimestamp(mtime).isoformat(),
                     "total_pnl": data.get("total_pnl", 0),
-                    "initial_capital": data.get("initial_capital", data.get("configuration", {}).get("initial_capital", 10000)),
+                    "initial_capital": data.get("initial_capital", cfg.get("initial_capital", 10000)),
                     "win_rate": data.get("win_rate", 0),
                     "max_drawdown": data.get("max_drawdown", 0),
                     "total_trades": data.get("total_trades", 0),
                     "profit_factor": data.get("profit_factor", 0),
                     "sharpe_ratio": data.get("sharpe_ratio", 0),
-                    "expected_value": data.get("expected_value", 0), # Expectancy if available
+                    "expected_value": data.get("expected_value", 0),
                     "avg_win": data.get("avg_win", 0),
                     "avg_loss": data.get("avg_loss", 0),
                     "winning_trades": data.get("winning_trades", 0),
                     "losing_trades": data.get("losing_trades", 0),
-                    "strategy": data.get("configuration", {}).get("strategy", "Unknown"),
-                    "configuration": data.get("configuration", {})
+                    "strategy": cfg.get("strategy", "Unknown"),
+                    "configuration": cfg
                 }
                 history.append(summary)
             except Exception as e:
@@ -1001,31 +971,24 @@ async def get_top_symbols(limit: int = 10):
             tickers = exchange.fetch_tickers()
             
             valid_pairs = []
-            EXCLUDED_PATTERNS = ['UP/', 'DOWN/', 'BEAR/', 'BULL/']
-            EXCLUDED_EXACT = [
-                'USDC/USDT', 'FDUSD/USDT', 'TUSD/USDT', 'USDP/USDT', 'BUSD/USDT', 
+            EXCLUDED_PATTERNS = ('UP/', 'DOWN/', 'BEAR/', 'BULL/')
+            EXCLUDED_EXACT = frozenset([
+                'USDC/USDT', 'FDUSD/USDT', 'TUSD/USDT', 'USDP/USDT', 'BUSD/USDT',
                 'DAI/USDT', 'EUR/USDT', 'GBP/USDT', 'PAXG/USDT', 'WBTC/USDT',
                 'USTC/USDT', 'USD1/USDT', 'ZAMA/USDT', 'USDE/USDT'
-            ]
+            ])
             
             for symbol, ticker in tickers.items():
                 if not symbol.endswith('/USDT'):
                     continue
-                    
                 if symbol in EXCLUDED_EXACT:
                     continue
-                    
-                is_excluded = False
-                for pattern in EXCLUDED_PATTERNS:
-                    if pattern in symbol:
-                        is_excluded = True
-                        break
-                if is_excluded:
+                if any(p in symbol for p in EXCLUDED_PATTERNS):
                     continue
 
                 quote_vol = ticker.get('quoteVolume', 0)
                 if quote_vol:
-                     valid_pairs.append((symbol, quote_vol))
+                    valid_pairs.append((symbol, quote_vol))
             
             valid_pairs.sort(key=lambda x: x[1], reverse=True)
             
@@ -1190,12 +1153,13 @@ async def get_ohlcv(
                 raw = exchange.fetch_ohlcv(fetch_symbol, timeframe, since=fetch_since_ms, limit=min(num_bars, 1500))
                 if not raw:
                     return {"candles": [], "indicators": {}}
-                timestamps = [bar[0] for bar in raw]
-                opens   = np.array([bar[1] for bar in raw], dtype=float)
-                highs   = np.array([bar[2] for bar in raw], dtype=float)
-                lows    = np.array([bar[3] for bar in raw], dtype=float)
-                closes  = np.array([bar[4] for bar in raw], dtype=float)
-                volumes = np.array([bar[5] for bar in raw], dtype=float)
+                raw_arr = np.array(raw, dtype=float)
+                timestamps = raw_arr[:, 0].astype(int).tolist()
+                opens   = raw_arr[:, 1]
+                highs   = raw_arr[:, 2]
+                lows    = raw_arr[:, 3]
+                closes  = raw_arr[:, 4]
+                volumes = raw_arr[:, 5]
 
             indicators_raw: dict = {}
             indicators_out: dict = {}
@@ -1235,8 +1199,9 @@ async def get_ohlcv(
                                 since=htf_fetch_ms,
                                 limit=min(htf_limit, 1000)
                             )
-                            htf_closes    = np.array([b[4] for b in raw_htf], dtype=float)
-                            htf_timestamps = [b[0] for b in raw_htf]
+                            raw_htf_arr   = np.array(raw_htf, dtype=float)
+                            htf_closes    = raw_htf_arr[:, 4]
+                            htf_timestamps = raw_htf_arr[:, 0].astype(int).tolist()
                         htf_ema_arr   = talib.EMA(htf_closes, timeperiod=ema_period) if len(htf_closes) > 0 else np.array([])
 
                         ema_series: list = []

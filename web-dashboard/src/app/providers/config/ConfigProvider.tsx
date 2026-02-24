@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useCallback, useEffect } from 'react';
+import React, { createContext, useContext, useState, useCallback, useEffect, useMemo } from 'react';
 import { BacktestConfig, Strategy, DEFAULT_CONFIG } from '../../../shared/model/types';
 import { API_BASE } from '../../../shared/api/config';
 import { validateBacktestConfig } from '../../../shared/lib/validation';
@@ -63,6 +63,17 @@ export const ConfigProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     const [savedConfigs, setSavedConfigs] = useState<string[]>([]);
     const [topSymbols, setTopSymbols] = useState<string[]>([]);
 
+    const strategyMap = useMemo(() => new Map(strategies.map(s => [s.name, s])), [strategies]);
+
+    const getStrategyDefaults = useCallback((strategyDef: Strategy | undefined, overrides?: Record<string, any>) => {
+        if (!strategyDef?.config_schema) return overrides ?? {};
+        const defaults: Record<string, any> = {};
+        Object.entries(strategyDef.config_schema).forEach(([key, schema]: [string, any]) => {
+            defaults[key] = (schema as { default?: any }).default;
+        });
+        return { ...defaults, ...(overrides ?? {}) };
+    }, []);
+
     useEffect(() => {
         const fetchTopSymbols = async () => {
             try {
@@ -96,15 +107,7 @@ export const ConfigProvider: React.FC<{ children: React.ReactNode }> = ({ childr
             if (data.strategy) {
                 setSelectedStrategy(data.strategy);
                 const strategyDef = currentStrategies.find(s => s.name === data.strategy);
-                if (strategyDef) {
-                    const defaults: Record<string, any> = {};
-                    Object.entries(strategyDef.config_schema || {}).forEach(([key, schema]: [string, any]) => {
-                        defaults[key] = schema.default;
-                    });
-                    setStrategyConfig({ ...defaults, ...(data.strategy_config || {}) });
-                } else {
-                    setStrategyConfig(data.strategy_config || {});
-                }
+                setStrategyConfig(getStrategyDefaults(strategyDef, data.strategy_config));
             } else {
                 setStrategyConfig({});
             }
@@ -143,16 +146,8 @@ export const ConfigProvider: React.FC<{ children: React.ReactNode }> = ({ childr
                 setConfig(prev => ({ ...prev, ...data }));
                 if (data.strategy) {
                     setSelectedStrategy(data.strategy);
-                    const strategyDef = strategies.find(s => s.name === data.strategy);
-                    if (strategyDef) {
-                        const defaults: Record<string, any> = {};
-                        Object.entries(strategyDef.config_schema || {}).forEach(([key, schema]: [string, any]) => {
-                            defaults[key] = schema.default;
-                        });
-                        setStrategyConfig({ ...defaults, ...(data.strategy_config || {}) });
-                    } else {
-                        setStrategyConfig(data.strategy_config || {});
-                    }
+                    const strategyDef = strategyMap.get(data.strategy);
+                    setStrategyConfig(getStrategyDefaults(strategyDef, data.strategy_config));
                 } else {
                     setStrategyConfig({});
                 }
@@ -239,23 +234,14 @@ export const ConfigProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         setConfig(prev => ({ ...prev, strategy: strategyName }));
 
         if (strategyName && strategyName.trim() !== "") {
-            const strategy = strategies.find(s => s.name === strategyName);
-            if (strategy) {
-                const defaults: Record<string, any> = {};
-                Object.entries(strategy.config_schema || {}).forEach(([key, schema]: [string, any]) => {
-                    defaults[key] = schema.default;
-                });
-                setStrategyConfig(defaults);
-                setIsConfigDisabled(false);
-            } else {
-                setStrategyConfig({});
-                setIsConfigDisabled(false);
-            }
+            const strategy = strategyMap.get(strategyName);
+            setStrategyConfig(getStrategyDefaults(strategy));
+            setIsConfigDisabled(false);
         } else {
             setStrategyConfig({});
             setIsConfigDisabled(false);
         }
-    }, [strategies]);
+    }, [strategyMap]);
 
     const handleConfigChange = useCallback((key: string, value: any) => {
         setConfig(prev => ({ ...prev, [key]: value }));

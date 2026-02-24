@@ -73,8 +73,8 @@ class BTBacktestEngine(BaseEngine):
                     continue
 
             # Ensure expected column names (lowercase)
-            expected_cols = ['open', 'high', 'low', 'close', 'volume']
-            missing = [c for c in expected_cols if c not in df.columns]
+            expected_cols = {'open', 'high', 'low', 'close', 'volume'}
+            missing = list(expected_cols - set(df.columns))
             if missing:
                 logger.warning(f"Missing columns {missing} for {tf}")
                 continue
@@ -115,7 +115,7 @@ class BTBacktestEngine(BaseEngine):
         # Capture equity curve
         self.equity_curve = strat.analyzers.equity.get_analysis()
 
-        # Format metrics
+        # Format metrics (cache analyzer results to avoid repeated get_analysis calls)
         sharpe = strat.analyzers.sharpe.get_analysis().get('sharperatio')
         if sharpe is None: sharpe = 0.0
 
@@ -123,21 +123,25 @@ class BTBacktestEngine(BaseEngine):
         max_dd = drawdown_info.get('max', {}).get('drawdown', 0.0)
         if max_dd is None: max_dd = 0.0
 
+        trade_analysis = strat.analyzers.trades.get_analysis()
+        won = trade_analysis.get('won', {})
+        lost = trade_analysis.get('lost', {})
+
         metrics = {
             "initial_capital": self.cerebro.broker.startingcash,
             "final_capital": self.cerebro.broker.getvalue(),
             "total_pnl": self.cerebro.broker.getvalue() - self.cerebro.broker.startingcash,
             "sharpe_ratio": sharpe,
             "max_drawdown": max_dd,
-            "total_trades": strat.analyzers.trades.get_analysis().get('total', {}).get('closed', 0),
-            "win_rate": self._calculate_win_rate(strat.analyzers.trades.get_analysis()),
-            "profit_factor": self._calculate_profit_factor(strat.analyzers.trades.get_analysis()),
-            "win_count": strat.analyzers.trades.get_analysis().get('won', {}).get('total', 0),
-            "loss_count": strat.analyzers.trades.get_analysis().get('lost', {}).get('total', 0),
-            "avg_win": strat.analyzers.trades.get_analysis().get('won', {}).get('pnl', {}).get('average', 0.0),
-            "avg_loss": strat.analyzers.trades.get_analysis().get('lost', {}).get('pnl', {}).get('average', 0.0),
+            "total_trades": trade_analysis.get('total', {}).get('closed', 0),
+            "win_rate": self._calculate_win_rate(trade_analysis),
+            "profit_factor": self._calculate_profit_factor(trade_analysis),
+            "win_count": won.get('total', 0),
+            "loss_count": lost.get('total', 0),
+            "avg_win": won.get('pnl', {}).get('average', 0.0),
+            "avg_loss": lost.get('pnl', {}).get('average', 0.0),
         }
-        
+
         return metrics
 
     def _calculate_win_rate(self, trade_analysis):

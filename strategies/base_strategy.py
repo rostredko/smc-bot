@@ -55,10 +55,10 @@ class BaseStrategy(bt.Strategy):
         return self.trade_map.get(trade_ref, {})
 
     def notify_order(self, order):
-        if order.status in [order.Submitted, order.Accepted]:
+        if order.status in (order.Submitted, order.Accepted):
             return
 
-        if order.status in [order.Completed]:
+        if order.status == order.Completed:
             dt_str = self.data.datetime.date(0).isoformat()
             if order.isbuy():
                 logger.info(f"[{dt_str}] BUY EXECUTED, Price: {order.executed.price:.2f}, Cost: {order.executed.value:.2f}, Comm {order.executed.comm:.2f}")
@@ -90,7 +90,7 @@ class BaseStrategy(bt.Strategy):
                     self.stop_order = None
                 self.tp_order = None
 
-        elif order.status in [order.Canceled, order.Margin, order.Rejected]:
+        elif order.status in (order.Canceled, order.Margin, order.Rejected):
             dt_str = self.data.datetime.date(0).isoformat()
             info_str = f" Info: {order.info}" if order.info else ""
             if order.status == order.Canceled:

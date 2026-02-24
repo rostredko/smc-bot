@@ -217,8 +217,8 @@ class DataLoader:
         df.set_index("timestamp", inplace=True)
 
         # Ensure numeric types
-        for col in ["open", "high", "low", "close", "volume"]:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
+        ohlc_cols = ["open", "high", "low", "close", "volume"]
+        df[ohlc_cols] = df[ohlc_cols].apply(pd.to_numeric, errors="coerce")
 
         # Remove any rows with NaN values
         df.dropna(inplace=True)
