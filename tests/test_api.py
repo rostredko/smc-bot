@@ -34,13 +34,21 @@ class TestAPI(unittest.TestCase):
         response = self.client.get("/config")
         self.assertEqual(response.status_code, 200)
         data = response.json()
-        self.assertIn("initial_capital", data)
-        self.assertIn("strategy", data)
+        # Empty config returns {}; populated config has initial_capital, strategy
+        self.assertIsInstance(data, dict)
 
     def test_history_endpoint(self):
         response = self.client.get("/api/backtest/history")
         self.assertEqual(response.status_code, 200)
         self.assertIn("history", response.json())
+
+    def test_live_config_endpoints(self):
+        response = self.client.get("/config/live")
+        self.assertEqual(response.status_code, 200)
+        self.assertIsInstance(response.json(), dict)
+        response = self.client.post("/config/live", json={"symbol": "ETH/USDT", "sandbox": True})
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("message", response.json())
 
 if __name__ == '__main__':
     unittest.main()

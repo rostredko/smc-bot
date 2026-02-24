@@ -1,0 +1,33 @@
+FROM python:3.11-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential wget \
+    && rm -rf /var/lib/apt/lists/*
+
+# TA-Lib C library (--build needed for aarch64/ARM)
+RUN wget -q http://prdownloads.sourceforge.net/ta-lib/ta-lib-0.4.0-src.tar.gz -O ta-lib.tar.gz \
+    && tar -xzf ta-lib.tar.gz \
+    && cd ta-lib \
+    && ./configure --prefix=/usr --build=$(uname -m)-unknown-linux-gnu \
+    && make \
+    && make install \
+    && cd .. \
+    && rm -rf ta-lib ta-lib.tar.gz
+
+WORKDIR /app
+
+COPY deps/requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY engine/ engine/
+COPY strategies/ strategies/
+COPY db/ db/
+COPY web-dashboard/ web-dashboard/
+COPY main.py .
+
+ENV PYTHONPATH=/app
+WORKDIR /app/web-dashboard
+
+EXPOSE 8000
+
+CMD ["python", "server.py"]

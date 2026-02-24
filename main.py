@@ -5,15 +5,15 @@ This script provides easy access to all main functionality including backtesting
 """
 
 import json
-import os
 import sys
 import argparse
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, Optional
 
-# Add engine directory to path
-engine_dir = Path(__file__).parent / "engine"
-sys.path.insert(0, str(engine_dir))
+# Add project root to path
+project_root = Path(__file__).parent
+sys.path.insert(0, str(project_root))
 
 from engine.logger import get_logger, setup_logging
 from engine.bt_backtest_engine import BTBacktestEngine
@@ -50,85 +50,86 @@ def create_default_config() -> Dict[str, Any]:
         },
         # Risk management
         "min_risk_reward": 3.0,
-        # Logging
         "log_level": "INFO",
-        "export_logs": True,
-        "log_file": "results/backtest_logs.json",
     }
 
 
-def load_config_from_json(config_file: str) -> Dict[str, Any]:
-    """
-    Load configuration from JSON file.
+def _normalize_json_config(json_config: Dict[str, Any]) -> Dict[str, Any]:
+    """Convert JSON config (nested or flat) to flat engine format."""
+    strategy_conf = json_config.get("strategy", {})
+    if isinstance(strategy_conf, str):
+        strategy_name = strategy_conf
+    else:
+        strategy_name = strategy_conf.get("name", "") if strategy_conf else ""
 
-    Args:
-        config_file: Path to JSON configuration file
+    if not strategy_name:
+        strategy_name = "bt_price_action"
 
-    Returns:
-        Configuration dictionary
-    """
+    account = json_config.get("account", {})
+    trading = json_config.get("trading", {})
+    period = json_config.get("period", {})
+
+    return {
+        "initial_capital": account.get("initial_capital", json_config.get("initial_capital", 10000)),
+        "commission": trading.get("commission", json_config.get("commission", 0.0004)),
+        "symbol": trading.get("symbol", json_config.get("symbol", "BTC/USDT")),
+        "timeframes": trading.get("timeframes", json_config.get("timeframes", ["4h", "15m"])),
+        "exchange": trading.get("exchange", json_config.get("exchange", "binance")),
+        "leverage": json_config.get("leverage", account.get("leverage", 10.0)),
+        "start_date": period.get("start_date", json_config.get("start_date", "2023-01-01")),
+        "end_date": period.get("end_date", json_config.get("end_date", "2023-12-31")),
+        "strategy": strategy_name,
+        "strategy_config": (
+            strategy_conf.get("config", {}) if isinstance(strategy_conf, dict) else
+            json_config.get("strategy_config", {})
+        ),
+    }
+
+
+def load_config_from_db(config_type: str = "backtest") -> Dict[str, Any] | None:
+    """Load configuration from MongoDB. Returns None if DB unavailable or config empty."""
     try:
-        with open(config_file, "r") as f:
-            json_config = json.load(f)
-
-        # Support both flat and nested structures
-        strategy_conf = json_config.get("strategy", {})
-        if isinstance(strategy_conf, str):
-            strategy_name = strategy_conf
+        from db import is_database_available
+        from db.repositories import AppConfigRepository
+        if not is_database_available():
+            return None
+        repo = AppConfigRepository()
+        if config_type == "backtest":
+            raw = repo.get_backtest_config()
         else:
-            strategy_name = strategy_conf.get("name", "")
-
-        if not strategy_name:
-            strategy_name = "bt_price_action"
-
-        config = {
-            "initial_capital": json_config.get("account", {}).get("initial_capital", json_config.get("initial_capital", 10000)),
-            "commission": json_config.get("trading", {}).get("commission", json_config.get("commission", 0.0004)),
-            "symbol": json_config.get("trading", {}).get("symbol", json_config.get("symbol", "BTC/USDT")),
-            "timeframes": json_config.get("trading", {}).get("timeframes", json_config.get("timeframes", ["4h", "15m"])),
-            "exchange": json_config.get("trading", {}).get("exchange", json_config.get("exchange", "binance")),
-            "leverage": json_config.get("leverage", 10.0),
-            "start_date": json_config.get("period", {}).get("start_date", json_config.get("start_date", "2023-01-01")),
-            "end_date": json_config.get("period", {}).get("end_date", json_config.get("end_date", "2023-12-31")),
-            "strategy": strategy_name,
-            "strategy_config": (json_config.get("strategy", {}) if isinstance(json_config.get("strategy"), dict) else {}).get("config", json_config.get("strategy_config", {})),
-        }
-
-        return config
-
-    except FileNotFoundError:
-        logger.error(f"❌ Configuration file not found: {config_file}")
-        return None
-    except json.JSONDecodeError as e:
-        logger.error(f"❌ Invalid JSON in configuration file: {e}")
-        return None
+            raw = repo.get_live_config()
+        if not raw:
+            return None
+        if config_type == "backtest":
+            return _normalize_json_config(raw)
+        return _normalize_live_config(raw)
     except Exception as e:
-        logger.error(f"❌ Error loading configuration: {e}")
+        logger.debug(f"Could not load config from DB: {e}")
         return None
 
 
-def run_backtest_from_config(config_file: str, config_name: Optional[str] = None):
-    """
-    Run backtest from JSON configuration file.
+def _normalize_live_config(raw: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalize live config from DB (nested or flat) to engine format."""
+    account = raw.get("account", {})
+    trading = raw.get("trading", {})
+    base = _normalize_json_config(raw)
+    base["sandbox"] = raw.get("sandbox", trading.get("sandbox", True))
+    base["apiKey"] = raw.get("apiKey", trading.get("apiKey", ""))
+    base["secret"] = raw.get("secret", trading.get("secret", ""))
+    base["poll_interval"] = raw.get("poll_interval", 60)
+    return base
 
-    Args:
-        config_file: Path to JSON configuration file
-        config_name: Optional name for the configuration (defaults to filename)
+
+def run_backtest_from_config(config: Dict[str, Any], config_name: str = "Backtest"):
+    """
+    Run backtest from configuration dict.
 
     Returns:
         Tuple of (engine, metrics) or (None, None) if failed
     """
-    if config_name is None:
-        config_name = os.path.basename(config_file).replace(".json", "")
-
     logger.info(f"\n{'='*60}")
     logger.info(f"RUNNING BACKTEST: {config_name}")
-    logger.info(f"Configuration: {config_file}")
     logger.info(f"{'='*60}")
-
-    config = load_config_from_json(config_file)
-    if config is None:
-        return None, None
 
     logger.info("📊 Configuration Summary:")
     logger.info(f"   Strategy: {config['strategy']}")
@@ -141,15 +142,11 @@ def run_backtest_from_config(config_file: str, config_name: Optional[str] = None
         engine.add_strategy(PriceActionStrategy, **config.get('strategy_config', {}))
         metrics = engine.run_backtest()
 
-        if config.get("save_results", False):
-            results_file = config.get("results_file", f"{config_name}_results.json")
-            save_results(metrics, results_file)
-            logger.info(f"📊 Results saved to: {results_file}")
-
-        if config.get("export_trades", False):
-            trades_file = config.get("trades_file", f"{config_name}_trades.json")
-            export_trades(engine.closed_trades, trades_file)
-            logger.info(f"💼 Trades exported to: {trades_file}")
+        if config.get("save_results", False) or config.get("export_trades", False):
+            run_id = f"backtest_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            full_metrics = _build_full_metrics(metrics, engine, config)
+            _save_backtest(run_id, full_metrics)
+            logger.info(f"📊 Results saved (run_id: {run_id})")
 
         return engine, metrics
 
@@ -158,66 +155,98 @@ def run_backtest_from_config(config_file: str, config_name: Optional[str] = None
         return None, None
 
 
-def save_results(metrics: Dict[str, Any], filename: str):
-    """Save backtest results to JSON file."""
-    try:
-        with open(filename, "w") as f:
-            json.dump(metrics, f, indent=2, default=str)
-    except Exception as e:
-        logger.error(f"❌ Error saving results: {e}")
+def _build_full_metrics(
+    metrics: Dict[str, Any], engine: Any, config: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Build full metrics dict with trades and equity curve for DB storage."""
+    from datetime import datetime as dt
+
+    trades_data = []
+    for i, trade in enumerate(engine.closed_trades):
+        entry_time = trade.get("entry_time")
+        exit_time = trade.get("exit_time")
+        duration_str = None
+        if exit_time and entry_time:
+            try:
+                et = dt.fromisoformat(entry_time) if isinstance(entry_time, str) else entry_time
+                xt = dt.fromisoformat(exit_time) if isinstance(exit_time, str) else exit_time
+                duration_str = str(xt - et).replace("0 days ", "")
+            except (ValueError, TypeError):
+                pass
+        trades_data.append({
+            "id": i + 1,
+            "direction": trade.get("direction"),
+            "entry_price": trade.get("entry_price"),
+            "exit_price": trade.get("exit_price"),
+            "size": trade.get("size"),
+            "pnl": trade.get("realized_pnl"),
+            "entry_time": entry_time,
+            "exit_time": exit_time,
+            "duration": duration_str,
+            "realized_pnl": trade.get("realized_pnl"),
+            "exit_reason": trade.get("exit_reason", "Unknown"),
+            "reason": trade.get("reason", "Unknown"),
+            "narrative": trade.get("narrative"),
+            "sl_calculation": trade.get("sl_calculation"),
+            "tp_calculation": trade.get("tp_calculation"),
+            "sl_history": trade.get("sl_history", []),
+            "entry_context": trade.get("entry_context"),
+            "exit_context": trade.get("exit_context"),
+        })
+    equity_data = []
+    for point in getattr(engine, "equity_curve", []):
+        ts = point.get("timestamp")
+        equity_data.append({
+            "date": ts.isoformat() if hasattr(ts, "isoformat") else str(ts),
+            "equity": point.get("equity", 0),
+        })
+    engine_config = {
+        "initial_capital": config.get("initial_capital", 10000),
+        "risk_per_trade": config.get("risk_per_trade", 2.0),
+        "max_drawdown": config.get("max_drawdown", 15.0),
+        "max_positions": config.get("max_positions", 3),
+        "leverage": config.get("leverage", 10.0),
+        "symbol": config.get("symbol", "BTC/USDT"),
+        "timeframes": config.get("timeframes", ["4h", "15m"]),
+        "exchange": config.get("exchange", "binance"),
+        "exchange_type": config.get("exchange_type", "future"),
+        "start_date": config.get("start_date", "2023-01-01"),
+        "end_date": config.get("end_date", "2023-12-31"),
+        "strategy": config.get("strategy", "bt_price_action"),
+        "strategy_config": config.get("strategy_config", {}),
+    }
+    return {
+        **metrics,
+        "equity_curve": equity_data,
+        "trades": trades_data,
+        "configuration": engine_config,
+        "strategy": engine_config.get("strategy", "Unknown"),
+        "logs": [],
+    }
 
 
-def export_trades(trades: list, filename: str):
-    """Export trade history to JSON file."""
-    try:
-        with open(filename, "w") as f:
-            json.dump(trades, f, indent=2, default=str)
-    except Exception as e:
-        logger.error(f"❌ Error exporting trades: {e}")
+def _save_backtest(run_id: str, metrics: Dict[str, Any]) -> None:
+    """Save backtest results to database."""
+    from db import is_database_available
+    from db.repositories import BacktestRepository
+    if not is_database_available():
+        raise RuntimeError("MongoDB required. Set MONGODB_URI and ensure MongoDB is running.")
+    BacktestRepository().save(run_id, metrics)
 
 
-def run_backtest(config_file: str = "config/backtest_config.json"):
-    """
-    Run backtest from JSON configuration file.
-
-    Args:
-        config_file: Path to JSON configuration file
-    """
+def run_backtest():
+    """Run backtest. Config from MongoDB only."""
     logger.info("🚀 Backtrade Machine - Backtest")
     logger.info("=" * 50)
 
-    if not os.path.exists(config_file):
-        logger.warning(f"❌ Configuration file not found: {config_file}")
-        logger.info("💡 Creating default configuration file...")
+    config = load_config_from_db("backtest")
+    if config is None:
+        config = _normalize_json_config(create_default_config())
+        logger.info("📋 Using default config (DB empty)")
+    else:
+        logger.info("📋 Config loaded from database")
 
-        config_dir = os.path.dirname(config_file)
-        if config_dir and not os.path.exists(config_dir):
-            os.makedirs(config_dir)
-
-        default_config = {
-            "name": "Default Backtest",
-            "description": "Default configuration for price action strategy testing",
-            "account": {"initial_capital": 10000, "risk_per_trade": 2.0, "max_drawdown": 15.0, "max_positions": 3, "leverage": 10.0},
-            "trading": {"symbol": "BTC/USDT", "timeframes": ["4h", "15m"], "exchange": "binance", "slippage": 0.0001, "commission": 0.0004},
-            "period": {"start_date": "2025-09-01", "end_date": "2025-10-20"},
-            "strategy": {
-                "name": "bt_price_action",
-                "config": {
-                    "trend_ema_period": 200,
-                    "rsi_period": 14,
-                    "risk_reward_ratio": 2.5,
-                },
-            },
-            "output": {"save_results": True, "results_file": "results/backtest_results.json", "export_trades": True, "trades_file": "results/trades_history.json"},
-        }
-
-        with open(config_file, "w") as f:
-            json.dump(default_config, f, indent=2)
-
-        logger.info(f"✅ Created default configuration: {config_file}")
-        logger.info("💡 You can edit this file to customize your backtest parameters")
-
-    engine, metrics = run_backtest_from_config(config_file, "Backtest")
+    engine, metrics = run_backtest_from_config(config, "Backtest")
 
     if engine and metrics:
         signals_generated = getattr(engine.strategy, "signals_generated", 0)
@@ -236,23 +265,24 @@ def run_backtest(config_file: str = "config/backtest_config.json"):
             logger.info(f"✅ SUCCESS: Strategy generated {signals_generated} signals!")
         else:
             logger.warning("❌ ISSUE: No signals were generated")
-            logger.info("💡 Try adjusting strategy parameters in the configuration file")
+            logger.info("💡 Try adjusting strategy parameters in the dashboard (MongoDB config)")
 
     return engine, metrics
 
 
-def run_live_trading(config_file_path: str = "config/live_config.json"):
-    """Run live trading mode."""
+def run_live_trading():
+    """Run live trading. Config from MongoDB only."""
     try:
         logger.info("Backtrade Machine - Live Trading")
         logger.info("=" * 50)
 
-        config = load_config_from_json(config_file_path)
+        config = load_config_from_db("live")
+
         if config is None:
-            config = {
+            config = _normalize_live_config({
                 "account": {"initial_capital": 1000.0, "risk_per_trade": 2.0},
-                "trading": {"symbol": "BTC/USDT", "exchange": "binance", "sandbox": True}
-            }
+                "trading": {"symbol": "BTC/USDT", "exchange": "binance", "sandbox": True},
+            })
             logger.warning("⚠️  Config not found, using default.")
 
         engine = BTLiveEngine(config)
@@ -294,18 +324,15 @@ def show_help():
     print("=" * 50)
     print()
     print("🔧 Backtest Commands:")
-    print("  python main.py backtest                    # Run with default config")
-    print("  python main.py backtest config/backtest_config.json  # Run with custom config")
+    print("  python main.py backtest                    # Config from MongoDB")
     print()
     print("📈 Live Trading Commands:")
-    print("  python main.py live                        # Start live trading")
-    print("  python main.py live config/live_config.json")
+    print("  python main.py live                        # Config from MongoDB")
     print()
     print("🧪 Testing Commands:")
     print("  python main.py test                        # Run all tests")
     print()
     print("📁 Project Structure:")
-    print("  config/     - Configuration files")
     print("  engine/     - Core trading engine")
     print("  strategies/ - Trading strategies")
     print("  tests/      - Automated tests")
@@ -319,27 +346,23 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python main.py backtest                           # Run backtest with default config
-  python main.py backtest config/my_config.json    # Run backtest with custom config
-  python main.py live                              # Start live trading
-  python main.py test                              # Run tests
-  python main.py help                              # Show detailed help
+  python main.py backtest    # Config from MongoDB
+  python main.py live       # Config from MongoDB
+  python main.py test       # Run tests
+  python main.py help       # Show detailed help
         """,
     )
 
     parser.add_argument("command", choices=["backtest", "live", "test", "help"], help="Command to execute")
-    parser.add_argument("config_file", nargs="?", default=None, help="Configuration file path")
     parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose output")
 
     args = parser.parse_args()
 
     if args.command == "backtest":
-        config_path = args.config_file or "config/backtest_config.json"
-        run_backtest(config_path)
+        run_backtest()
 
     elif args.command == "live":
-        config_path = args.config_file or "config/live_config.json"
-        run_live_trading(config_path)
+        run_live_trading()
 
     elif args.command == "test":
         run_tests()
@@ -364,7 +387,6 @@ if __name__ == "__main__":
         print()
         print("Examples:")
         print("  python main.py backtest")
-        print("  python main.py backtest config/backtest_config.json")
         print("  python main.py live")
         print("  python main.py test")
     else:

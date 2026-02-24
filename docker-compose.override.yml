@@ -1,0 +1,19 @@
+# Development overrides: mount source, auto-reload. Loaded automatically by docker compose.
+# Delete or rename this file for production (no hot-reload).
+
+services:
+  backend:
+    volumes:
+      - ./engine:/app/engine
+      - ./strategies:/app/strategies
+      - ./db:/app/db
+      - ./web-dashboard:/app/web-dashboard
+    command: ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8000", "--reload", "--timeout-graceful-shutdown", "0"]
+
+  frontend:
+    volumes:
+      - ./web-dashboard/src:/app/src
+      - ./web-dashboard/index.html:/app/index.html
+      - ./web-dashboard/vite.config.ts:/app/vite.config.ts
+      - ./web-dashboard/tsconfig.json:/app/tsconfig.json
+      - ./web-dashboard/tsconfig.node.json:/app/tsconfig.node.json

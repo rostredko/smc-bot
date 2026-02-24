@@ -5,6 +5,26 @@ Trading bot for cryptocurrency spot trading using custom strategies. Supports ba
 
 ---
 
+## DOCKER
+
+### docker-compose.yml
+- **mongo**: MongoDB 7, port 27017, volume `mongo_data`
+- **backend**: FastAPI (Dockerfile.backend), port 8000, volume `data_cache`, depends on mongo health
+- **frontend**: Vite dev (Dockerfile.frontend), port 5173
+
+### docker-compose.override.yml (dev)
+Loaded automatically. Mounts source for hot-reload:
+- Backend: `engine/`, `strategies/`, `db/`, `web-dashboard/` + `uvicorn --reload`
+- Frontend: `src/`, config files (Vite HMR)
+
+### Dockerfile.backend
+Python 3.11, TA-Lib from source, deps from `deps/requirements.txt`. CMD: `python server.py` (override: `uvicorn --reload`).
+
+### Dockerfile.frontend
+Node 20, `npm run dev -- --host 0.0.0.0`. Serves on 5173.
+
+---
+
 ## ENGINE MODULE
 
 ### 1. base_engine.py
@@ -200,9 +220,36 @@ Backtrader strategy using TA-Lib for high-performance indicator calculations and
 
 ---
 
+## DATABASE MODULE (`db/`)
+
+MongoDB stores backtest results, user configs, and app config. Required for web dashboard.
+
+### db/connection.py
+- `get_database()` — MongoDB database instance (uses mongomock when `USE_MONGOMOCK=true`)
+- `is_database_available()` — Checks MongoDB reachability
+- `init_db()` — Creates indexes
+
+### db/repositories/
+- **BacktestRepository**: `save()`, `get_by_id()`, `get_by_filename()`, `list_ids()`, `list_paginated()`, `delete()`
+- **UserConfigRepository**: `list_names()`, `get()`, `save()`, `delete()`
+- **AppConfigRepository**: `get()`, `save()`, `get_backtest_config()`, `get_live_config()`, `save_live_config()` — backtest and live configs
+
+### Collections
+- `backtests` — backtest results with metrics, trades, equity_curve, configuration
+- `user_configs` — saved config templates
+- `app_config` — backtest config (id: `default`), live config (id: `live`)
+
+### Environment
+- `MONGODB_URI` (default: `mongodb://localhost:27017`)
+- `MONGODB_DB` (default: `backtrade`)
+- `USE_MONGOMOCK=true` — for tests (in-memory mock)
+
+---
+
 ## CONFIGURATION
 
-**Config file:** `config/backtest_config.json` (default for CLI and web dashboard)
+**CLI & Web dashboard:** Config from MongoDB only. No config files.
+**Live trading:** Stored in MongoDB `app_config` (id: `live`). API: `GET/POST /config/live`
 
 ### Backtest Config:
 - initial_capital, risk_per_trade, max_drawdown, max_positions
@@ -225,7 +272,7 @@ Backtrader strategy using TA-Lib for high-performance indicator calculations and
 FastAPI backend that bridges the Python trading engine with the React frontend.
 
 **Endpoints:**
-- `/config`: Read/Write JSON configuration
+- `/config`: Read/Write configuration (from MongoDB)
 - `/backtest/start`: Triggers `BacktestEngine` in a background thread
 - `/backtest/status/{run_id}`, `/backtest/results/{run_id}`, `DELETE /backtest/{run_id}`
 - `/api/ohlcv`: OHLCV candles + indicators (EMA, RSI, ADX, ATR). Params: symbol, timeframe, start, end, backtest_start, backtest_end, exchange_type, ema_period, rsi_period, adx_period, atr_period. When backtest_start/end provided, uses DataLoader cache.

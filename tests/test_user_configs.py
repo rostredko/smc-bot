@@ -1,22 +1,25 @@
 import os
 import sys
 import pytest
-from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 # Add web-dashboard directory to path to import server
 sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'web-dashboard'))
 
-import server
 from server import app
 
 client = TestClient(app)
 
+
 @pytest.fixture(autouse=True)
-def isolated_configs_dir(tmp_path):
-    """Use a temporary directory instead of the real user_configs/ to avoid deleting real files."""
-    with patch.object(server, 'USER_CONFIGS_DIR', str(tmp_path)):
-        yield tmp_path
+def clear_user_configs():
+    """Clear user_configs before each test for isolation."""
+    from db.repositories import UserConfigRepository
+    repo = UserConfigRepository()
+    for name in repo.list_names():
+        repo.delete(name)
+    yield
+
 
 def test_list_empty_configs():
     response = client.get("/api/user-configs")

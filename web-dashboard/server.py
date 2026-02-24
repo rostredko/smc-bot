@@ -4,7 +4,6 @@ Provides REST API endpoints for web dashboard integration.
 """
 
 import os
-import json
 import asyncio
 import sys
 import threading
@@ -14,33 +13,55 @@ from pathlib import Path
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from engine.bt_backtest_engine import BTBacktestEngine
 from engine.data_loader import DataLoader
 from strategies.bt_price_action import PriceActionStrategy
 from engine.logger import get_logger, setup_logging, ws_log_queue
 
+from db import is_database_available, init_db
+from db.repositories import BacktestRepository, UserConfigRepository, AppConfigRepository
+
 setup_logging(enable_ws=False)
 logger = get_logger("server")
 
 BASE_DIR = Path(__file__).parent.parent.absolute()
 DATA_DIR = str(BASE_DIR / "data_cache")
-RESULTS_DIR = str(BASE_DIR / "results")
-USER_CONFIGS_DIR = str(BASE_DIR / "user_configs")
 
 os.makedirs(DATA_DIR, exist_ok=True)
-os.makedirs(RESULTS_DIR, exist_ok=True)
-os.makedirs(USER_CONFIGS_DIR, exist_ok=True)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    init_db()
+    if not is_database_available():
+        logger.error("MongoDB not available. Set MONGODB_URI and ensure MongoDB is running.")
+        raise RuntimeError("Database required. MongoDB not available.")
+    logger.info("Database storage enabled")
+    broadcast_task = asyncio.create_task(broadcast_from_queue())
+    yield
+    _broadcast_shutdown.set()
+    try:
+        await asyncio.wait_for(broadcast_task, timeout=2.0)
+    except (asyncio.CancelledError, asyncio.TimeoutError):
+        broadcast_task.cancel()
+        try:
+            await broadcast_task
+        except asyncio.CancelledError:
+            pass
+
 
 app = FastAPI(
     title="Backtrade Machine API",
     description="REST API for Backtrade Machine",
-    version="1.0.0"
+    version="1.0.0",
+    lifespan=lifespan,
 )
 
 app.add_middleware(
@@ -85,6 +106,8 @@ class BacktestRequest(BaseModel):
 
 
 class BacktestStatus(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     run_id: str
     status: str  # "running", "completed", "failed", "cancelled"
     progress: float = 0.0
@@ -93,9 +116,6 @@ class BacktestStatus(BaseModel):
     error: Optional[str] = None
     should_cancel: bool = False  # Flag to signal cancellation
     engine: Optional[Any] = None  # Reference to BacktestEngine for cancellation
-    
-    class Config:
-        arbitrary_types_allowed = True
 
 
 running_backtests: Dict[str, BacktestStatus] = {}
@@ -103,11 +123,12 @@ active_connections: List[WebSocket] = []
 connection_lock = threading.Lock()
 
 strategy_schema_cache: Dict[str, Dict[str, Any]] = {}
+_broadcast_shutdown: asyncio.Event = asyncio.Event()
 
 
 async def broadcast_from_queue():
     """Periodically drain ws_log_queue and broadcast messages to WebSocket clients."""
-    while True:
+    while not _broadcast_shutdown.is_set():
         try:
             while True:
                 try:
@@ -116,7 +137,7 @@ async def broadcast_from_queue():
                         connections_copy = active_connections.copy()
 
                     if not connections_copy:
-                        continue  # No clients connected, skip
+                        continue
 
                     for connection in connections_copy:
                         try:
@@ -125,8 +146,10 @@ async def broadcast_from_queue():
                             with connection_lock:
                                 if connection in active_connections:
                                     active_connections.remove(connection)
-                except Exception:  # queue.Empty or other
+                except Exception:
                     break
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
             logger.debug(f"Broadcaster loop error: {e}")
 
@@ -243,12 +266,6 @@ def get_strategy_config_schema(strategy_name: str):
     return schema
 
 
-@app.on_event("startup")
-async def startup_event():
-    """Start background task to broadcast queued messages."""
-    asyncio.create_task(broadcast_from_queue())
-
-
 @app.get("/")
 async def root():
     """Serve the main dashboard page."""
@@ -275,49 +292,45 @@ async def get_strategies():
     return {"strategies": strategies}
 
 
+def _config_to_flat(config: Dict[str, Any]) -> Dict[str, Any]:
+    account = config.get("account", {})
+    trading = config.get("trading", {})
+    period = config.get("period", {})
+    strategy_section = config.get("strategy", {})
+    return {
+        "initial_capital": account.get("initial_capital", 10000),
+        "risk_per_trade": account.get("risk_per_trade", 2.0),
+        "max_drawdown": account.get("max_drawdown", 15.0),
+        "max_positions": account.get("max_positions", 1),
+        "leverage": account.get("leverage", 10.0),
+        "symbol": trading.get("symbol", "BTC/USDT"),
+        "timeframes": trading.get("timeframes", ["4h", "15m"]),
+        "start_date": period.get("start_date", "2023-01-01"),
+        "end_date": period.get("end_date", "2023-12-31"),
+        "strategy": strategy_section.get("name", "smc_strategy"),
+        "strategy_config": strategy_section.get("config", {}),
+        "min_risk_reward": config.get("min_risk_reward", 2.5),
+        "trailing_stop_distance": config.get("trailing_stop_distance", 0.04),
+        "breakeven_trigger_r": config.get("breakeven_trigger_r", 1.5),
+        "max_total_risk_percent": config.get("max_total_risk_percent", 15.0),
+        "dynamic_position_sizing": config.get("dynamic_position_sizing", True)
+    }
+
+
 @app.get("/config")
 async def get_config():
     """Get current configuration in flat format for frontend."""
-    config_path = BASE_DIR / "config" / "backtest_config.json"
-    if config_path.exists():
-        with open(config_path, 'r') as f:
-            config = json.load(f)
-        account = config.get("account", {})
-        trading = config.get("trading", {})
-        period = config.get("period", {})
-        strategy_section = config.get("strategy", {})
-        flat_config = {
-            "initial_capital": account.get("initial_capital", 10000),
-            "risk_per_trade": account.get("risk_per_trade", 2.0),
-            "max_drawdown": account.get("max_drawdown", 15.0),
-            "max_positions": account.get("max_positions", 1),
-            "leverage": account.get("leverage", 10.0),
-            "symbol": trading.get("symbol", "BTC/USDT"),
-            "timeframes": trading.get("timeframes", ["4h", "15m"]),
-            "start_date": period.get("start_date", "2023-01-01"),
-            "end_date": period.get("end_date", "2023-12-31"),
-            "strategy": strategy_section.get("name", "smc_strategy"),
-            "strategy_config": strategy_section.get("config", {}),
-            "min_risk_reward": config.get("min_risk_reward", 2.5),
-            "trailing_stop_distance": config.get("trailing_stop_distance", 0.04),
-            "breakeven_trigger_r": config.get("breakeven_trigger_r", 1.5),
-            "max_total_risk_percent": config.get("max_total_risk_percent", 15.0),
-            "dynamic_position_sizing": config.get("dynamic_position_sizing", True)
-        }
-        return flat_config
+    config = AppConfigRepository().get()
+    if config:
+        return _config_to_flat(config)
     return {}
 
 
 @app.post("/config")
 async def update_config(config: Dict[str, Any]):
     """Update configuration."""
-    config_path = BASE_DIR / "config" / "backtest_config.json"
-    
-    existing_config = {}
-    if config_path.exists():
-        with open(config_path, 'r') as f:
-            existing_config = json.load(f)
-    
+    existing_config = AppConfigRepository().get()
+
     for section in ("account", "trading", "period", "strategy"):
         if section not in existing_config:
             existing_config[section] = {}
@@ -336,20 +349,50 @@ async def update_config(config: Dict[str, Any]):
     for key in ("min_risk_reward", "trailing_stop_distance", "breakeven_trigger_r", "max_total_risk_percent", "dynamic_position_sizing"):
         if key in config:
             existing_config[key] = config[key]
-    
-    with open(config_path, 'w') as f:
-        json.dump(existing_config, f, indent=2)
-    
+
+    AppConfigRepository().save(existing_config)
     return {"message": "Configuration updated"}
+
+
+@app.get("/config/live")
+async def get_live_config():
+    """Get live trading configuration from DB."""
+    config = AppConfigRepository().get_live_config()
+    if not config:
+        return {}
+    masked = dict(config)
+    if masked.get("secret"):
+        masked["secret"] = "***"
+    if masked.get("apiKey"):
+        masked["apiKey"] = masked["apiKey"][:4] + "***" if len(masked["apiKey"]) > 4 else "***"
+    return masked
+
+
+def _is_masked(value: Any) -> bool:
+    return value in (None, "", "***") or (isinstance(value, str) and value.endswith("***") and len(value) <= 7)
+
+
+@app.post("/config/live")
+async def update_live_config(config: Dict[str, Any]):
+    """Save live trading configuration to DB."""
+    existing = AppConfigRepository().get_live_config()
+    for key in ("exchange", "apiKey", "secret", "sandbox", "symbol", "timeframes",
+                "initial_capital", "risk_per_trade", "max_drawdown", "max_positions",
+                "leverage", "poll_interval", "strategy_config"):
+        if key in config and not (key in ("apiKey", "secret") and _is_masked(config[key])):
+            existing[key] = config[key]
+    if "account" in config:
+        existing.setdefault("account", {}).update(config["account"])
+    if "trading" in config:
+        existing.setdefault("trading", {}).update(config["trading"])
+    AppConfigRepository().save_live_config(existing)
+    return {"message": "Live config updated"}
 
 
 @app.get("/api/user-configs")
 async def list_user_configs():
     """List all saved user configurations."""
-    if not os.path.exists(USER_CONFIGS_DIR):
-        return {"configs": []}
-    configs = sorted(name[:-5] for name in os.listdir(USER_CONFIGS_DIR) if name.endswith(".json"))
-    return {"configs": configs}
+    return {"configs": UserConfigRepository().list_names()}
 
 
 @app.get("/api/user-configs/{name}")
@@ -357,17 +400,10 @@ async def get_user_config(name: str):
     """Get a specific user configuration."""
     if "/" in name or "\\" in name or ".." in name:
         raise HTTPException(status_code=400, detail="Invalid configuration name")
-    
-    file_path = os.path.join(USER_CONFIGS_DIR, f"{name}.json")
-    if not os.path.exists(file_path):
+    data = UserConfigRepository().get(name)
+    if data is None:
         raise HTTPException(status_code=404, detail="Configuration not found")
-        
-    try:
-        with open(file_path, 'r') as f:
-            data = json.load(f)
-        return data
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error reading configuration: {str(e)}")
+    return data
 
 
 @app.post("/api/user-configs/{name}")
@@ -375,14 +411,8 @@ async def save_user_config(name: str, config: Dict[str, Any]):
     """Save a user configuration."""
     if "/" in name or "\\" in name or ".." in name:
         raise HTTPException(status_code=400, detail="Invalid configuration name")
-        
-    file_path = os.path.join(USER_CONFIGS_DIR, f"{name}.json")
-    try:
-        with open(file_path, 'w') as f:
-            json.dump(config, f, indent=2)
-        return {"message": f"Configuration '{name}' saved successfully"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error saving configuration: {str(e)}")
+    UserConfigRepository().save(name, config)
+    return {"message": f"Configuration '{name}' saved successfully"}
 
 
 @app.delete("/api/user-configs/{name}")
@@ -390,16 +420,9 @@ async def delete_user_config(name: str):
     """Delete a user configuration."""
     if "/" in name or "\\" in name or ".." in name:
         raise HTTPException(status_code=400, detail="Invalid configuration name")
-        
-    file_path = os.path.join(USER_CONFIGS_DIR, f"{name}.json")
-    if not os.path.exists(file_path):
+    if not UserConfigRepository().delete(name):
         raise HTTPException(status_code=404, detail="Configuration not found")
-        
-    try:
-        os.remove(file_path)
-        return {"message": f"Configuration '{name}' deleted successfully"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error deleting configuration: {str(e)}")
+    return {"message": f"Configuration '{name}' deleted successfully"}
 
 @app.post("/backtest/start")
 async def start_backtest(request: BacktestRequest, background_tasks: BackgroundTasks):
@@ -459,10 +482,8 @@ async def get_backtest_results(run_id: str):
 @app.get("/results")
 async def get_results():
     """Get all backtest results."""
-    if not os.path.exists(RESULTS_DIR):
-        return {"results": []}
-    results = sorted(name for name in os.listdir(RESULTS_DIR) if name.endswith(".json"))
-    return {"results": results}
+    ids = BacktestRepository().list_ids()
+    return {"results": [f"{rid}.json" for rid in ids]}
 
 
 def _default_configuration_for_legacy_backtest() -> Dict[str, Any]:
@@ -490,96 +511,24 @@ def _default_configuration_for_legacy_backtest() -> Dict[str, Any]:
 
 @app.get("/results/{filename}")
 async def get_result_file(filename: str):
-    """Get specific result file. Backfills configuration for legacy files and persists it."""
-    file_path = os.path.join(RESULTS_DIR, filename)
-    
-    if not os.path.exists(file_path):
-        raise HTTPException(status_code=404, detail="Result file not found")
-    
-    try:
-        with open(file_path, 'r') as f:
-            data = json.load(f)
-        
-        if not data.get("configuration"):
-            default_cfg = _default_configuration_for_legacy_backtest()
-            data["configuration"] = default_cfg
-            try:
-                with open(file_path, 'w') as f:
-                    json.dump(data, f, indent=2, default=str)
-                logger.info(f"Backfilled configuration for legacy result: {filename}")
-            except Exception as e:
-                logger.warning(f"Could not persist backfilled config to {filename}: {e}")
-        
-        return data
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error reading file: {str(e)}")
+    """Get specific backtest result. Backfills configuration for legacy records."""
+    repo = BacktestRepository()
+    data = repo.get_by_filename(filename)
+    if data is None:
+        raise HTTPException(status_code=404, detail="Result not found")
+    if not data.get("configuration"):
+        data["configuration"] = _default_configuration_for_legacy_backtest()
+        run_id = filename[:-5] if filename.endswith(".json") else filename
+        repo.save(run_id, data)
+    return data
 
 
 
 @app.get("/api/backtest/history")
 async def get_backtest_history(page: int = 1, page_size: int = 10):
     """Get paginated history of backtests with summary metrics."""
-    history = []
-    
-    if os.path.exists(RESULTS_DIR):
-        files = []
-        for name in os.listdir(RESULTS_DIR):
-            if name.endswith(".json") and name.startswith("backtest_"):
-                if "_logs" in name or name == "backtest_results.json":
-                    continue
-                    
-                file_path = os.path.join(RESULTS_DIR, name)
-                try:
-                    mtime = os.path.getmtime(file_path)
-                    files.append((name, mtime))
-                except OSError:
-                    continue
-        
-        files.sort(key=lambda x: x[1], reverse=True)
-        
-        total_count = len(files)
-        total_pages = (total_count + page_size - 1) // page_size
-        
-        if page < 1:
-            page = 1
-        if page > total_pages and total_pages > 0:
-            page = total_pages
-            
-        offset = (page - 1) * page_size
-        page_files = files[offset:offset + page_size]
-        
-        for filename, mtime in page_files:
-            try:
-                file_path = os.path.join(RESULTS_DIR, filename)
-                with open(file_path, 'r') as f:
-                    data = json.load(f)
-                cfg = data.get("configuration", {})
-                summary = {
-                    "filename": filename,
-                    "timestamp": datetime.fromtimestamp(mtime).isoformat(),
-                    "total_pnl": data.get("total_pnl", 0),
-                    "initial_capital": data.get("initial_capital", cfg.get("initial_capital", 10000)),
-                    "win_rate": data.get("win_rate", 0),
-                    "max_drawdown": data.get("max_drawdown", 0),
-                    "total_trades": data.get("total_trades", 0),
-                    "profit_factor": data.get("profit_factor", 0),
-                    "sharpe_ratio": data.get("sharpe_ratio", 0),
-                    "expected_value": data.get("expected_value", 0),
-                    "avg_win": data.get("avg_win", 0),
-                    "avg_loss": data.get("avg_loss", 0),
-                    "winning_trades": data.get("winning_trades", 0),
-                    "losing_trades": data.get("losing_trades", 0),
-                    "strategy": cfg.get("strategy", "Unknown"),
-                    "configuration": cfg
-                }
-                history.append(summary)
-            except Exception as e:
-                logger.warning(f"Error reading history file {filename}: {e}")
-                continue
-    else:
-        total_count = 0
-        total_pages = 0
-                
+    history, total_count = BacktestRepository().list_paginated(page=page, page_size=page_size)
+    total_pages = (total_count + page_size - 1) // page_size if total_count > 0 else 0
     return {
         "history": history,
         "pagination": {
@@ -609,27 +558,12 @@ async def cancel_backtest(run_id: str):
 
 @app.delete("/api/backtest/history/{filename}")
 async def delete_backtest_result(filename: str):
-    """Delete a specific backtest result file."""
+    """Delete a specific backtest result."""
     if not filename.endswith(".json") or "/" in filename or "\\" in filename:
         raise HTTPException(status_code=400, detail="Invalid filename")
-        
-    file_path = os.path.join(RESULTS_DIR, filename)
-    
-    if not os.path.exists(file_path):
-        raise HTTPException(status_code=404, detail="File not found")
-        
-    try:
-        os.remove(file_path)
-        
-        if "_results.json" in filename:
-            trades_file = filename.replace("_results.json", "_trades.json")
-            trades_path = os.path.join(RESULTS_DIR, trades_file)
-            if os.path.exists(trades_path):
-                os.remove(trades_path)
-        
-        return {"message": f"Successfully deleted {filename}"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error deleting file: {str(e)}")
+    if not BacktestRepository().delete_by_filename(filename):
+        raise HTTPException(status_code=404, detail="Not found")
+    return {"message": f"Successfully deleted {filename}"}
 
 
 @app.websocket("/ws")
@@ -697,15 +631,10 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
             'taker_fee': taker_fee_pct,
             'slippage_bp': config.get('slippage_bp', 0.0),
             'log_level': 'INFO',
-            'export_logs': True,
-            'log_file': os.path.join(RESULTS_DIR, 'backtest_logs.json'),
             'detailed_signals': True,
             'detailed_trades': True,
             'market_analysis': True,
             'save_results': True,
-            'results_file': 'results/backtest_results.json',
-            'export_trades': True,
-            'trades_file': 'results/trades_history.json'
         }
         
         if len(engine_config['timeframes']) >= 1:
@@ -878,12 +807,10 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
             running_backtests[run_id].message = "Generating report..."
             await broadcast_message(f"[{run_id}] Generating report...\n")
             
-            result_file = os.path.join(RESULTS_DIR, f"{run_id}.json")
             try:
-                with open(result_file, 'w') as f:
-                    json.dump(metrics, f, indent=2, default=str)
-                await broadcast_message(f"[{run_id}] ✅ Results saved to {result_file}\n")
-                await asyncio.sleep(0.5) # Increased sleep to ensure flush
+                BacktestRepository().save(run_id, metrics)
+                await broadcast_message(f"[{run_id}] ✅ Results saved to database\n")
+                await asyncio.sleep(0.5)
             except Exception as e:
                 import traceback
                 logger.error(f"Error saving results: {e}\n{traceback.format_exc()}")

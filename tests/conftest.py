@@ -6,6 +6,10 @@ This file provides reusable test data and mocks to reduce duplication.
 
 import sys
 import os
+
+# Use mongomock for API tests (no real MongoDB required)
+os.environ["USE_MONGOMOCK"] = "true"
+os.environ["USE_DATABASE"] = "true"
 import pytest
 import pandas as pd
 import numpy as np
