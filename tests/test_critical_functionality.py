@@ -7,7 +7,7 @@ Tests cover:
 4. Trailing stop / breakeven logic
 """
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 import backtrader as bt
 import pandas as pd
 import sys
@@ -22,8 +22,20 @@ from strategies.bt_price_action import PriceActionStrategy
 class TestEngineDataOrdering(unittest.TestCase):
     """Test that the engine correctly orders data feeds for dual-TF."""
 
-    def test_reversed_timeframe_ordering(self):
+    @patch('engine.bt_backtest_engine.DataLoader')
+    def test_reversed_timeframe_ordering(self, mock_dataloader_cls):
         """Lower TF should be added first (datas[0]) as master clock."""
+        mock_df = pd.DataFrame({
+            'open': [100.0]*300,
+            'high': [105.0]*300,
+            'low': [95.0]*300,
+            'close': [101.0]*300,
+            'volume': [1000]*300,
+        }, index=pd.date_range('2025-01-01', periods=300, freq='h'))
+        mock_loader = MagicMock()
+        mock_loader.get_data.return_value = mock_df
+        mock_dataloader_cls.return_value = mock_loader
+
         config = {
             'symbol': 'BTC/USDT',
             'timeframes': ['4h', '15m'],
@@ -32,8 +44,19 @@ class TestEngineDataOrdering(unittest.TestCase):
             'initial_capital': 10000,
         }
         engine = BTBacktestEngine(config)
+        engine.add_data()
         
-        # Mock data_loader to avoid actual data fetching
+        # Verify get_data was called with reversed order (lower TF first)
+        calls = mock_loader.get_data.call_args_list
+        self.assertEqual(len(calls), 2)
+        # First call should be '15m' (lower TF)
+        self.assertEqual(calls[0][0][1], '15m')
+        # Second call should be '4h' (higher TF)
+        self.assertEqual(calls[1][0][1], '4h')
+
+    @patch('engine.bt_backtest_engine.DataLoader')
+    def test_single_timeframe_no_reverse(self, mock_dataloader_cls):
+        """Single timeframe should not be reversed."""
         mock_df = pd.DataFrame({
             'open': [100.0]*300,
             'high': [105.0]*300,
@@ -41,22 +64,10 @@ class TestEngineDataOrdering(unittest.TestCase):
             'close': [101.0]*300,
             'volume': [1000]*300,
         }, index=pd.date_range('2025-01-01', periods=300, freq='h'))
-        
-        engine.data_loader = MagicMock()
-        engine.data_loader.get_data = MagicMock(return_value=mock_df)
-        
-        engine.add_data()
-        
-        # Verify get_data was called with reversed order (lower TF first)
-        calls = engine.data_loader.get_data.call_args_list
-        self.assertEqual(len(calls), 2)
-        # First call should be '15m' (lower TF)
-        self.assertEqual(calls[0][0][1], '15m')
-        # Second call should be '4h' (higher TF)
-        self.assertEqual(calls[1][0][1], '4h')
+        mock_loader = MagicMock()
+        mock_loader.get_data.return_value = mock_df
+        mock_dataloader_cls.return_value = mock_loader
 
-    def test_single_timeframe_no_reverse(self):
-        """Single timeframe should not be reversed."""
         config = {
             'symbol': 'BTC/USDT',
             'timeframes': ['4h'],
@@ -65,21 +76,9 @@ class TestEngineDataOrdering(unittest.TestCase):
             'initial_capital': 10000,
         }
         engine = BTBacktestEngine(config)
-        
-        mock_df = pd.DataFrame({
-            'open': [100.0]*300,
-            'high': [105.0]*300,
-            'low': [95.0]*300,
-            'close': [101.0]*300,
-            'volume': [1000]*300,
-        }, index=pd.date_range('2025-01-01', periods=300, freq='h'))
-        
-        engine.data_loader = MagicMock()
-        engine.data_loader.get_data = MagicMock(return_value=mock_df)
-        
         engine.add_data()
         
-        calls = engine.data_loader.get_data.call_args_list
+        calls = mock_loader.get_data.call_args_list
         self.assertEqual(len(calls), 1)
         self.assertEqual(calls[0][0][1], '4h')
 
@@ -222,22 +221,28 @@ class TestPatternDetection(unittest.TestCase):
 class TestEngineMetrics(unittest.TestCase):
     """Test engine metric calculations for edge cases."""
 
-    def test_win_rate_zero_trades(self):
+    @patch('engine.bt_backtest_engine.DataLoader')
+    def test_win_rate_zero_trades(self, mock_dataloader_cls):
         """Win rate should be 0 when no trades closed."""
+        mock_dataloader_cls.return_value = MagicMock()
         config = {'symbol': 'BTC/USDT', 'timeframes': ['1h'], 'start_date': '2024-01-01', 'end_date': '2024-01-31'}
         engine = BTBacktestEngine(config)
         analysis = {'total': {'closed': 0}, 'won': {'total': 0}, 'lost': {'total': 0}}
         self.assertEqual(engine._calculate_win_rate(analysis), 0.0)
 
-    def test_profit_factor_zero_loss(self):
+    @patch('engine.bt_backtest_engine.DataLoader')
+    def test_profit_factor_zero_loss(self, mock_dataloader_cls):
         """Profit factor should be inf when won > 0 and lost == 0."""
+        mock_dataloader_cls.return_value = MagicMock()
         config = {'symbol': 'BTC/USDT', 'timeframes': ['1h'], 'start_date': '2024-01-01', 'end_date': '2024-01-31'}
         engine = BTBacktestEngine(config)
         analysis = {'won': {'pnl': {'total': 100.0}}, 'lost': {'pnl': {'total': 0.0}}}
         self.assertEqual(engine._calculate_profit_factor(analysis), float('inf'))
 
-    def test_profit_factor_zero_won_zero_loss(self):
+    @patch('engine.bt_backtest_engine.DataLoader')
+    def test_profit_factor_zero_won_zero_loss(self, mock_dataloader_cls):
         """Profit factor should be 0 when both won and lost are 0."""
+        mock_dataloader_cls.return_value = MagicMock()
         config = {'symbol': 'BTC/USDT', 'timeframes': ['1h'], 'start_date': '2024-01-01', 'end_date': '2024-01-31'}
         engine = BTBacktestEngine(config)
         analysis = {'won': {'pnl': {'total': 0.0}}, 'lost': {'pnl': {'total': 0.0}}}
@@ -247,13 +252,8 @@ class TestEngineMetrics(unittest.TestCase):
 class TestEngineDateValidation(unittest.TestCase):
     """Test engine handles missing start/end dates."""
 
-    def test_missing_dates_use_defaults(self):
-        config = {
-            "symbol": "BTC/USDT",
-            "timeframes": ["1h"],
-            "initial_capital": 10000,
-        }
-        engine = BTBacktestEngine(config)
+    @patch('engine.bt_backtest_engine.DataLoader')
+    def test_missing_dates_use_defaults(self, mock_dataloader_cls):
         mock_df = pd.DataFrame({
             "open": [100.0] * 100,
             "high": [105.0] * 100,
@@ -261,12 +261,18 @@ class TestEngineDateValidation(unittest.TestCase):
             "close": [101.0] * 100,
             "volume": [1000] * 100,
         }, index=pd.date_range("2024-01-01", periods=100, freq="h"))
+        mock_loader = MagicMock()
+        mock_loader.get_data.return_value = mock_df
+        mock_dataloader_cls.return_value = mock_loader
 
-        engine.data_loader = MagicMock()
-        engine.data_loader.get_data = MagicMock(return_value=mock_df)
-
+        config = {
+            "symbol": "BTC/USDT",
+            "timeframes": ["1h"],
+            "initial_capital": 10000,
+        }
+        engine = BTBacktestEngine(config)
         engine.add_data()
-        calls = engine.data_loader.get_data.call_args_list
+        calls = mock_loader.get_data.call_args_list
         self.assertEqual(len(calls), 1)
         self.assertEqual(calls[0][0][2], "2024-01-01")
         self.assertEqual(calls[0][0][3], "2024-12-31")
@@ -275,17 +281,9 @@ class TestEngineDateValidation(unittest.TestCase):
 class TestEngineColumnValidation(unittest.TestCase):
     """Test that engine validates required columns."""
 
-    def test_missing_columns_skipped(self):
+    @patch('engine.bt_backtest_engine.DataLoader')
+    def test_missing_columns_skipped(self, mock_dataloader_cls):
         """Data with missing columns should be skipped with warning."""
-        config = {
-            'symbol': 'BTC/USDT',
-            'timeframes': ['4h'],
-            'start_date': '2025-01-01',
-            'end_date': '2025-01-31',
-            'initial_capital': 10000,
-        }
-        engine = BTBacktestEngine(config)
-        
         # DataFrame missing 'volume' column
         bad_df = pd.DataFrame({
             'open': [100.0]*10,
@@ -294,10 +292,18 @@ class TestEngineColumnValidation(unittest.TestCase):
             'close': [101.0]*10,
             # 'volume' missing!
         }, index=pd.date_range('2025-01-01', periods=10, freq='h'))
-        
-        engine.data_loader = MagicMock()
-        engine.data_loader.get_data = MagicMock(return_value=bad_df)
-        
+        mock_loader = MagicMock()
+        mock_loader.get_data.return_value = bad_df
+        mock_dataloader_cls.return_value = mock_loader
+
+        config = {
+            'symbol': 'BTC/USDT',
+            'timeframes': ['4h'],
+            'start_date': '2025-01-01',
+            'end_date': '2025-01-31',
+            'initial_capital': 10000,
+        }
+        engine = BTBacktestEngine(config)
         # Should not crash, just print warning and skip
         engine.add_data()
         

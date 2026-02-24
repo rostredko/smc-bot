@@ -6,6 +6,7 @@ import os
 import json
 import shutil
 import sys
+from unittest.mock import patch, MagicMock
 
 # Add project root to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -117,7 +118,8 @@ class TestFullE2EPriceAction(unittest.TestCase):
         
         return df
 
-    def test_e2e_execution_and_persistence(self):
+    @patch('engine.bt_backtest_engine.DataLoader')
+    def test_e2e_execution_and_persistence(self, mock_dataloader_cls):
         """
         Execute the full engine flow and verify artifacts.
         """
@@ -151,18 +153,14 @@ class TestFullE2EPriceAction(unittest.TestCase):
             'save_results': True, # Explicitly enable saving
         }
         
-        # 2. Instantiate Engine
-        engine = BTBacktestEngine(config)
-        
-        # 3. Mock Data Loader to return deterministic data
-        # We bypass the actual CCXT/File loading
+        # 2. Mock DataLoader before engine creation (avoids Binance API in CI)
         df = self.create_deterministic_data()
+        mock_loader = MagicMock()
+        mock_loader.get_data.return_value = df
+        mock_dataloader_cls.return_value = mock_loader
         
-        # We need to manually add the data to cerebro because normally add_data() uses data_loader
-        # But we can monkeypatch the data_loader's get_data method
-        from unittest.mock import MagicMock
-        engine.data_loader = MagicMock()
-        engine.data_loader.get_data = MagicMock(return_value=df)
+        # 3. Instantiate Engine
+        engine = BTBacktestEngine(config)
         
         # CRITICAL FIX: Add the strategy!
         engine.add_strategy(PriceActionStrategy, **config['strategy_config'])
