@@ -51,3 +51,12 @@ scripts/migrate_json_to_mongo.py
 *.bak
 *.tmp
 server_debug.log
+
+# --- Cursor Rules ---
+.cursorrules
+.cursor/rules/
+*.mdc
+
+# --- Universal AI Agents ---
+.agents/
+
