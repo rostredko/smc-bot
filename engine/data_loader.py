@@ -133,28 +133,30 @@ class DataLoader:
         all_data = []
         current_ts = start_ts
 
+        max_retries_per_chunk = 5
+        retries = 0
+
         while current_ts < end_ts:
-            # Rate limiting
             self._rate_limit()
 
             try:
-                # Fetch data in chunks (exchanges limit per request)
                 ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe, since=current_ts, limit=1000)
 
                 if not ohlcv:
                     break
 
                 all_data.extend(ohlcv)
-
-                # Update current timestamp to next chunk
                 current_ts = ohlcv[-1][0] + 1
-
+                retries = 0
                 logger.debug(f"Fetched {len(ohlcv)} bars, total: {len(all_data)}")
 
             except Exception as e:
                 logger.error(f"Error fetching data: {e}")
-                time.sleep(1)  # Wait before retry
-                continue
+                retries += 1
+                if retries >= max_retries_per_chunk:
+                    raise RuntimeError(f"Failed to fetch data after {max_retries_per_chunk} retries: {e}")
+                time.sleep(1)
+                current_ts += 3600000
 
         if not all_data:
             raise RuntimeError(f"No data fetched for {symbol} {timeframe}")
@@ -162,8 +164,9 @@ class DataLoader:
         # Convert to DataFrame
         df = self._ohlcv_to_dataframe(all_data)
 
-        # Filter to requested date range
-        df = df[(df.index >= start_date) & (df.index <= end_date)]
+        start_dt = pd.Timestamp(start_date)
+        end_dt = pd.Timestamp(end_date)
+        df = df[(df.index >= start_dt) & (df.index <= end_dt)]
 
         # Cache the data
         df.to_csv(cache_file)
@@ -216,12 +219,12 @@ class DataLoader:
         df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
         df.set_index("timestamp", inplace=True)
 
-        # Ensure numeric types
         ohlc_cols = ["open", "high", "low", "close", "volume"]
         df[ohlc_cols] = df[ohlc_cols].apply(pd.to_numeric, errors="coerce")
-
-        # Remove any rows with NaN values
         df.dropna(inplace=True)
+
+        if df.empty:
+            logger.warning("OHLCV data contained only NaN values after cleaning")
 
         return df
 

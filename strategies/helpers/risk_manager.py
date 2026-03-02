@@ -1,4 +1,3 @@
-
 class RiskManager:
     """
     Calculates position sizes based on risk parameters.
@@ -34,6 +33,9 @@ class RiskManager:
         """
         if entry_price <= 0 or account_value is None or account_value <= 0:
             return 0.0
+
+        risk_per_trade_pct = max(0.0, min(100.0, float(risk_per_trade_pct)))
+        leverage = max(0.1, float(leverage))
 
         if not dynamic_sizing:
             target_value = account_value * (risk_per_trade_pct / 100.0)

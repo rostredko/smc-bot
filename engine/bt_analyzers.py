@@ -64,10 +64,15 @@ class TradeListAnalyzer(bt.Analyzer):
                     trade_record["exit_price"] = trade.price + pnl_per_unit
                 else:
                     trade_record["exit_price"] = trade.price - pnl_per_unit
-                
                 trade_record["size"] = size
             else:
-                trade_record["exit_price"] = trade.price
+                exit_price = trade.price
+                if trade.history:
+                    last_event = trade.history[-1]
+                    event_price = getattr(getattr(last_event, "event", None), "price", None)
+                    if event_price is not None:
+                        exit_price = event_price
+                trade_record["exit_price"] = exit_price
                 trade_record["size"] = 0
 
             self.trades.append(trade_record)

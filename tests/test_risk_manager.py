@@ -61,6 +61,48 @@ class TestRiskManager(unittest.TestCase):
         )
         self.assertAlmostEqual(size, 200.0, places=2)
 
+    def test_negative_risk_clamped_to_zero(self):
+        size = RiskManager.calculate_position_size(
+            account_value=10000,
+            risk_per_trade_pct=-5.0,
+            entry_price=100,
+            stop_loss=95,
+            leverage=10,
+            dynamic_sizing=True
+        )
+        self.assertEqual(size, 0.0)
+
+    def test_risk_over_100_clamped(self):
+        size_clamped = RiskManager.calculate_position_size(
+            account_value=10000,
+            risk_per_trade_pct=150.0,
+            entry_price=100,
+            stop_loss=95,
+            leverage=10,
+            dynamic_sizing=True
+        )
+        size_normal = RiskManager.calculate_position_size(
+            account_value=10000,
+            risk_per_trade_pct=100.0,
+            entry_price=100,
+            stop_loss=95,
+            leverage=10,
+            dynamic_sizing=True
+        )
+        self.assertEqual(size_clamped, size_normal)
+
+    def test_zero_leverage_clamped_to_minimum(self):
+        size = RiskManager.calculate_position_size(
+            account_value=10000,
+            risk_per_trade_pct=1.0,
+            entry_price=100,
+            stop_loss=95,
+            leverage=0,
+            dynamic_sizing=True
+        )
+        self.assertGreater(size, 0)
+        self.assertLessEqual(size * 100, 10000 * 0.1)
+
 
 if __name__ == "__main__":
     unittest.main()

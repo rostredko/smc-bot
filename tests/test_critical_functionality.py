@@ -155,69 +155,6 @@ class TestPositionSizing(unittest.TestCase):
         self.assertEqual(size, 0)
 
 
-class TestPatternDetection(unittest.TestCase):
-    """Test pattern detection methods."""
-
-    def setUp(self):
-        self.cerebro = bt.Cerebro()
-        self.cerebro.addstrategy(PriceActionStrategy)
-        
-        dates = pd.date_range(start='2020-01-01', periods=250)
-        closes = [100.0 + (i % 2) for i in range(250)]
-        df = pd.DataFrame({
-            'open': closes,
-            'high': [c + 5 for c in closes],
-            'low': [c - 5 for c in closes],
-            'close': closes,
-            'volume': [1000] * 250
-        }, index=dates)
-        data = bt.feeds.PandasData(dataname=df)
-        self.cerebro.adddata(data)
-        results = self.cerebro.run()
-        self.strategy = results[0]
-        
-        self.strategy.params = MagicMock()
-        self.strategy.params.min_range_factor = 0.8
-        self.strategy.params.min_wick_to_range = 0.6
-        self.strategy.params.max_body_to_range = 0.3
-
-    @unittest.skip("TA-Lib uses rolling data streams, bypassing variables with static lists will not work")
-    def test_bullish_pinbar_valid(self):
-        """Valid hammer: small body, long lower wick, significant range."""
-        self.strategy.atr = [10.0]
-        # Range = 10, body = 0, lower wick = 8 (80% of range)
-        self.strategy.open = [108.0]
-        self.strategy.close = [108.0]
-        self.strategy.high = [110.0]
-        self.strategy.low = [100.0]
-        
-        self.assertTrue(self.strategy._is_bullish_pinbar())
-
-    @unittest.skip("TA-Lib uses rolling data streams, bypassing variables with static lists will not work")
-    def test_bullish_pinbar_too_small(self):
-        """Candle too small relative to ATR should be rejected."""
-        self.strategy.atr = [20.0]  # ATR big
-        # Range = 5 < 20*0.8=16 → too small
-        self.strategy.open = [104.0]
-        self.strategy.close = [104.0]
-        self.strategy.high = [105.0]
-        self.strategy.low = [100.0]
-        
-        self.assertFalse(self.strategy._is_bullish_pinbar())
-
-    @unittest.skip("TA-Lib uses rolling data streams, bypassing variables with static lists will not work")
-    def test_zero_range_returns_false(self):
-        """Zero range candle (doji with no movement) should not crash."""
-        self.strategy.atr = [10.0]
-        self.strategy.open = [100.0]
-        self.strategy.close = [100.0]
-        self.strategy.high = [100.0]
-        self.strategy.low = [100.0]
-        
-        self.assertFalse(self.strategy._is_bullish_pinbar())
-        self.assertFalse(self.strategy._is_bearish_pinbar())
-
-
 class TestEngineMetrics(unittest.TestCase):
     """Test engine metric calculations for edge cases."""
 
@@ -232,12 +169,12 @@ class TestEngineMetrics(unittest.TestCase):
 
     @patch('engine.bt_backtest_engine.DataLoader')
     def test_profit_factor_zero_loss(self, mock_dataloader_cls):
-        """Profit factor should be inf when won > 0 and lost == 0."""
+        """Profit factor should be 999 when won > 0 and lost == 0 (serializable)."""
         mock_dataloader_cls.return_value = MagicMock()
         config = {'symbol': 'BTC/USDT', 'timeframes': ['1h'], 'start_date': '2024-01-01', 'end_date': '2024-01-31'}
         engine = BTBacktestEngine(config)
         analysis = {'won': {'pnl': {'total': 100.0}}, 'lost': {'pnl': {'total': 0.0}}}
-        self.assertEqual(engine._calculate_profit_factor(analysis), float('inf'))
+        self.assertEqual(engine._calculate_profit_factor(analysis), 999.0)
 
     @patch('engine.bt_backtest_engine.DataLoader')
     def test_profit_factor_zero_won_zero_loss(self, mock_dataloader_cls):
@@ -247,6 +184,19 @@ class TestEngineMetrics(unittest.TestCase):
         engine = BTBacktestEngine(config)
         analysis = {'won': {'pnl': {'total': 0.0}}, 'lost': {'pnl': {'total': 0.0}}}
         self.assertEqual(engine._calculate_profit_factor(analysis), 0.0)
+
+    @patch('engine.bt_backtest_engine.DataLoader')
+    def test_metrics_serializable_to_json(self, mock_dataloader_cls):
+        """Metrics with max profit_factor must be JSON-serializable (no inf)."""
+        import json
+        mock_dataloader_cls.return_value = MagicMock()
+        config = {'symbol': 'BTC/USDT', 'timeframes': ['1h'], 'start_date': '2024-01-01', 'end_date': '2024-01-31'}
+        engine = BTBacktestEngine(config)
+        analysis = {'won': {'pnl': {'total': 100.0}}, 'lost': {'pnl': {'total': 0.0}}}
+        pf = engine._calculate_profit_factor(analysis)
+        metrics = {'profit_factor': pf, 'total_pnl': 100.0}
+        json_str = json.dumps(metrics)
+        self.assertIn('999', json_str)
 
 
 class TestEngineDateValidation(unittest.TestCase):

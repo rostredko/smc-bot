@@ -10,6 +10,7 @@ import threading
 from datetime import datetime
 from typing import Dict, List, Optional, Any
 from pathlib import Path
+from uuid import uuid4
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -427,7 +428,10 @@ async def delete_user_config(name: str):
 @app.post("/backtest/start")
 async def start_backtest(request: BacktestRequest, background_tasks: BackgroundTasks):
     """Start a new backtest."""
-    run_id = request.run_id or f"backtest_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    if request.run_id:
+        run_id = request.run_id
+    else:
+        run_id = f"backtest_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid4().hex[:8]}"
     
     if run_id in running_backtests:
         raise HTTPException(status_code=400, detail=f"Backtest {run_id} is already running")

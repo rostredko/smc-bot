@@ -38,7 +38,8 @@ class BacktestRepository:
     def save(self, run_id: str, data: Dict[str, Any]) -> None:
         doc = _sanitize_for_mongo(dict(data))
         doc["_id"] = run_id
-        doc["created_at"] = datetime.utcnow().isoformat() + "Z"
+        if "created_at" not in doc:
+            doc["created_at"] = datetime.utcnow().isoformat() + "Z"
         self._collection().replace_one({"_id": run_id}, doc, upsert=True)
 
     def get_by_id(self, run_id: str) -> Optional[Dict[str, Any]]:

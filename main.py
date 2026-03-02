@@ -10,6 +10,7 @@ import argparse
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, Optional
+from uuid import uuid4
 
 # Add project root to path
 project_root = Path(__file__).parent
@@ -143,7 +144,7 @@ def run_backtest_from_config(config: Dict[str, Any], config_name: str = "Backtes
         metrics = engine.run_backtest()
 
         if config.get("save_results", False) or config.get("export_trades", False):
-            run_id = f"backtest_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            run_id = f"backtest_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid4().hex[:8]}"
             full_metrics = _build_full_metrics(metrics, engine, config)
             _save_backtest(run_id, full_metrics)
             logger.info(f"📊 Results saved (run_id: {run_id})")
@@ -249,8 +250,9 @@ def run_backtest():
     engine, metrics = run_backtest_from_config(config, "Backtest")
 
     if engine and metrics:
-        signals_generated = getattr(engine.strategy, "signals_generated", 0)
-        signals_executed = getattr(engine.strategy, "signals_executed", 0)
+        strat = getattr(engine, "strategy", None)
+        signals_generated = getattr(strat, "signals_generated", 0) if strat else 0
+        signals_executed = getattr(strat, "signals_executed", 0) if strat else 0
 
         logger.info("\n🎯 Backtest Results:")
         logger.info(f"   Signals Generated: {signals_generated}")

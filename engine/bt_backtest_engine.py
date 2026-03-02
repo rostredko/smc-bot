@@ -108,7 +108,8 @@ class BTBacktestEngine(BaseEngine):
             return {}
 
         strat = results[0]
-        
+        self.strategy = strat
+
         # Capture closed trades
         self.closed_trades = strat.analyzers.tradelist.get_analysis()
         
@@ -156,6 +157,5 @@ class BTBacktestEngine(BaseEngine):
         lost_pnl = abs(trade_analysis.get('lost', {}).get('pnl', {}).get('total', 0.0))
         
         if lost_pnl == 0:
-            return 0.0 if won_pnl == 0 else float('inf')
-            
+            return 0.0 if won_pnl == 0 else 999.0
         return won_pnl / lost_pnl

@@ -1,0 +1,353 @@
+"""
+Comprehensive tests for engine/bt_backtest_engine.py.
+Covers SMCDataFeed, add_data, run_backtest, metrics, and edge cases.
+"""
+import unittest
+from unittest.mock import MagicMock, patch
+import pandas as pd
+import sys
+import os
+
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from engine.bt_backtest_engine import BTBacktestEngine, SMCDataFeed
+from strategies.bt_price_action import PriceActionStrategy
+
+
+def _mock_ohlcv_df(rows=100):
+    return pd.DataFrame({
+        "open": [100.0] * rows,
+        "high": [105.0] * rows,
+        "low": [95.0] * rows,
+        "close": [101.0] * rows,
+        "volume": [1000] * rows,
+    }, index=pd.date_range("2024-01-01", periods=rows, freq="h"))
+
+
+@patch("engine.bt_backtest_engine.DataLoader")
+class TestSMCDataFeed(unittest.TestCase):
+    """Test SMCDataFeed column mapping."""
+
+    def test_params_explicit_ohlcv_mapping(self, mock_dataloader_cls):
+        dummy = pd.DataFrame({"open": [], "high": [], "low": [], "close": [], "volume": []})
+        feed = SMCDataFeed(dataname=dummy)
+        self.assertIsNone(feed.p.datetime)
+        self.assertEqual(feed.p.open, -1)
+        self.assertEqual(feed.p.high, -1)
+        self.assertEqual(feed.p.low, -1)
+        self.assertEqual(feed.p.close, -1)
+        self.assertEqual(feed.p.volume, -1)
+
+
+@patch("engine.bt_backtest_engine.DataLoader")
+class TestBTBacktestEngineInit(unittest.TestCase):
+    """Test engine initialization."""
+
+    def test_closed_trades_empty_on_init(self, mock_dataloader_cls):
+        mock_dataloader_cls.return_value = MagicMock()
+        engine = BTBacktestEngine({"symbol": "BTC/USDT", "timeframes": ["1h"]})
+        self.assertEqual(engine.closed_trades, [])
+
+    def test_data_loader_uses_config_exchange(self, mock_dataloader_cls):
+        engine = BTBacktestEngine({
+            "symbol": "ETH/USDT",
+            "timeframes": ["4h"],
+            "exchange": "bybit",
+            "exchange_type": "spot",
+        })
+        mock_dataloader_cls.assert_called_once_with(
+            exchange_name="bybit",
+            exchange_type="spot",
+        )
+
+
+@patch("engine.bt_backtest_engine.DataLoader")
+class TestAddData(unittest.TestCase):
+    """Test add_data behavior."""
+
+    def test_symbol_and_dates_passed_to_loader(self, mock_dataloader_cls):
+        mock_loader = MagicMock()
+        mock_loader.get_data.return_value = _mock_ohlcv_df()
+        mock_dataloader_cls.return_value = mock_loader
+
+        config = {
+            "symbol": "ETH/USDT",
+            "timeframes": ["4h"],
+            "start_date": "2023-06-01",
+            "end_date": "2023-06-30",
+        }
+        engine = BTBacktestEngine(config)
+        engine.add_data()
+
+        mock_loader.get_data.assert_called_once_with("ETH/USDT", "4h", "2023-06-01", "2023-06-30")
+
+    def test_empty_df_skipped_no_crash(self, mock_dataloader_cls):
+        mock_loader = MagicMock()
+        mock_loader.get_data.return_value = pd.DataFrame()
+        mock_dataloader_cls.return_value = mock_loader
+
+        engine = BTBacktestEngine({"symbol": "BTC/USDT", "timeframes": ["1h"]})
+        engine.add_data()
+
+        self.assertEqual(len(engine.cerebro.datas), 0)
+
+    def test_none_df_skipped_no_crash(self, mock_dataloader_cls):
+        mock_loader = MagicMock()
+        mock_loader.get_data.return_value = None
+        mock_dataloader_cls.return_value = mock_loader
+
+        engine = BTBacktestEngine({"symbol": "BTC/USDT", "timeframes": ["1h"]})
+        engine.add_data()
+
+        self.assertEqual(len(engine.cerebro.datas), 0)
+
+    def test_timestamp_column_fallback_for_datetime_index(self, mock_dataloader_cls):
+        dates = pd.date_range("2024-01-01", periods=20, freq="h")
+        df = pd.DataFrame({
+            "timestamp": dates,
+            "open": [100.0] * 20,
+            "high": [105.0] * 20,
+            "low": [95.0] * 20,
+            "close": [101.0] * 20,
+            "volume": [1000] * 20,
+        })
+        mock_loader = MagicMock()
+        mock_loader.get_data.return_value = df
+        mock_dataloader_cls.return_value = mock_loader
+
+        engine = BTBacktestEngine({"symbol": "BTC/USDT", "timeframes": ["1h"]})
+        engine.add_data()
+
+        self.assertEqual(len(engine.cerebro.datas), 1)
+
+    def test_valid_df_added_to_cerebro(self, mock_dataloader_cls):
+        mock_loader = MagicMock()
+        mock_loader.get_data.return_value = _mock_ohlcv_df()
+        mock_dataloader_cls.return_value = mock_loader
+
+        engine = BTBacktestEngine({"symbol": "BTC/USDT", "timeframes": ["1h"]})
+        engine.add_data()
+
+        self.assertEqual(len(engine.cerebro.datas), 1)
+        self.assertEqual(engine.cerebro.datas[0]._name, "BTC/USDT_1h")
+
+
+@patch("engine.bt_backtest_engine.DataLoader")
+class TestRunBacktest(unittest.TestCase):
+    """Test run_backtest flow and output."""
+
+    def test_returns_metrics_dict_with_expected_keys(self, mock_dataloader_cls):
+        mock_loader = MagicMock()
+        mock_loader.get_data.return_value = _mock_ohlcv_df(100)
+        mock_dataloader_cls.return_value = mock_loader
+
+        engine = BTBacktestEngine({
+            "symbol": "BTC/USDT",
+            "timeframes": ["1h"],
+            "start_date": "2024-01-01",
+            "end_date": "2024-01-31",
+        })
+        engine.add_strategy(PriceActionStrategy, use_trend_filter=False, use_adx_filter=False, use_rsi_filter=False)
+        metrics = engine.run_backtest()
+
+        expected_keys = {
+            "initial_capital", "final_capital", "total_pnl", "sharpe_ratio",
+            "max_drawdown", "total_trades", "win_rate", "profit_factor",
+            "win_count", "loss_count", "avg_win", "avg_loss",
+        }
+        for k in expected_keys:
+            self.assertIn(k, metrics, f"Missing metric key: {k}")
+
+    def test_strategy_assigned_after_run(self, mock_dataloader_cls):
+        mock_loader = MagicMock()
+        mock_loader.get_data.return_value = _mock_ohlcv_df(50)
+        mock_dataloader_cls.return_value = mock_loader
+
+        engine = BTBacktestEngine({"symbol": "BTC/USDT", "timeframes": ["1h"], "start_date": "2024-01-01", "end_date": "2024-01-31"})
+        engine.add_strategy(PriceActionStrategy, use_trend_filter=False, use_adx_filter=False, use_rsi_filter=False)
+        engine.run_backtest()
+
+        self.assertIsNotNone(engine.strategy)
+        self.assertIsInstance(engine.strategy, PriceActionStrategy)
+
+    def test_closed_trades_populated_after_run(self, mock_dataloader_cls):
+        mock_loader = MagicMock()
+        mock_loader.get_data.return_value = _mock_ohlcv_df(200)
+        mock_dataloader_cls.return_value = mock_loader
+
+        engine = BTBacktestEngine({"symbol": "BTC/USDT", "timeframes": ["1h"], "start_date": "2024-01-01", "end_date": "2024-01-31"})
+        engine.add_strategy(PriceActionStrategy, use_trend_filter=False, use_adx_filter=False, use_rsi_filter=False)
+        engine.run_backtest()
+
+        self.assertIsInstance(engine.closed_trades, list)
+
+    def test_equity_curve_populated_after_run(self, mock_dataloader_cls):
+        mock_loader = MagicMock()
+        mock_loader.get_data.return_value = _mock_ohlcv_df(50)
+        mock_dataloader_cls.return_value = mock_loader
+
+        engine = BTBacktestEngine({"symbol": "BTC/USDT", "timeframes": ["1h"], "start_date": "2024-01-01", "end_date": "2024-01-31"})
+        engine.add_strategy(PriceActionStrategy, use_trend_filter=False, use_adx_filter=False, use_rsi_filter=False)
+        engine.run_backtest()
+
+        self.assertIsInstance(engine.equity_curve, list)
+        self.assertGreater(len(engine.equity_curve), 0)
+        self.assertIn("timestamp", engine.equity_curve[0])
+        self.assertIn("equity", engine.equity_curve[0])
+
+    def test_initial_capital_preserved_in_metrics(self, mock_dataloader_cls):
+        mock_loader = MagicMock()
+        mock_loader.get_data.return_value = _mock_ohlcv_df(50)
+        mock_dataloader_cls.return_value = mock_loader
+
+        engine = BTBacktestEngine({
+            "symbol": "BTC/USDT",
+            "timeframes": ["1h"],
+            "start_date": "2024-01-01",
+            "end_date": "2024-01-31",
+            "initial_capital": 25000,
+        })
+        engine.add_strategy(PriceActionStrategy, use_trend_filter=False, use_adx_filter=False, use_rsi_filter=False)
+        metrics = engine.run_backtest()
+
+        self.assertEqual(metrics["initial_capital"], 25000)
+
+    def test_empty_results_returns_empty_dict(self, mock_dataloader_cls):
+        mock_loader = MagicMock()
+        mock_loader.get_data.return_value = _mock_ohlcv_df(10)
+        mock_dataloader_cls.return_value = mock_loader
+
+        engine = BTBacktestEngine({"symbol": "BTC/USDT", "timeframes": ["1h"], "start_date": "2024-01-01", "end_date": "2024-01-31"})
+        engine.add_strategy(PriceActionStrategy, use_trend_filter=False, use_adx_filter=False, use_rsi_filter=False)
+
+        with patch.object(engine, "run", return_value=[]):
+            metrics = engine.run_backtest()
+
+        self.assertEqual(metrics, {})
+        self.assertEqual(engine.equity_curve, [])
+
+
+@patch("engine.bt_backtest_engine.DataLoader")
+class TestCalculateWinRate(unittest.TestCase):
+    """Test _calculate_win_rate."""
+
+    def test_zero_trades_returns_zero(self, mock_dataloader_cls):
+        mock_dataloader_cls.return_value = MagicMock()
+        engine = BTBacktestEngine({"symbol": "BTC/USDT", "timeframes": ["1h"]})
+        analysis = {"total": {"closed": 0}, "won": {"total": 0}, "lost": {"total": 0}}
+        self.assertEqual(engine._calculate_win_rate(analysis), 0.0)
+
+    def test_all_won_returns_100(self, mock_dataloader_cls):
+        mock_dataloader_cls.return_value = MagicMock()
+        engine = BTBacktestEngine({"symbol": "BTC/USDT", "timeframes": ["1h"]})
+        analysis = {"total": {"closed": 10}, "won": {"total": 10}, "lost": {"total": 0}}
+        self.assertEqual(engine._calculate_win_rate(analysis), 100.0)
+
+    def test_half_won_returns_50(self, mock_dataloader_cls):
+        mock_dataloader_cls.return_value = MagicMock()
+        engine = BTBacktestEngine({"symbol": "BTC/USDT", "timeframes": ["1h"]})
+        analysis = {"total": {"closed": 10}, "won": {"total": 5}, "lost": {"total": 5}}
+        self.assertEqual(engine._calculate_win_rate(analysis), 50.0)
+
+
+@patch("engine.bt_backtest_engine.DataLoader")
+class TestCalculateProfitFactor(unittest.TestCase):
+    """Test _calculate_profit_factor."""
+
+    def test_zero_loss_won_positive_returns_999(self, mock_dataloader_cls):
+        mock_dataloader_cls.return_value = MagicMock()
+        engine = BTBacktestEngine({"symbol": "BTC/USDT", "timeframes": ["1h"]})
+        analysis = {"won": {"pnl": {"total": 100.0}}, "lost": {"pnl": {"total": 0.0}}}
+        self.assertEqual(engine._calculate_profit_factor(analysis), 999.0)
+
+    def test_zero_won_zero_loss_returns_zero(self, mock_dataloader_cls):
+        mock_dataloader_cls.return_value = MagicMock()
+        engine = BTBacktestEngine({"symbol": "BTC/USDT", "timeframes": ["1h"]})
+        analysis = {"won": {"pnl": {"total": 0.0}}, "lost": {"pnl": {"total": 0.0}}}
+        self.assertEqual(engine._calculate_profit_factor(analysis), 0.0)
+
+    def test_normal_case_won_over_lost(self, mock_dataloader_cls):
+        mock_dataloader_cls.return_value = MagicMock()
+        engine = BTBacktestEngine({"symbol": "BTC/USDT", "timeframes": ["1h"]})
+        analysis = {"won": {"pnl": {"total": 200.0}}, "lost": {"pnl": {"total": 50.0}}}
+        self.assertAlmostEqual(engine._calculate_profit_factor(analysis), 4.0, places=2)
+
+    def test_negative_lost_uses_abs(self, mock_dataloader_cls):
+        mock_dataloader_cls.return_value = MagicMock()
+        engine = BTBacktestEngine({"symbol": "BTC/USDT", "timeframes": ["1h"]})
+        analysis = {"won": {"pnl": {"total": 100.0}}, "lost": {"pnl": {"total": -25.0}}}
+        self.assertAlmostEqual(engine._calculate_profit_factor(analysis), 4.0, places=2)
+
+
+@patch("engine.bt_backtest_engine.DataLoader")
+class TestAddDataTimeframeOrdering(unittest.TestCase):
+    """Test dual-TF ordering (lower TF first)."""
+
+    def test_dual_tf_reversed_order(self, mock_dataloader_cls):
+        mock_loader = MagicMock()
+        mock_loader.get_data.return_value = _mock_ohlcv_df()
+        mock_dataloader_cls.return_value = mock_loader
+
+        config = {
+            "symbol": "BTC/USDT",
+            "timeframes": ["4h", "15m"],
+            "start_date": "2024-01-01",
+            "end_date": "2024-01-31",
+        }
+        engine = BTBacktestEngine(config)
+        engine.add_data()
+
+        calls = mock_loader.get_data.call_args_list
+        self.assertEqual(calls[0][0][1], "15m")
+        self.assertEqual(calls[1][0][1], "4h")
+
+    def test_single_tf_no_reverse(self, mock_dataloader_cls):
+        mock_loader = MagicMock()
+        mock_loader.get_data.return_value = _mock_ohlcv_df()
+        mock_dataloader_cls.return_value = mock_loader
+
+        engine = BTBacktestEngine({"symbol": "BTC/USDT", "timeframes": ["4h"], "start_date": "2024-01-01", "end_date": "2024-01-31"})
+        engine.add_data()
+
+        self.assertEqual(mock_loader.get_data.call_args[0][1], "4h")
+
+
+@patch("engine.bt_backtest_engine.DataLoader")
+class TestAddDataDateDefaults(unittest.TestCase):
+    """Test default dates when missing from config."""
+
+    def test_missing_dates_use_defaults(self, mock_dataloader_cls):
+        mock_loader = MagicMock()
+        mock_loader.get_data.return_value = _mock_ohlcv_df()
+        mock_dataloader_cls.return_value = mock_loader
+
+        engine = BTBacktestEngine({"symbol": "BTC/USDT", "timeframes": ["1h"]})
+        engine.add_data()
+
+        self.assertEqual(mock_loader.get_data.call_args[0][2], "2024-01-01")
+        self.assertEqual(mock_loader.get_data.call_args[0][3], "2024-12-31")
+
+
+@patch("engine.bt_backtest_engine.DataLoader")
+class TestAddDataColumnValidation(unittest.TestCase):
+    """Test column validation."""
+
+    def test_missing_columns_skipped(self, mock_dataloader_cls):
+        bad_df = pd.DataFrame({
+            "open": [100.0] * 10,
+            "high": [105.0] * 10,
+            "low": [95.0] * 10,
+            "close": [101.0] * 10,
+        }, index=pd.date_range("2025-01-01", periods=10, freq="h"))
+        mock_loader = MagicMock()
+        mock_loader.get_data.return_value = bad_df
+        mock_dataloader_cls.return_value = mock_loader
+
+        engine = BTBacktestEngine({"symbol": "BTC/USDT", "timeframes": ["1h"]})
+        engine.add_data()
+
+        self.assertEqual(len(engine.cerebro.datas), 0)
+
+
+if __name__ == "__main__":
+    unittest.main()
