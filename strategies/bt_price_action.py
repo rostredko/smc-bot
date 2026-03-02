@@ -88,6 +88,8 @@ class PriceActionStrategy(BaseStrategy):
                  if not getattr(self, '_dd_limit_hit', False):
                      logger.warning(f"[{self.data_ltf.datetime.date(0).isoformat()}] CRITICAL: Max Drawdown {dd:.2f}% exceeded limit {self.params.max_drawdown}%. Stopping trading.")
                      self._dd_limit_hit = True
+                     if self.position:
+                         self.close()
                  return
 
         if self.position and self.stop_order:
@@ -272,6 +274,9 @@ class PriceActionStrategy(BaseStrategy):
         tp_price = self.close[0] + tp_distance
         self.last_entry_bar = len(self.data_ltf)
         size = self._calculate_position_size(self.close[0], sl_price)
+        if size <= 0:
+            logger.warning(f"[{self.data_ltf.datetime.date(0).isoformat()}] LONG size is 0, skipping entry. SL: {sl_price:.2f}")
+            return
         
         dt_str = self.data_ltf.datetime.date(0).isoformat()
         logger.info(f"[{dt_str}] SIGNAL GENERATED: LONG Entry={self.close[0]:.2f} SL={sl_price:.2f} TP={tp_price:.2f} Size={size:.4f} Reason={reason}")
@@ -342,6 +347,9 @@ class PriceActionStrategy(BaseStrategy):
 
         self.last_entry_bar = len(self.data_ltf)
         size = self._calculate_position_size(self.close[0], sl_price)
+        if size <= 0:
+            logger.warning(f"[{self.data_ltf.datetime.date(0).isoformat()}] SHORT size is 0, skipping entry. SL: {sl_price:.2f}")
+            return
         
         dt_str = self.data_ltf.datetime.date(0).isoformat()
         logger.info(f"[{dt_str}] SIGNAL GENERATED: SHORT Entry={self.close[0]:.2f} SL={sl_price:.2f} TP={tp_price:.2f} Size={size:.4f} Reason={reason}")

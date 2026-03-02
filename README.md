@@ -17,34 +17,44 @@ Production-ready Python backtesting framework for crypto trading strategies. Bin
 
 ---
 
-## Quick Start (Docker — all-in-one)
+## Quick Start (Recommended)
+
+The easiest and officially supported way to run the project locally is via Docker Compose. This spins up the MongoDB database, Python Backend, and Vite Frontend automatically.
 
 ```bash
 git clone <repo-url>
 cd smc-bot
 
-docker compose up -d
+# Start all services in the background
+docker compose up -d --build
 ```
 
-Starts MongoDB, backend, and frontend (dev mode). Open **http://localhost:5173**.
+- **Frontend**: Open **http://localhost:5173**
+- **Backend API**: Running on **http://localhost:8000**
+- **Database**: MongoDB running on **localhost:27017**
+
+> ⚠️ **IMPORTANT: Data Persistence**
+> Do not run `docker compose down -v` unless you explicitly want to wipe your database and cached market data. Running `docker compose down` will safely stop the containers while preserving your data in the Docker volumes (`mongo_data` and `data_cache`).
 
 **Hot-reload (dev):** `docker-compose.override.yml` mounts source code — changes in backend/frontend apply without rebuild. Backend uses `uvicorn --reload`, frontend uses Vite HMR.
 
 ---
 
-## Quick Start (Docker for MongoDB only)
+## Manual Setup (Legacy / Not Recommended)
+
+If you only want to use Docker for MongoDB and run the Python/Node servers manually on your host machine:
 
 ```bash
 git clone <repo-url>
 cd smc-bot
 
 python -m venv .venv
-source .venv/bin/activate   # Windows: .venv\Scripts\activate
+source .venv/bin/activate
 
 pip install -r deps/requirements.txt
 cp .env.example .env
 
-docker compose up -d mongo   # только MongoDB
+docker compose up -d mongo   # Run MongoDB only
 cd web-dashboard && npm install && npm run build
 python server.py             # http://localhost:8000
 ```

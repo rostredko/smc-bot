@@ -5,7 +5,11 @@ Trading bot for cryptocurrency spot trading using custom strategies. Supports ba
 
 ---
 
-## DOCKER
+## DOCKER (Primary Running Environment)
+
+The project is designed to be run entirely via Docker Compose. Manual execution of Python or Node.js scripts on the host machine is not recommended.
+
+> **Note on Data Persistence:** Data is stored in Docker volumes (`mongo_data` for the database and `data_cache` for downloaded exchange data). Using `docker compose down` will preserve these volumes. Do not use the `-v` flag unless you want to lose your configurations and market data.
 
 ### docker-compose.yml
 - **mongo**: MongoDB 7, port 27017, volume `mongo_data`

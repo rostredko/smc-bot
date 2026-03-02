@@ -102,6 +102,10 @@ class BaseStrategy(bt.Strategy):
             
             if order == self.stop_order:
                 self.stop_order = None
+            elif order == self.tp_order:
+                self.tp_order = None
+            elif order == self.order:
+                self.order = None
 
     def notify_trade(self, trade):
         if trade.justopened:

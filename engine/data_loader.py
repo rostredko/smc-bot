@@ -165,7 +165,8 @@ class DataLoader:
         df = self._ohlcv_to_dataframe(all_data)
 
         start_dt = pd.Timestamp(start_date)
-        end_dt = pd.Timestamp(end_date)
+        # End Date must include the whole day (23:59:59.999)
+        end_dt = pd.Timestamp(end_date) + pd.Timedelta(days=1) - pd.Timedelta(milliseconds=1)
         df = df[(df.index >= start_dt) & (df.index <= end_dt)]
 
         # Cache the data

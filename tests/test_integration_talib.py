@@ -409,6 +409,12 @@ class TestIntegrationNoPattern(unittest.TestCase):
             use_trend_filter=False,
             use_adx_filter=False,
             use_rsi_filter=False,
+            pattern_hammer=False,
+            pattern_inverted_hammer=False,
+            pattern_shooting_star=False,
+            pattern_hanging_man=False,
+            pattern_bullish_engulfing=False,
+            pattern_bearish_engulfing=False,
         )
         metrics = engine.run_backtest()
 

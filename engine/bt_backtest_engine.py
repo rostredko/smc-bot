@@ -149,7 +149,14 @@ class BTBacktestEngine(BaseEngine):
         total = trade_analysis.get('total', {}).get('closed', 0)
         if total == 0:
             return 0.0
-        won = trade_analysis.get('won', {}).get('total', 0)
+        
+        won_dict = trade_analysis.get('won', {})
+        # Backtrader uses an int if 0 won, otherwise it is a dict
+        if isinstance(won_dict, int):
+             won = won_dict
+        else:
+             won = won_dict.get('total', 0)
+             
         return (won / total) * 100
 
     def _calculate_profit_factor(self, trade_analysis):

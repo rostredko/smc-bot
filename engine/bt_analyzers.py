@@ -59,6 +59,7 @@ class TradeListAnalyzer(bt.Analyzer):
 
             # Finalize exit price calculation with correct size
             if size != 0:
+                # Use GROSS pnl for calculating the actual exit price the order filled at
                 pnl_per_unit = pnl / size
                 if trade.long:
                     trade_record["exit_price"] = trade.price + pnl_per_unit
