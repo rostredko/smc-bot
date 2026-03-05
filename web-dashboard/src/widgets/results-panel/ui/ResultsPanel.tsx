@@ -7,6 +7,47 @@ import { lazy, Suspense } from 'react';
 import TradeAnalysisChart from '../../../entities/trade/ui/TradeAnalysisChart';
 const TradeDetailsModal = lazy(() => import('../../../features/trade-details/ui/TradeDetailsModal'));
 
+const toFiniteNumber = (value: number | null | undefined): number | null => {
+    if (value == null) return null;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+};
+
+const metricDecimals = (value: number): number => {
+    const abs = Math.abs(value);
+    if (abs === 0) return 2;
+    if (abs >= 1) return 2;
+    if (abs >= 0.1) return 3;
+    if (abs >= 0.01) return 4;
+    return 6;
+};
+
+const formatMetric = (value: number | null | undefined): string => {
+    const numeric = toFiniteNumber(value);
+    if (numeric == null) return '-';
+    return numeric.toFixed(metricDecimals(numeric));
+};
+
+const formatCurrency = (value: number | null | undefined): string => {
+    const numeric = toFiniteNumber(value);
+    if (numeric == null) return '-';
+    const sign = numeric < 0 ? '-' : '';
+    return `${sign}$${Math.abs(numeric).toFixed(metricDecimals(numeric))}`;
+};
+
+const formatPercent = (value: number | null | undefined): string => {
+    const numeric = toFiniteNumber(value);
+    if (numeric == null) return '-';
+    return `${numeric.toFixed(metricDecimals(numeric))}%`;
+};
+
+const formatWinRatePercent = (value: number | null | undefined): string => {
+    const numeric = toFiniteNumber(value);
+    if (numeric == null) return '-';
+    const pct = numeric * 100;
+    return `${pct.toFixed(metricDecimals(pct))}%`;
+};
+
 const MemoizedLineChart = React.memo(({ data }: { data: any[] }) => (
     <ResponsiveContainer width="100%" height={300}>
         <LineChart data={data}>
@@ -59,17 +100,21 @@ const ResultsPanel: React.FC = () => {
         () => results?.configuration?.strategy_config ?? {},
         [results?.configuration]
     );
+    const isLiveResult = useMemo(
+        () => Boolean((results as any)?.is_live || (results as any)?.session_start || (results as any)?.session_end),
+        [results]
+    );
     const exchangeType = useMemo(
         () => results?.configuration?.exchange_type ?? 'future',
         [results?.configuration]
     );
     const backtestStart = useMemo(
-        () => results?.configuration?.start_date ?? undefined,
-        [results?.configuration]
+        () => isLiveResult ? undefined : (results?.configuration?.start_date ?? undefined),
+        [isLiveResult, results?.configuration]
     );
     const backtestEnd = useMemo(
-        () => results?.configuration?.end_date ?? undefined,
-        [results?.configuration]
+        () => isLiveResult ? undefined : (results?.configuration?.end_date ?? undefined),
+        [isLiveResult, results?.configuration]
     );
 
     if (!results) return null;
@@ -100,7 +145,7 @@ const ResultsPanel: React.FC = () => {
                             <Grid item xs={6} md={2}>
                                 <Paper sx={{ p: 2, textAlign: 'center' }}>
                                     <Typography variant="h6" color={results.total_pnl >= 0 ? "success.main" : "error.main"}>
-                                        ${results.total_pnl?.toFixed(1)}
+                                        {formatCurrency(results.total_pnl)}
                                     </Typography>
                                     <Typography variant="body2">Total PnL</Typography>
                                 </Paper>
@@ -108,7 +153,7 @@ const ResultsPanel: React.FC = () => {
                             <Grid item xs={6} md={2}>
                                 <Paper sx={{ p: 2, textAlign: 'center' }}>
                                     <Typography variant="h6" color="primary.main">
-                                        {(results.win_rate * 100)?.toFixed(1)}%
+                                        {formatWinRatePercent(results.win_rate)}
                                     </Typography>
                                     <Typography variant="body2">Win Rate</Typography>
                                 </Paper>
@@ -116,7 +161,7 @@ const ResultsPanel: React.FC = () => {
                             <Grid item xs={6} md={2}>
                                 <Paper sx={{ p: 2, textAlign: 'center' }}>
                                     <Typography variant="h6" color="warning.main">
-                                        {results.profit_factor?.toFixed(1)}
+                                        {formatMetric(results.profit_factor)}
                                     </Typography>
                                     <Typography variant="body2">Profit Factor</Typography>
                                 </Paper>
@@ -124,7 +169,7 @@ const ResultsPanel: React.FC = () => {
                             <Grid item xs={6} md={2}>
                                 <Paper sx={{ p: 2, textAlign: 'center' }}>
                                     <Typography variant="h6" color="error.main">
-                                        {results.max_drawdown?.toFixed(1)}%
+                                        {formatPercent(results.max_drawdown)}
                                     </Typography>
                                     <Typography variant="body2">Max Drawdown</Typography>
                                 </Paper>
@@ -132,7 +177,7 @@ const ResultsPanel: React.FC = () => {
                             <Grid item xs={6} md={2}>
                                 <Paper sx={{ p: 2, textAlign: 'center' }}>
                                     <Typography variant="h6" color="info.main">
-                                        {results.sharpe_ratio?.toFixed(1)}
+                                        {formatMetric(results.sharpe_ratio)}
                                     </Typography>
                                     <Typography variant="body2">Sharpe Ratio</Typography>
                                 </Paper>
@@ -208,27 +253,27 @@ const ResultsPanel: React.FC = () => {
                                 <TableBody>
                                     <TableRow>
                                         <TableCell>Total PnL</TableCell>
-                                        <TableCell>${results.total_pnl?.toFixed(1)}</TableCell>
+                                        <TableCell>{formatCurrency(results.total_pnl)}</TableCell>
                                         <TableCell>Overall profit/loss</TableCell>
                                     </TableRow>
                                     <TableRow>
                                         <TableCell>Win Rate</TableCell>
-                                        <TableCell>{(results.win_rate * 100)?.toFixed(1)}%</TableCell>
+                                        <TableCell>{formatWinRatePercent(results.win_rate)}</TableCell>
                                         <TableCell>Percentage of winning trades</TableCell>
                                     </TableRow>
                                     <TableRow>
                                         <TableCell>Profit Factor</TableCell>
-                                        <TableCell>{results.profit_factor?.toFixed(1)}</TableCell>
+                                        <TableCell>{formatMetric(results.profit_factor)}</TableCell>
                                         <TableCell>Gross profit / Gross loss</TableCell>
                                     </TableRow>
                                     <TableRow>
                                         <TableCell>Max Drawdown</TableCell>
-                                        <TableCell>{results.max_drawdown?.toFixed(1)}%</TableCell>
+                                        <TableCell>{formatPercent(results.max_drawdown)}</TableCell>
                                         <TableCell>Maximum peak-to-trough decline</TableCell>
                                     </TableRow>
                                     <TableRow>
                                         <TableCell>Sharpe Ratio</TableCell>
-                                        <TableCell>{results.sharpe_ratio?.toFixed(1)}</TableCell>
+                                        <TableCell>{formatMetric(results.sharpe_ratio)}</TableCell>
                                         <TableCell>Risk-adjusted return</TableCell>
                                     </TableRow>
                                     <TableRow>
@@ -248,12 +293,12 @@ const ResultsPanel: React.FC = () => {
                                     </TableRow>
                                     <TableRow>
                                         <TableCell>Average Win</TableCell>
-                                        <TableCell>{results.avg_win?.toFixed(1)}</TableCell>
+                                        <TableCell>{formatMetric(results.avg_win)}</TableCell>
                                         <TableCell>Average profit per winning trade</TableCell>
                                     </TableRow>
                                     <TableRow>
                                         <TableCell>Average Loss</TableCell>
-                                        <TableCell>{results.avg_loss?.toFixed(1)}</TableCell>
+                                        <TableCell>{formatMetric(results.avg_loss)}</TableCell>
                                         <TableCell>Average loss per losing trade</TableCell>
                                     </TableRow>
                                 </TableBody>

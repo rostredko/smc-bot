@@ -70,3 +70,51 @@ class TestQueueHandler(unittest.TestCase):
         self.assertFalse(q.empty())
         msg = q.get_nowait()
         self.assertEqual(msg, "hello")
+
+    def test_queue_handler_drops_oldest_when_queue_is_full(self):
+        q = queue.Queue(maxsize=1)
+        handler = QueueHandler(q)
+        handler.setFormatter(logging.Formatter("%(message)s"))
+
+        first = logging.LogRecord(
+            name="test",
+            level=logging.INFO,
+            pathname="",
+            lineno=0,
+            msg="first",
+            args=(),
+            exc_info=None,
+        )
+        second = logging.LogRecord(
+            name="test",
+            level=logging.INFO,
+            pathname="",
+            lineno=0,
+            msg="second",
+            args=(),
+            exc_info=None,
+        )
+        handler.emit(first)
+        handler.emit(second)
+
+        self.assertFalse(q.empty())
+        msg = q.get_nowait()
+        self.assertEqual(msg, "second")
+
+    def test_queue_handler_suppresses_noisy_live_output_lines(self):
+        q = queue.Queue()
+        handler = QueueHandler(q)
+        handler.setFormatter(logging.Formatter("%(message)s"))
+
+        record = logging.LogRecord(
+            name="test",
+            level=logging.INFO,
+            pathname="",
+            lineno=0,
+            msg="OHLCV fetched: BTC/USDT 1m -> 52 candles",
+            args=(),
+            exc_info=None,
+        )
+        handler.emit(record)
+
+        self.assertTrue(q.empty())

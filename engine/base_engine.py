@@ -1,6 +1,12 @@
 from abc import ABC, abstractmethod
 from typing import Dict, Any
+
+# Apply OCO guard before any Cerebro/broker creation (fixes ghost-trade same-bar double fill)
+from engine.bt_oco_patch import apply_oco_guard
+apply_oco_guard()
+
 import backtrader as bt
+
 
 class BaseEngine(ABC):
     """

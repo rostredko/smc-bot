@@ -103,6 +103,32 @@ class TestRiskManager(unittest.TestCase):
         self.assertGreater(size, 0)
         self.assertLessEqual(size * 100, 10000 * 0.1)
 
+    def test_position_cap_adverse_caps_notional(self):
+        size = RiskManager.calculate_position_size(
+            account_value=10000,
+            risk_per_trade_pct=5.0,
+            entry_price=100,
+            stop_loss=99,
+            leverage=10,
+            dynamic_sizing=True,
+            max_drawdown_pct=10,
+            position_cap_adverse=0.5,
+        )
+        self.assertAlmostEqual(size, 20.0, places=6)
+
+    def test_position_cap_adverse_below_half_is_clamped(self):
+        size = RiskManager.calculate_position_size(
+            account_value=10000,
+            risk_per_trade_pct=5.0,
+            entry_price=100,
+            stop_loss=99,
+            leverage=10,
+            dynamic_sizing=True,
+            max_drawdown_pct=10,
+            position_cap_adverse=0.1,
+        )
+        self.assertAlmostEqual(size, 20.0, places=6)
+
 
 if __name__ == "__main__":
     unittest.main()

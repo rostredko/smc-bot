@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import {
     Box, Card, CardHeader, CardContent, Typography, Table, TableBody, TableCell,
     TableContainer, TableHead, TableRow, Paper, IconButton, Collapse, Button, Stack,
-    Dialog, DialogTitle, DialogContent, DialogContentText, DialogActions, TextField, CircularProgress
+    Dialog, DialogTitle, DialogContent, DialogContentText, DialogActions, TextField, CircularProgress, Chip
 } from '@mui/material';
 import {
     KeyboardArrowDown, KeyboardArrowUp, History, NavigateBefore, NavigateNext,
@@ -27,6 +27,7 @@ const GENERAL_SETTINGS = [
     { label: "Trailing Stop Dist", key: "trailing_stop_distance" },
     { label: "Breakeven Trigger", key: "breakeven_trigger_r", suffix: "R" },
     { label: "Dynamic Sizing", key: "dynamic_position_sizing" },
+    { label: "Position Cap Adverse", key: "position_cap_adverse" },
 ];
 
 const STRATEGY_SECTIONS = [
@@ -121,7 +122,7 @@ const BacktestHistoryList: React.FC = () => {
         return undefined;
     }, []);
 
-    const handleTradeClick = useCallback((trade: any, config?: any) => {
+    const handleTradeClick = useCallback((trade: any, config?: any, isLive: boolean = false) => {
         if (trade) {
             setSelectedTrade(trade);
             setTradeModalConfig(config ? {
@@ -132,8 +133,8 @@ const BacktestHistoryList: React.FC = () => {
                 })(),
                 strategyConfig: config?.strategy_config ?? config?.strategyConfig ?? {},
                 exchangeType: getConfigValue(config, 'exchange_type') ?? 'future',
-                backtestStart: getConfigValue(config, 'start_date'),
-                backtestEnd: getConfigValue(config, 'end_date'),
+                backtestStart: isLive ? undefined : getConfigValue(config, 'start_date'),
+                backtestEnd: isLive ? undefined : getConfigValue(config, 'end_date'),
             } : null);
             setIsTradeModalOpen(true);
         }
@@ -212,6 +213,11 @@ const BacktestHistoryList: React.FC = () => {
                         <Typography variant="h6">Recent Backtests</Typography>
                     </Box>
                 }
+                subheader={
+                    <Typography variant="body2" color="text.secondary">
+                        {totalCount > 0 ? `${totalCount} runs stored in history` : 'No runs stored yet'}
+                    </Typography>
+                }
             />
             <CardContent>
                 <TableContainer component={Paper} variant="outlined">
@@ -256,10 +262,16 @@ const BacktestHistoryList: React.FC = () => {
                                                     </IconButton>
                                                 </TableCell>
                                                 <TableCell component="th" scope="row">{formatDate(item.timestamp)}</TableCell>
-                                                <TableCell>{item.strategy}</TableCell>
+                                                <TableCell>
+                                                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                                                        <span>{item.strategy}</span>
+                                                        {item.is_live && <Chip label="LIVE" size="small" color="secondary" sx={{ height: 20, fontSize: '0.65rem' }} />}
+                                                    </Box>
+                                                </TableCell>
                                                 <TableCell>
                                                     <Typography variant="body2" sx={{ fontSize: '0.875rem' }}>
                                                         {(() => {
+                                                            if (item.is_live) return 'Live Run';
                                                             const start = getConfigValue(item.configuration, 'start_date');
                                                             const end = getConfigValue(item.configuration, 'end_date');
                                                             if (start && end) {
@@ -296,6 +308,17 @@ const BacktestHistoryList: React.FC = () => {
                                                         onExited={() => setExpandedForChart((p) => ({ ...p, [item.filename]: false }))}
                                                     >
                                                         <Box sx={{ margin: 2 }}>
+                                                            {(item.loaded_template_name ?? getConfigValue(item.configuration, 'loaded_template_name')) && (
+                                                                <Box sx={{ mb: 2 }}>
+                                                                    <Chip
+                                                                        label={`Template: ${item.loaded_template_name ?? getConfigValue(item.configuration, 'loaded_template_name')}`}
+                                                                        size="small"
+                                                                        variant="outlined"
+                                                                        color="primary"
+                                                                        sx={{ height: 20, fontSize: '0.65rem' }}
+                                                                    />
+                                                                </Box>
+                                                            )}
                                                             <Box sx={{ display: 'flex', gap: 4, mb: 2, flexWrap: 'wrap' }}>
                                                                 <Box sx={{ minWidth: 200, maxWidth: 250 }}>
                                                                     <Typography variant="subtitle2" gutterBottom color="primary">Key Metrics</Typography>
@@ -308,7 +331,29 @@ const BacktestHistoryList: React.FC = () => {
 
                                                                     <Box sx={{ mt: 2 }}>
                                                                         <Typography variant="subtitle2" gutterBottom color="primary">General Settings</Typography>
-                                                                        {GENERAL_SETTINGS.map((setting) => {
+                                                                        {item.is_live && (item.session_start || item.session_end) && (
+                                                                            <Box sx={{ mb: 1, p: 1, bgcolor: 'action.hover', borderRadius: 1 }}>
+                                                                                <Typography variant="body2" sx={{ fontSize: '0.8rem', fontWeight: 'bold', color: 'primary.main', mb: 0.5 }}>
+                                                                                    📅 Session Period
+                                                                                </Typography>
+                                                                                {item.session_start && (
+                                                                                    <Typography variant="body2" sx={{ fontSize: '0.78rem', color: 'text.secondary' }}>
+                                                                                        Start: {formatDate(item.session_start)}
+                                                                                    </Typography>
+                                                                                )}
+                                                                                {item.session_end && (
+                                                                                    <Typography variant="body2" sx={{ fontSize: '0.78rem', color: 'text.secondary' }}>
+                                                                                        End: {formatDate(item.session_end)}
+                                                                                    </Typography>
+                                                                                )}
+                                                                                {item.session_duration_mins != null && (
+                                                                                    <Typography variant="body2" sx={{ fontSize: '0.78rem', color: 'text.secondary' }}>
+                                                                                        Duration: {item.session_duration_mins} min
+                                                                                    </Typography>
+                                                                                )}
+                                                                            </Box>
+                                                                        )}
+                                                                        {GENERAL_SETTINGS.filter(s => !(item.is_live && (s.key === "start_date" || s.key === "end_date"))).map((setting) => {
                                                                             const val = getConfigValue(item.configuration, setting.key);
                                                                             if (val === undefined) return null;
                                                                             const prevVal = previousRun ? getConfigValue(previousRun.configuration, setting.key) : undefined;
@@ -362,7 +407,7 @@ const BacktestHistoryList: React.FC = () => {
                                                                             <TradeAnalysisChart
                                                                                 key={item.filename}
                                                                                 trades={detailedResults[item.filename].trades}
-                                                                                onTradeClick={(t) => handleTradeClick(t, detailedResults[item.filename].configuration ?? item.configuration)}
+                                                                                onTradeClick={(t) => handleTradeClick(t, detailedResults[item.filename].configuration ?? item.configuration, !!item.is_live)}
                                                                                 height={200}
                                                                             />
                                                                         ) : (
@@ -375,8 +420,22 @@ const BacktestHistoryList: React.FC = () => {
                                                                     <Typography variant="body2" color="textSecondary">No trade data available.</Typography>
                                                                 )}
                                                             </Box>
-                                                            <Box sx={{ mt: 3 }}>
-                                                                <Typography variant="caption" display="block" color="textSecondary">File: {item.filename}</Typography>
+                                                            <Box sx={{ mt: 3, display: 'flex', alignItems: 'center', gap: 1 }}>
+                                                                <Typography variant="caption" display="block" color="textSecondary">
+                                                                    Session ID: {item.filename?.replace(/\.json$/i, '') ?? item.filename}
+                                                                </Typography>
+                                                                <IconButton
+                                                                    size="small"
+                                                                    onClick={(e) => {
+                                                                        e.stopPropagation();
+                                                                        const id = item.filename?.replace(/\.json$/i, '') ?? item.filename;
+                                                                        navigator.clipboard.writeText(id);
+                                                                    }}
+                                                                    title="Copy Session ID (use as _id in MongoDB)"
+                                                                    sx={{ p: 0.25 }}
+                                                                >
+                                                                    <FileCopyOutlined sx={{ fontSize: 14 }} />
+                                                                </IconButton>
                                                             </Box>
                                                         </Box>
                                                     </Collapse>

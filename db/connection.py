@@ -67,3 +67,27 @@ def init_db():
     backtests.create_index("configuration.symbol", name="ix_symbol")
     backtests.create_index("configuration.strategy", name="ix_strategy")
     backtests.create_index("total_pnl", name="ix_total_pnl")
+
+    ohlcv_cache = db["ohlcv_cache"]
+    ohlcv_cache.create_index(
+        [
+            ("exchange", 1),
+            ("exchange_type", 1),
+            ("symbol", 1),
+            ("timeframe", 1),
+            ("timestamp", 1),
+        ],
+        unique=True,
+        name="uq_ohlcv_cache_key",
+    )
+    ohlcv_cache.create_index(
+        [
+            ("exchange", 1),
+            ("exchange_type", 1),
+            ("symbol", 1),
+            ("timeframe", 1),
+            ("timestamp", 1),
+        ],
+        name="ix_ohlcv_cache_lookup",
+    )
+    ohlcv_cache.create_index("cached_at", name="ix_ohlcv_cached_at")

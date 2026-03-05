@@ -13,8 +13,14 @@ export interface BacktestSummary {
     winning_trades?: number;
     losing_trades?: number;
     strategy: string;
+    is_live?: boolean;
     configuration: any;
+    loaded_template_name?: string | null;
     risk_per_trade?: number;
     adx_threshold?: string | number;
     rsi_momentum_threshold?: string | number;
+    // Live trading session timing
+    session_start?: string;
+    session_end?: string;
+    session_duration_mins?: number;
 }

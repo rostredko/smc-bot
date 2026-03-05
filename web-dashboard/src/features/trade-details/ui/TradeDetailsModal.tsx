@@ -58,6 +58,29 @@ function toIso(str: string | null | undefined): string {
     return s;
 }
 
+function toUtcDisplay(str: string | null | undefined): string {
+    const iso = toIso(str);
+    if (!iso) return 'N/A';
+    return iso.replace('T', ' ').replace('Z', ' UTC');
+}
+
+function utcDiffFromLocalLabel(str: string | null | undefined): string {
+    const iso = toIso(str);
+    if (!iso) return 'N/A';
+    const dt = new Date(iso);
+    if (Number.isNaN(dt.getTime())) return 'N/A';
+
+    // JS timezone offset is UTC - local in minutes for the given timestamp.
+    const diffMinutes = dt.getTimezoneOffset();
+    const sign = diffMinutes >= 0 ? '+' : '-';
+    const absMinutes = Math.abs(diffMinutes);
+    const hours = Math.floor(absMinutes / 60);
+    const minutes = absMinutes % 60;
+
+    if (minutes === 0) return `${sign}${hours}h from local`;
+    return `${sign}${hours}h ${minutes}m from local`;
+}
+
 function valueAtTime(series: Array<{ time: string; value: number }> | undefined, targetIso: string): number | null {
     if (!series?.length || !targetIso) return null;
     const targetMs = new Date(targetIso).getTime();
@@ -208,7 +231,7 @@ const TradeDetailsModal: React.FC<TradeDetailsModalProps> = ({
                                         variant="caption"
                                         sx={{ color: '#fff', opacity: 0.6, display: 'block', px: 2, pt: 1.5, pb: 0.5 }}
                                     >
-                                        PRICE CHART · {symbol} · {chartTimeframe.toUpperCase()}
+                                        PRICE CHART · {symbol} · {chartTimeframe.toUpperCase()} · UTC
                                     </Typography>
                                     <Suspense fallback={
                                         <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: 420 }}>
@@ -290,8 +313,10 @@ const TradeDetailsModal: React.FC<TradeDetailsModalProps> = ({
                             <Grid item xs={12} md={6}>
                                 <Stack spacing={2}>
                                     <Box>
-                                        <Typography variant="subtitle2" color="gray">ENTRY TIME</Typography>
-                                        <Typography variant="body1">{selectedTrade.entry_time ? new Date(selectedTrade.entry_time).toLocaleString() : 'N/A'}</Typography>
+                                        <Typography variant="subtitle2" color="gray">ENTRY TIME (UTC)</Typography>
+                                        <Typography variant="body1">
+                                            {toUtcDisplay(selectedTrade.entry_time)} ({utcDiffFromLocalLabel(selectedTrade.entry_time)})
+                                        </Typography>
                                     </Box>
                                     <Box>
                                         <Typography variant="subtitle2" color="gray">ENTRY PRICE</Typography>
@@ -307,8 +332,10 @@ const TradeDetailsModal: React.FC<TradeDetailsModalProps> = ({
                             <Grid item xs={12} md={6}>
                                 <Stack spacing={2}>
                                     <Box>
-                                        <Typography variant="subtitle2" color="gray">EXIT TIME</Typography>
-                                        <Typography variant="body1">{selectedTrade.exit_time ? new Date(selectedTrade.exit_time).toLocaleString() : 'N/A'}</Typography>
+                                        <Typography variant="subtitle2" color="gray">EXIT TIME (UTC)</Typography>
+                                        <Typography variant="body1">
+                                            {toUtcDisplay(selectedTrade.exit_time)} ({utcDiffFromLocalLabel(selectedTrade.exit_time)})
+                                        </Typography>
                                     </Box>
                                     <Box>
                                         <Typography variant="subtitle2" color="gray">EXIT PRICE</Typography>

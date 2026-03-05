@@ -6,6 +6,8 @@ COPY web-dashboard/package*.json ./
 RUN npm install
 
 COPY web-dashboard/ .
+# VERSION is read by vite.config.ts (resolve(__dirname, '../VERSION') fails in Docker; use ./VERSION)
+COPY VERSION ./VERSION
 
 EXPOSE 5173
 

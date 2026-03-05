@@ -7,12 +7,17 @@ import os
 import asyncio
 import sys
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any
 from pathlib import Path
 from uuid import uuid4
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT_DIR = os.path.dirname(CURRENT_DIR)
+if CURRENT_DIR not in sys.path:
+    sys.path.append(CURRENT_DIR)
+if PROJECT_ROOT_DIR not in sys.path:
+    sys.path.append(PROJECT_ROOT_DIR)
 
 from contextlib import asynccontextmanager
 
@@ -23,9 +28,17 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict
 
 from engine.bt_backtest_engine import BTBacktestEngine
+from engine.bt_live_engine import BTLiveEngine
 from engine.data_loader import DataLoader
-from strategies.bt_price_action import PriceActionStrategy
-from engine.logger import get_logger, setup_logging, ws_log_queue
+from engine.logger import get_logger, setup_logging, ws_log_queue, suppress_ws_logging
+from services.strategy_runtime import resolve_strategy_class, build_runtime_strategy_config
+from services.result_mapper import (
+    map_backtest_trades,
+    map_live_trades,
+    build_backtest_metrics_doc,
+    build_live_metrics_doc,
+    build_equity_series,
+)
 
 from db import is_database_available, init_db
 from db.repositories import BacktestRepository, UserConfigRepository, AppConfigRepository
@@ -35,6 +48,17 @@ logger = get_logger("server")
 
 BASE_DIR = Path(__file__).parent.parent.absolute()
 DATA_DIR = str(BASE_DIR / "data_cache")
+VERSION_FILE = BASE_DIR / "VERSION"
+
+
+def _read_version() -> str:
+    """Read semantic version from VERSION file."""
+    if VERSION_FILE.exists():
+        return VERSION_FILE.read_text().strip()
+    return "1.0.0"
+
+
+APP_VERSION = _read_version()
 
 os.makedirs(DATA_DIR, exist_ok=True)
 
@@ -61,7 +85,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Backtrade Machine API",
     description="REST API for Backtrade Machine",
-    version="1.0.0",
+    version=APP_VERSION,
     lifespan=lifespan,
 )
 
@@ -99,6 +123,8 @@ class BacktestConfig(BaseModel):
     slippage_bp: float = 0.0 # Default 0 basis points
     exchange: str = "binance"
     exchange_type: str = "future"
+    loaded_template_name: Optional[str] = None
+    position_cap_adverse: float = 0.5  # Worst-case gap for position cap (0.5=50%). Lower = larger positions.
 
 
 class BacktestRequest(BaseModel):
@@ -122,6 +148,13 @@ class BacktestStatus(BaseModel):
 running_backtests: Dict[str, BacktestStatus] = {}
 active_connections: List[WebSocket] = []
 connection_lock = threading.Lock()
+
+live_trading_state: Dict[str, Any] = {
+    "is_running": False,
+    "engine": None,
+    "start_time": None,
+    "stop_requested": False,
+}
 
 strategy_schema_cache: Dict[str, Dict[str, Any]] = {}
 _broadcast_shutdown: asyncio.Event = asyncio.Event()
@@ -257,6 +290,16 @@ def get_strategy_config_schema(strategy_name: str):
             "pattern_hanging_man": {"type": "boolean", "default": True},
             "pattern_bullish_engulfing": {"type": "boolean", "default": True},
             "pattern_bearish_engulfing": {"type": "boolean", "default": True}
+        },
+        "fast_test_strategy": {
+            "sl_mult": {"type": "number", "default": 0.35},
+            "tp_mult": {"type": "number", "default": 0.55},
+            "atr_period": {"type": "number", "default": 7},
+            "fixed_size": {"type": "number", "default": 0.001},
+            "min_fallback_size": {"type": "number", "default": 0.001},
+            "force_signal_every_n_bars": {"type": "number", "default": 1},
+            "max_hold_bars": {"type": "number", "default": 1},
+            "stop_after_n_trades": {"type": "number", "default": 0},
         }
     }
     
@@ -273,7 +316,7 @@ async def root():
     if os.path.exists("dist/index.html"):
         return FileResponse("dist/index.html")
     else:
-        return {"message": "SMC Trading Engine API", "version": "1.0.0", "error": "Frontend not built. Run 'npm run build' first."}
+        return {"message": "SMC Trading Engine API", "version": APP_VERSION, "error": "Frontend not built. Run 'npm run build' first."}
 
 
 @app.get("/health")
@@ -314,7 +357,8 @@ def _config_to_flat(config: Dict[str, Any]) -> Dict[str, Any]:
         "trailing_stop_distance": config.get("trailing_stop_distance", 0.04),
         "breakeven_trigger_r": config.get("breakeven_trigger_r", 1.5),
         "max_total_risk_percent": config.get("max_total_risk_percent", 15.0),
-        "dynamic_position_sizing": config.get("dynamic_position_sizing", True)
+        "dynamic_position_sizing": config.get("dynamic_position_sizing", True),
+        "position_cap_adverse": config.get("position_cap_adverse", 0.5),
     }
 
 
@@ -347,9 +391,13 @@ async def update_config(config: Dict[str, Any]):
             existing_config["period"][key] = config[key]
     if "strategy" in config:
         existing_config["strategy"]["name"] = config["strategy"]
+    if "strategy_config" in config:
+        existing_config["strategy"]["config"] = config["strategy_config"]
     for key in ("min_risk_reward", "trailing_stop_distance", "breakeven_trigger_r", "max_total_risk_percent", "dynamic_position_sizing"):
         if key in config:
             existing_config[key] = config[key]
+    if "position_cap_adverse" in config:
+        existing_config["position_cap_adverse"] = config["position_cap_adverse"]
 
     AppConfigRepository().save(existing_config)
     return {"message": "Configuration updated"}
@@ -392,8 +440,8 @@ async def update_live_config(config: Dict[str, Any]):
 
 @app.get("/api/user-configs")
 async def list_user_configs():
-    """List all saved user configurations."""
-    return {"configs": UserConfigRepository().list_names()}
+    """List all saved user configurations (by priority if set, else newest first)."""
+    return {"configs": UserConfigRepository().list_names_sorted_by_priority()}
 
 
 @app.get("/api/user-configs/{name}")
@@ -404,6 +452,10 @@ async def get_user_config(name: str):
     data = UserConfigRepository().get(name)
     if data is None:
         raise HTTPException(status_code=404, detail="Configuration not found")
+    
+    # Flatten it if it's in the nested format
+    if "trading" in data or "account" in data or "period" in data:
+        return _config_to_flat(data)
     return data
 
 
@@ -424,6 +476,21 @@ async def delete_user_config(name: str):
     if not UserConfigRepository().delete(name):
         raise HTTPException(status_code=404, detail="Configuration not found")
     return {"message": f"Configuration '{name}' deleted successfully"}
+
+
+class ReorderConfigsRequest(BaseModel):
+    order: List[str]
+
+
+@app.put("/api/user-configs/reorder")
+async def reorder_user_configs(req: ReorderConfigsRequest):
+    """Save template priority order (first in list = highest priority)."""
+    for name in req.order:
+        if "/" in name or "\\" in name or ".." in name:
+            raise HTTPException(status_code=400, detail=f"Invalid configuration name: {name}")
+    UserConfigRepository().save_template_order(req.order)
+    return {"message": "Order saved", "configs": UserConfigRepository().list_names_sorted_by_priority()}
+
 
 @app.post("/backtest/start")
 async def start_backtest(request: BacktestRequest, background_tasks: BackgroundTasks):
@@ -562,12 +629,75 @@ async def cancel_backtest(run_id: str):
 
 @app.delete("/api/backtest/history/{filename}")
 async def delete_backtest_result(filename: str):
-    """Delete a specific backtest result."""
-    if not filename.endswith(".json") or "/" in filename or "\\" in filename:
+    """Delete a specific backtest result. Accepts run_id with or without .json suffix."""
+    if "/" in filename or "\\" in filename or ".." in filename:
         raise HTTPException(status_code=400, detail="Invalid filename")
     if not BacktestRepository().delete_by_filename(filename):
         raise HTTPException(status_code=404, detail="Not found")
     return {"message": f"Successfully deleted {filename}"}
+
+
+class LiveStartRequest(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    config: Dict[str, Any]
+
+@app.post("/api/live/start")
+async def start_live_trading(request: LiveStartRequest, background_tasks: BackgroundTasks):
+    """Start the live (paper) trading engine."""
+    global live_trading_state
+    if live_trading_state["is_running"]:
+        raise HTTPException(status_code=400, detail="Live trading is already running")
+    
+    config = request.config
+    if not config:
+        raise HTTPException(status_code=400, detail="Live configuration not found")
+
+    live_trading_state["is_running"] = True
+    live_trading_state["start_time"] = datetime.now().isoformat()
+    live_trading_state["stop_requested"] = False
+    await broadcast_message("[LIVE] Starting live trading engine...\n")
+    
+    background_tasks.add_task(run_live_trading_task, config)
+    return {"message": "Live trading started"}
+
+
+@app.post("/api/live/stop")
+async def stop_live_trading():
+    """Stop the live (paper) trading engine."""
+    global live_trading_state
+    if not live_trading_state["is_running"]:
+        raise HTTPException(status_code=400, detail="Live trading is not running")
+    live_trading_state["stop_requested"] = True
+
+    engine = live_trading_state["engine"]
+    await broadcast_message("[LIVE] Stopping live trading engine...\n")
+    if engine:
+        engine.stop()  # Signals the stop_event
+    return {"message": "Live trading stop signal sent"}
+
+
+@app.get("/api/live/status")
+async def get_live_status():
+    """Get status of the live trading engine."""
+    global live_trading_state
+    status = {
+        "is_running": live_trading_state["is_running"],
+        "start_time": live_trading_state["start_time"],
+        "stop_requested": live_trading_state.get("stop_requested", False),
+        "current_equity": None,
+        "initial_capital": None,
+        "open_trades": 0
+    }
+    
+    engine = live_trading_state.get("engine")
+    if status["is_running"] and engine and hasattr(engine, "cerebro") and engine.cerebro:
+        try:
+            status["current_equity"] = engine.cerebro.broker.getvalue()
+            status["initial_capital"] = engine.cerebro.broker.startingcash
+        except Exception:
+            pass
+            
+    return status
 
 
 @app.websocket("/ws")
@@ -600,6 +730,119 @@ async def broadcast_message(message: str):
                 if connection in active_connections:
                     active_connections.remove(connection)
 
+async def run_live_trading_task(config: Dict[str, Any]):
+    """Background task to run the live trading engine and save results upon stopping."""
+    global live_trading_state
+    
+    run_id = f"live_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid4().hex[:8]}"
+    session_start = datetime.now()
+    signal_counter = None
+    _root_logger = None
+
+    try:
+        import logging as _logging
+        setup_logging(level=_logging.INFO, run_id=run_id, enable_ws=True)
+
+        class _SignalCounter(_logging.Handler):
+            def __init__(self):
+                super().__init__()
+                self.count = 0
+
+            def emit(self, record):
+                if "SIGNAL GENERATED:" in record.getMessage():
+                    self.count += 1
+
+        signal_counter = _SignalCounter()
+        import logging as _logging_root
+        _root_logger = _logging_root.getLogger("backtrade")
+        _root_logger.addHandler(signal_counter)
+        
+        engine = BTLiveEngine(config)
+        st_config = build_runtime_strategy_config(config)
+        strategy_name = config.get('strategy', 'bt_price_action')
+        strategy_class = resolve_strategy_class(strategy_name)
+        engine.add_strategy(strategy_class, **st_config)
+        
+        live_trading_state["engine"] = engine
+        if live_trading_state.get("stop_requested"):
+            await broadcast_message(f"[{run_id}] Stop requested before engine start; stopping now.\n")
+            engine.stop()
+        
+        await broadcast_message(f"[{run_id}] Live engine loop starting...\n")
+        
+        loop = asyncio.get_event_loop()
+        # run_live will block until engine.stop() is called
+        metrics = await loop.run_in_executor(None, engine.run_live)
+        session_end = datetime.now()
+
+        await broadcast_message(f"[{run_id}] Live trading stopped. Saving results...\n")
+        
+        safe_metrics = metrics if isinstance(metrics, dict) else {}
+        if signal_counter is not None:
+            safe_metrics["signals_generated"] = int(signal_counter.count)
+        trades_data = map_live_trades(engine.closed_trades)
+
+        # For fast stop/save flow in live mode, chart_data prebuild is OFF by default.
+        # UI can lazy-load chart candles/indicators on trade details open via /api/ohlcv.
+        if bool(config.get("live_attach_chart_data", False)) and trades_data:
+            chart_start = (session_start - timedelta(days=1)).strftime("%Y-%m-%d")
+            chart_end = (session_end + timedelta(hours=1)).strftime("%Y-%m-%d")
+            live_engine_config = {**config, "start_date": chart_start, "end_date": chart_end}
+            try:
+                chart_limit = int(config.get("live_chart_trades_limit", 20))
+                chart_limit = max(0, chart_limit)
+                trades_for_chart = trades_data[:chart_limit] if chart_limit > 0 else []
+                if trades_for_chart:
+                    # Keep Live Output clean: suppress WS logs for post-stop chart prebuild.
+                    with suppress_ws_logging():
+                        loader = DataLoader(
+                            exchange_name=config.get("exchange", "binance"),
+                            exchange_type=config.get("exchange_type", "future"),
+                        )
+                        _build_chart_data_for_trades(
+                            trades_for_chart,
+                            live_engine_config,
+                            data_loader=loader,
+                            context_bars=25,
+                        )
+                if len(trades_data) > chart_limit > 0:
+                    logger.debug(f"chart_data added to first {chart_limit} live trades (total {len(trades_data)} — MongoDB size limit)")
+                elif chart_limit > 0:
+                    logger.debug(f"chart_data added to {len(trades_for_chart)} live trades")
+            except Exception as chart_err:
+                logger.warning(f"Live chart_data build failed: {chart_err}")
+        
+        equity_data = build_equity_series(engine.equity_curve, max_points=None)
+        mapped_metrics = build_live_metrics_doc(
+            config=config,
+            metrics=safe_metrics,
+            trades_data=trades_data,
+            equity_data=equity_data,
+            session_start=session_start,
+            session_end=session_end,
+        )
+        
+        # Save into repository as live
+        BacktestRepository().save(run_id, mapped_metrics, is_live=True)
+        await broadcast_message(f"[{run_id}] Live run saved to history.\n")
+            
+    except Exception as e:
+        logger.error(f"Error in live trading task: {e}")
+        await broadcast_message(f"[LIVE ERROR] {e}\n")
+    finally:
+        if _root_logger is not None and signal_counter is not None:
+            try:
+                _root_logger.removeHandler(signal_counter)
+            except Exception:
+                pass
+        live_trading_state["is_running"] = False
+        live_trading_state["engine"] = None
+        live_trading_state["start_time"] = None
+        live_trading_state["stop_requested"] = False
+        await broadcast_message(f"[{run_id}] Live engine fully stopped. All processes terminated.\n")
+        setup_logging(enable_ws=False)
+
+
 
 async def run_backtest_task(run_id: str, config: Dict[str, Any]):
     """Background task to run backtest."""
@@ -631,6 +874,7 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
             'breakeven_trigger_r': config.get('breakeven_trigger_r', 1.5),
             'max_total_risk_percent': config.get('max_total_risk_percent', 15.0),
             'dynamic_position_sizing': config.get('dynamic_position_sizing', True),
+            'position_cap_adverse': config.get('position_cap_adverse', 0.5),
             'commission': commission,
             'taker_fee': taker_fee_pct,
             'slippage_bp': config.get('slippage_bp', 0.0),
@@ -640,6 +884,8 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
             'market_analysis': True,
             'save_results': True,
         }
+        if config.get('loaded_template_name'):
+            engine_config['loaded_template_name'] = config['loaded_template_name']
         
         if len(engine_config['timeframes']) >= 1:
              pass
@@ -660,6 +906,7 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
         await broadcast_message(f"[{run_id}] Trailing Stop Distance: {engine_config['trailing_stop_distance']}\n")
         await broadcast_message(f"[{run_id}] Breakeven Trigger (R): {engine_config['breakeven_trigger_r']}\n")
         await broadcast_message(f"[{run_id}] Dynamic Position Sizing: {engine_config['dynamic_position_sizing']}\n")
+        await broadcast_message(f"[{run_id}] Position Cap Adverse: {engine_config.get('position_cap_adverse', 0.5)} (worst-case gap)\n")
         if engine_config['strategy_config']:
             await broadcast_message(f"[{run_id}] Strategy Config: {engine_config['strategy_config']}\n")
         await broadcast_message(f"[{run_id}] ============================================================\n")
@@ -684,15 +931,10 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
             await broadcast_message(f"[{run_id}] Creating engine instance...\n")
             engine = BTBacktestEngine(engine_config)
             
-            st_config = engine_config.get('strategy_config', {})
-            st_config['trailing_stop_distance'] = engine_config.get('trailing_stop_distance', 0.0)
-            st_config['breakeven_trigger_r'] = engine_config.get('breakeven_trigger_r', 0.0)
-            st_config['risk_per_trade'] = engine_config.get('risk_per_trade', 1.0)
-            st_config['leverage'] = engine_config.get('leverage', 1.0)
-            st_config['dynamic_position_sizing'] = engine_config.get('dynamic_position_sizing', True)
-            st_config['max_drawdown'] = engine_config.get('max_drawdown', 50.0)
-            
-            engine.add_strategy(PriceActionStrategy, **st_config)
+            st_config = build_runtime_strategy_config(engine_config)
+            strategy_name = engine_config.get('strategy', 'bt_price_action')
+            strategy_class = resolve_strategy_class(strategy_name)
+            engine.add_strategy(strategy_class, **st_config)
             
             running_backtests[run_id].engine = engine
             
@@ -719,81 +961,26 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
             try:
                 metrics['signals_generated'] = signal_counter.count
                 
-                trades_data = []
-                for i, trade in enumerate(engine.closed_trades):
-                    entry_time = datetime.fromisoformat(trade['entry_time']) if trade['entry_time'] else None
-                    exit_time = datetime.fromisoformat(trade['exit_time']) if trade['exit_time'] else None
-                    
-                    duration_str = None
-                    if exit_time and entry_time:
-                        diff = exit_time - entry_time
-                        duration_str = str(diff).replace("0 days ", "")
+                trades_data = map_backtest_trades(engine.closed_trades)
 
-                    trade_dict = {
-                        'id': i + 1,
-                        'direction': trade['direction'],
-                        'entry_price': trade['entry_price'],
-                        'exit_price': trade['exit_price'],
-                        'size': trade['size'],
-                        'pnl': trade['realized_pnl'],
-                        'pnl_percent': (trade['realized_pnl'] / (trade['entry_price'] * trade['size'])) * 100 if trade['entry_price'] and trade['size'] else 0,
-                        'entry_time': trade['entry_time'],
-                        'exit_time': trade['exit_time'],
-                        'duration': duration_str,
-                        'status': 'CLOSED',
-                        'stop_loss': trade['stop_loss'],
-                        'take_profit': trade['take_profit'],
-                        'realized_pnl': trade['realized_pnl'],
-                        'exit_reason': trade.get('exit_reason', 'Unknown'),
-                        'commission': trade.get('commission', 0),
-                        'reason': trade.get('reason', 'Unknown'), # Use .get() for safety
-                        'narrative': trade.get('narrative', None), # Add Narrative field
-                        'sl_calculation': trade.get('sl_calculation', None), # Add SL Calc
-                        'tp_calculation': trade.get('tp_calculation', None), # Add TP Calc
-                        'sl_history': trade.get('sl_history', []), # Add SL History
-                        'entry_context': trade.get('entry_context', None),
-                        'execution_bar_indicators': trade.get('execution_bar_indicators', None),
-                        'exit_context': trade.get('exit_context', None),
-                        'metadata': trade.get('metadata', {})
-                    }
-                    trades_data.append(trade_dict)
-
+                # MongoDB 16MB limit: chart_data only for first 75 trades to avoid "document too large"
+                chart_limit = 75
+                trades_for_chart = trades_data[:chart_limit] if len(trades_data) > chart_limit else trades_data
                 try:
-                    _build_chart_data_for_trades(trades_data, engine_config, data_loader=engine.data_loader, context_bars=25)
+                    _build_chart_data_for_trades(trades_for_chart, engine_config, data_loader=engine.data_loader, context_bars=25)
+                    if len(trades_data) > chart_limit:
+                        logger.info(f"chart_data added to first {chart_limit} trades only (total {len(trades_data)} — MongoDB size limit)")
                 except Exception as chart_err:
                     logger.warning(f"chart_data build failed: {chart_err}")
                 
-                equity_data = []
-                total_points = len(engine.equity_curve)
-                step = max(1, int(total_points / 100))
-                
-                for i, point in enumerate(engine.equity_curve):
-                    if i % step == 0 or i == total_points - 1:
-                        equity_dict = {
-                            'date': point['timestamp'].isoformat() if hasattr(point['timestamp'], 'isoformat') else str(point['timestamp']),
-                            'equity': point['equity']
-                        }
-                        equity_data.append(equity_dict)
-                
-                mapped_metrics = {
-                    'total_pnl': metrics.get('total_pnl', 0),
-                    'winning_trades': metrics.get('win_count', 0),
-                    'losing_trades': metrics.get('loss_count', 0),
-                    'total_trades': metrics.get('total_trades', 0),
-                    'win_rate': metrics.get('win_rate', 0) / 100 if metrics.get('win_rate', 0) > 1 else metrics.get('win_rate', 0),
-                    'profit_factor': metrics.get('profit_factor', 0),
-                    'max_drawdown': metrics.get('max_drawdown', 0),
-                    'sharpe_ratio': metrics.get('sharpe_ratio', 0),
-                    'avg_win': metrics.get('avg_win', 0),
-                    'avg_loss': metrics.get('avg_loss', 0),
-                    'initial_capital': engine_config.get('initial_capital', 10000),
-                    'final_capital': metrics.get('final_capital', 0),
-                    'signals_generated': signal_counter.count,
-                    'equity_curve': equity_data,
-                    'trades': trades_data,
-                    'strategy': engine_config.get('strategy', 'Unknown'),
-                    'configuration': engine_config
-                }
+                equity_data = build_equity_series(engine.equity_curve, max_points=100)
+                mapped_metrics = build_backtest_metrics_doc(
+                    engine_config=engine_config,
+                    metrics=metrics,
+                    trades_data=trades_data,
+                    equity_data=equity_data,
+                    signals_generated=signal_counter.count,
+                )
                 
                 metrics.update(mapped_metrics)
                 
@@ -1181,6 +1368,25 @@ async def get_ohlcv(
     Indicator params (pass 0 to skip): ema_period, rsi_period, adx_period, atr_period.
     Returns candles and indicators (ema, rsi, adx, atr) with values per bar.
     """
+    with suppress_ws_logging():
+        return await _get_ohlcv_impl(
+            symbol=symbol, timeframe=timeframe, start=start, end=end,
+            context_bars=context_bars, exchange_type=exchange_type,
+            backtest_start=backtest_start, backtest_end=backtest_end,
+            ema_period=ema_period, ema_timeframe=ema_timeframe,
+            rsi_period=rsi_period, rsi_overbought=rsi_overbought, rsi_oversold=rsi_oversold,
+            adx_period=adx_period, adx_threshold=adx_threshold, atr_period=atr_period,
+        )
+
+
+async def _get_ohlcv_impl(
+    symbol: str, timeframe: str, start: str, end: str,
+    context_bars: int, exchange_type: str,
+    backtest_start: str, backtest_end: str,
+    ema_period: int, ema_timeframe: str,
+    rsi_period: int, rsi_overbought: float, rsi_oversold: float,
+    adx_period: int, adx_threshold: float, atr_period: int,
+):
     try:
         def to_ms(iso_str: str) -> int:
             dt = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
@@ -1387,7 +1593,7 @@ async def get_ohlcv(
 
         if use_cache:
             _ohlcv_cache_set(cache_key, result)
-        logger.info(
+        logger.debug(
             f"OHLCV fetched: {symbol} {timeframe} → {len(result['candles'])} candles, "
             f"indicators: {list(result['indicators'].keys())}"
         )
@@ -1402,7 +1608,3 @@ async def get_ohlcv(
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
-
-
-
-

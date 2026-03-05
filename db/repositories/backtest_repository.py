@@ -23,7 +23,8 @@ def _run_id_from_filename(filename: str) -> str:
 
 
 def _filename_from_run_id(run_id: str) -> str:
-    return f"{run_id}.json"
+    """Return run_id as-is (no .json) so it matches MongoDB _id for easy lookup."""
+    return run_id
 
 
 class BacktestRepository:
@@ -35,9 +36,17 @@ class BacktestRepository:
             self._coll = get_database()["backtests"]
         return self._coll
 
-    def save(self, run_id: str, data: Dict[str, Any]) -> None:
+    def save(self, run_id: str, data: Dict[str, Any], is_live: Optional[bool] = None) -> None:
         doc = _sanitize_for_mongo(dict(data))
         doc["_id"] = run_id
+        if is_live is None:
+            if "is_live" in doc:
+                doc["is_live"] = bool(doc["is_live"])
+            else:
+                existing = self._collection().find_one({"_id": run_id}, {"is_live": 1})
+                doc["is_live"] = bool(existing.get("is_live", False)) if existing else False
+        else:
+            doc["is_live"] = bool(is_live)
         if "created_at" not in doc:
             doc["created_at"] = datetime.utcnow().isoformat() + "Z"
         self._collection().replace_one({"_id": run_id}, doc, upsert=True)
@@ -89,8 +98,13 @@ class BacktestRepository:
                     "avg_loss": doc.get("avg_loss", 0),
                     "winning_trades": doc.get("winning_trades", 0),
                     "losing_trades": doc.get("losing_trades", 0),
-                    "strategy": cfg.get("strategy", "Unknown"),
+                    "strategy": doc.get("strategy", cfg.get("strategy", "Unknown")),
                     "configuration": cfg,
+                    "loaded_template_name": cfg.get("loaded_template_name"),
+                    "is_live": doc.get("is_live", False),
+                    "session_start": doc.get("session_start"),
+                    "session_end": doc.get("session_end"),
+                    "session_duration_mins": doc.get("session_duration_mins"),
                 }
             )
         return history, total

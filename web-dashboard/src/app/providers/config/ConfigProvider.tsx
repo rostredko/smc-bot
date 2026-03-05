@@ -10,10 +10,13 @@ export interface UseConfigReturn {
     strategyConfig: Record<string, any>;
     errors: Record<string, string>;
     isRunning: boolean;
+    isLiveRunning: boolean;
+    isLiveStopping: boolean;
     isConfigDisabled: boolean;
     loadDialogOpen: boolean;
     savedConfigs: string[];
     topSymbols: string[];
+    loadedTemplateName: string | null;
 
     setStrategies: React.Dispatch<React.SetStateAction<Strategy[]>>;
     setSelectedStrategy: React.Dispatch<React.SetStateAction<string>>;
@@ -21,6 +24,8 @@ export interface UseConfigReturn {
     setStrategyConfig: React.Dispatch<React.SetStateAction<Record<string, any>>>;
     setErrors: React.Dispatch<React.SetStateAction<Record<string, string>>>;
     setIsRunning: React.Dispatch<React.SetStateAction<boolean>>;
+    setIsLiveRunning: React.Dispatch<React.SetStateAction<boolean>>;
+    setIsLiveStopping: React.Dispatch<React.SetStateAction<boolean>>;
     setIsConfigDisabled: React.Dispatch<React.SetStateAction<boolean>>;
     setLoadDialogOpen: React.Dispatch<React.SetStateAction<boolean>>;
     setSavedConfigs: React.Dispatch<React.SetStateAction<string[]>>;
@@ -31,6 +36,7 @@ export interface UseConfigReturn {
     handleOpenLoadDialog: () => void;
     handleLoadConfig: (configName: string) => Promise<void>;
     handleDeleteConfig: (configName: string) => Promise<void>;
+    handleReorderConfigs: (newOrder: string[]) => Promise<void>;
     resetDashboard: () => Promise<void>;
     startBacktest: (
         setConsoleOutput: (output: string[]) => void,
@@ -38,6 +44,9 @@ export interface UseConfigReturn {
         setBacktestStatus: (status: any) => void
     ) => Promise<void>;
     stopBacktest: (currentRunId?: string) => Promise<void>;
+    startLiveTrading: () => Promise<void>;
+    stopLiveTrading: () => Promise<void>;
+    checkLiveStatus: () => Promise<void>;
     handleStrategyChange: (strategyName: string) => void;
     handleConfigChange: (key: string, value: any) => void;
     handleStrategyConfigChange: (key: string, value: any) => void;
@@ -58,10 +67,13 @@ export const ConfigProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     const [strategyConfig, setStrategyConfig] = useState<Record<string, any>>({});
     const [errors, setErrors] = useState<Record<string, string>>({});
     const [isRunning, setIsRunning] = useState(false);
+    const [isLiveRunning, setIsLiveRunning] = useState(false);
+    const [isLiveStopping, setIsLiveStopping] = useState(false);
     const [isConfigDisabled, setIsConfigDisabled] = useState(false);
     const [loadDialogOpen, setLoadDialogOpen] = useState(false);
     const [savedConfigs, setSavedConfigs] = useState<string[]>([]);
     const [topSymbols, setTopSymbols] = useState<string[]>([]);
+    const [loadedTemplateName, setLoadedTemplateName] = useState<string | null>(null);
 
     const strategyMap = useMemo(() => new Map(strategies.map(s => [s.name, s])), [strategies]);
 
@@ -133,6 +145,26 @@ export const ConfigProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         } catch (error) { console.error(error); }
     };
 
+    const handleReorderConfigs = async (newOrder: string[]) => {
+        setSavedConfigs(newOrder); // optimistic update
+        try {
+            const response = await fetch(`${API_BASE}/api/user-configs/reorder`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ order: newOrder }),
+            });
+            if (response.ok) {
+                const data = await response.json();
+                setSavedConfigs(data.configs || newOrder);
+            } else {
+                await loadUserConfigs(); // revert on failure
+            }
+        } catch (error) {
+            console.error(error);
+            await loadUserConfigs(); // revert on error
+        }
+    };
+
     const handleOpenLoadDialog = () => {
         loadUserConfigs();
         setLoadDialogOpen(true);
@@ -143,15 +175,32 @@ export const ConfigProvider: React.FC<{ children: React.ReactNode }> = ({ childr
             const response = await fetch(`${API_BASE}/api/user-configs/${configName}`);
             if (response.ok) {
                 const data = await response.json();
-                setConfig(prev => ({ ...prev, ...data }));
-                if (data.strategy) {
-                    setSelectedStrategy(data.strategy);
-                    const strategyDef = strategyMap.get(data.strategy);
-                    setStrategyConfig(getStrategyDefaults(strategyDef, data.strategy_config));
+
+                // Handle potentially nested strategy objects from older formats or direct DB injection
+                const strategyName = typeof data.strategy === 'object' && data.strategy !== null
+                    ? data.strategy.name
+                    : data.strategy;
+
+                const strategyConfigToLoad = typeof data.strategy === 'object' && data.strategy !== null && data.strategy.config
+                    ? data.strategy.config
+                    : data.strategy_config;
+
+                setConfig(prev => ({
+                    ...prev,
+                    ...data,
+                    strategy: strategyName,
+                    strategy_config: strategyConfigToLoad
+                }));
+
+                if (strategyName) {
+                    setSelectedStrategy(strategyName);
+                    const strategyDef = strategyMap.get(strategyName);
+                    setStrategyConfig(getStrategyDefaults(strategyDef, strategyConfigToLoad));
                 } else {
                     setStrategyConfig({});
                 }
                 setLoadDialogOpen(false);
+                setLoadedTemplateName(configName);
             }
         } catch (error) { console.error(error); }
     };
@@ -167,7 +216,10 @@ export const ConfigProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     const resetDashboard = async () => {
         setIsRunning(false);
         setIsConfigDisabled(false);
-        await loadConfig();
+        setLoadedTemplateName(null);
+        setConfig(DEFAULT_CONFIG);
+        setSelectedStrategy("");
+        setStrategyConfig({});
     };
 
     const startBacktest = async (
@@ -192,7 +244,8 @@ export const ConfigProvider: React.FC<{ children: React.ReactNode }> = ({ childr
                 config: {
                     ...config,
                     timeframes: config.timeframes.filter(t => t.trim() !== ""),
-                    strategy_config: strategyConfig
+                    strategy_config: strategyConfig,
+                    ...(loadedTemplateName ? { loaded_template_name: loadedTemplateName } : {}),
                 }
             };
 
@@ -228,6 +281,82 @@ export const ConfigProvider: React.FC<{ children: React.ReactNode }> = ({ childr
             }
         } catch (error) { console.error("Failed to stop backtest:", error); }
     };
+
+    const startLiveTrading = async () => {
+        const newErrors = validateBacktestConfig(config, topSymbols);
+        if (Object.keys(newErrors).length > 0) {
+            setErrors(newErrors);
+            return;
+        }
+        setErrors({});
+        setIsLiveStopping(false);
+
+        try {
+            const requestBody = {
+                config: {
+                    ...config,
+                    timeframes: config.timeframes.filter((t: string) => t.trim() !== ""),
+                    strategy_config: strategyConfig,
+                    ...(loadedTemplateName ? { loaded_template_name: loadedTemplateName } : {}),
+                }
+            };
+
+            const response = await fetch(`${API_BASE}/api/live/start`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(requestBody)
+            });
+            if (response.ok) {
+                setIsLiveRunning(true);
+            } else {
+                const err = await response.json();
+                console.error("Failed to start live trading:", err);
+            }
+        } catch (error) {
+            console.error("Failed to start live trading:", error);
+        }
+    };
+
+    const stopLiveTrading = async () => {
+        try {
+            const response = await fetch(`${API_BASE}/api/live/stop`, { method: "POST" });
+            if (response.ok) {
+                setIsLiveStopping(true);
+            }
+        } catch (error) {
+            console.error("Failed to stop live trading:", error);
+        }
+    };
+
+    const checkLiveStatus = useCallback(async () => {
+        try {
+            const response = await fetch(`${API_BASE}/api/live/status`);
+            if (response.ok) {
+                const data = await response.json();
+                setIsLiveRunning(data.is_running);
+                if (!data.is_running) {
+                    setIsLiveStopping(false);
+                }
+            }
+        } catch (error) {
+            console.error("Failed to check live trading status:", error);
+        }
+    }, []);
+
+    // Check live status on mount
+    useEffect(() => {
+        checkLiveStatus();
+    }, [checkLiveStatus]);
+
+    // Poll live status while running/stopping so UI reflects state promptly.
+    useEffect(() => {
+        let interval: ReturnType<typeof setInterval>;
+        if (isLiveRunning || isLiveStopping) {
+            const periodMs = isLiveStopping ? 1000 : 5000;
+            interval = setInterval(() => checkLiveStatus(), periodMs);
+        }
+        return () => { if (interval) clearInterval(interval); };
+    }, [isLiveRunning, isLiveStopping, checkLiveStatus]);
 
     const handleStrategyChange = useCallback((strategyName: string) => {
         setSelectedStrategy(strategyName);
@@ -268,12 +397,12 @@ export const ConfigProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
     const value = {
         strategies, selectedStrategy, config, strategyConfig, errors,
-        isRunning, isConfigDisabled, loadDialogOpen, savedConfigs, topSymbols,
+        isRunning, isLiveRunning, isLiveStopping, isConfigDisabled, loadDialogOpen, savedConfigs, topSymbols, loadedTemplateName,
         setStrategies, setSelectedStrategy, setConfig, setStrategyConfig, setErrors,
-        setIsRunning, setIsConfigDisabled, setLoadDialogOpen, setSavedConfigs,
+        setIsRunning, setIsLiveRunning, setIsLiveStopping, setIsConfigDisabled, setLoadDialogOpen, setSavedConfigs,
         loadStrategies, loadConfig, loadUserConfigs, handleOpenLoadDialog,
-        handleLoadConfig, handleDeleteConfig, resetDashboard, startBacktest,
-        stopBacktest, handleStrategyChange, handleConfigChange, handleStrategyConfigChange
+        handleLoadConfig, handleDeleteConfig, handleReorderConfigs, resetDashboard, startBacktest,
+        stopBacktest, startLiveTrading, stopLiveTrading, checkLiveStatus, handleStrategyChange, handleConfigChange, handleStrategyConfigChange
     };
 
     return <ConfigContext.Provider value={value}>{children}</ConfigContext.Provider>;

@@ -26,6 +26,13 @@ export const validateBacktestConfig = (config: BacktestConfig, availableSymbols:
     if (isNaN(config.risk_per_trade) || config.risk_per_trade <= 0) newErrors['risk_per_trade'] = "Must be positive number";
     if (isNaN(config.max_drawdown) || config.max_drawdown <= 0) newErrors['max_drawdown'] = "Must be positive number";
     if (isNaN(config.leverage) || config.leverage <= 0) newErrors['leverage'] = "Must be positive number";
+    if (
+        isNaN(config.position_cap_adverse) ||
+        config.position_cap_adverse < 0.5 ||
+        config.position_cap_adverse > 1
+    ) {
+        newErrors['position_cap_adverse'] = "Must be between 0.5 and 1.0";
+    }
 
     // 3. Date validation
     const dateRegex = /^\d{4}-\d{2}-\d{2}$/;

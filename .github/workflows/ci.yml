@@ -30,6 +30,8 @@ jobs:
           npm run lint
 
       - name: Build Frontend
+        env:
+          BUILD_NUMBER: ${{ github.run_number }}
         run: |
           cd web-dashboard
           npm run build

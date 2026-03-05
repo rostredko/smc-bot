@@ -105,16 +105,15 @@ class TestPositionSizing(unittest.TestCase):
         self.strategy = results[0]
 
     def test_dynamic_sizing_basic(self):
-        """Dynamic sizing: risk_amount / risk_per_share."""
         self.strategy.params = MagicMock()
         self.strategy.params.dynamic_position_sizing = True
-        self.strategy.params.risk_per_trade = 1.0  # 1% of equity
+        self.strategy.params.risk_per_trade = 1.0
         self.strategy.params.leverage = 10.0
-        
-        # Mock broker
+        self.strategy.params.max_drawdown = None
+        self.strategy.params.position_cap_adverse = 0.5
         self.strategy.broker = MagicMock()
         self.strategy.broker.get_cash.return_value = 10000
-        self.strategy.broker.get_value.return_value = 10000
+        self.strategy.broker.getvalue.return_value = 10000
         
         # Entry at 100, SL at 95 → risk_per_share = 5
         # Risk amount = 10000 * 0.01 = 100
@@ -123,15 +122,15 @@ class TestPositionSizing(unittest.TestCase):
         self.assertAlmostEqual(size, 20.0, places=2)
 
     def test_leverage_cap(self):
-        """Position should be capped at account_value * leverage."""
         self.strategy.params = MagicMock()
         self.strategy.params.dynamic_position_sizing = True
-        self.strategy.params.risk_per_trade = 10.0  # 10% — very aggressive
+        self.strategy.params.risk_per_trade = 10.0
         self.strategy.params.leverage = 2.0
-
+        self.strategy.params.max_drawdown = None
+        self.strategy.params.position_cap_adverse = 0.5
         self.strategy.broker = MagicMock()
         self.strategy.broker.get_cash.return_value = 10000
-        self.strategy.broker.get_value.return_value = 10000
+        self.strategy.broker.getvalue.return_value = 10000
 
         # Entry at 100, SL at 99 → risk_per_share = 1
         # Risk amount = 10000 * 0.10 = 1000
@@ -141,15 +140,14 @@ class TestPositionSizing(unittest.TestCase):
         self.assertAlmostEqual(size, 200.0, places=2)
 
     def test_zero_risk_returns_zero(self):
-        """Entry == SL should return 0 (no division by zero)."""
         self.strategy.params = MagicMock()
         self.strategy.params.dynamic_position_sizing = True
         self.strategy.params.risk_per_trade = 1.0
         self.strategy.params.leverage = 10.0
-        
+        self.strategy.params.max_drawdown = None
         self.strategy.broker = MagicMock()
         self.strategy.broker.get_cash.return_value = 10000
-        self.strategy.broker.get_value.return_value = 10000
+        self.strategy.broker.getvalue.return_value = 10000
         
         size = self.strategy._calculate_position_size(100.0, 100.0)
         self.assertEqual(size, 0)

@@ -13,6 +13,7 @@ export const TOOLTIP_HINTS: Record<string, string> = {
     trailing_stop_distance: "Distance to trail the stop loss behind price (e.g. 0.02 = 2%)",
     breakeven_trigger_r: "Profit multiplier to trigger move to breakeven (e.g. 1.0 = Move stop to entry when profit hits 1R)",
     dynamic_position_sizing: "Adjust position size based on current capital/risk",
+    position_cap_adverse: "Worst-case gap assumption for position cap (0.5=50%). Min 0.5 ensures max_drawdown is never exceeded. Higher = more conservative.",
 
     primary_timeframe: "The main timeframe for candle analysis (e.g. 4h, 1h)",
     min_range_factor: "Minimum candle range (high-low) relative to ATR. Candle range must be ≥ ATR × this factor. Filters flat markets.",

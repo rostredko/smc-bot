@@ -1,43 +1,39 @@
 import backtrader as bt
+from datetime import timezone
 
 
 class TradeListAnalyzer(bt.Analyzer):
-    """
-    Analyzer that records all closed trades with details required for the dashboard.
-    """
-    
     def __init__(self):
         self.trades = []
 
     def notify_trade(self, trade):
         if trade.isclosed:
-            # Calculate PnL
             pnl = trade.pnl
             pnlcomm = trade.pnlcomm
-            
-            # Get Entry/Exit details 
             entry_date = bt.num2date(trade.dtopen)
             exit_date = bt.num2date(trade.dtclose)
+            if entry_date.tzinfo is None:
+                entry_date = entry_date.replace(tzinfo=timezone.utc)
+            else:
+                entry_date = entry_date.astimezone(timezone.utc)
+            if exit_date.tzinfo is None:
+                exit_date = exit_date.replace(tzinfo=timezone.utc)
+            else:
+                exit_date = exit_date.astimezone(timezone.utc)
             
-            # Get size from trade or rely on metadata
-
             size = abs(trade.size) if trade.size else 0
-            
-            # Prepare initial record
             trade_record = {
                 "id": trade.ref,
                 "direction": "LONG" if trade.long else "SHORT",
                 "entry_price": trade.price,
-                # exit_price calculation needs valid size, so we defer it slightly or calc with 0 safe div
-                "entry_time": entry_date.isoformat(),
-                "exit_time": exit_date.isoformat(),
+                "entry_time": entry_date.isoformat().replace("+00:00", "Z"),
+                "exit_time": exit_date.isoformat().replace("+00:00", "Z"),
                 "duration": str(exit_date - entry_date),
                 "realized_pnl": pnlcomm,
-                # Placeholders to be updated from metadata
                 "stop_loss": 0,
                 "take_profit": 0,
-                "reason": "Signal", 
-                "exit_reason": "Unknown", # Will be updated from metadata
+                "reason": "Signal",
+                "exit_reason": "Unknown",
                 "commission": pnl - pnlcomm
             }
 
@@ -57,9 +53,7 @@ class TradeListAnalyzer(bt.Analyzer):
                 if 'tp_calculation' in info:
                     trade_record['tp_calculation'] = info['tp_calculation']
 
-            # Finalize exit price calculation with correct size
             if size != 0:
-                # Use GROSS pnl for calculating the actual exit price the order filled at
                 pnl_per_unit = pnl / size
                 if trade.long:
                     trade_record["exit_price"] = trade.price + pnl_per_unit
@@ -83,15 +77,10 @@ class TradeListAnalyzer(bt.Analyzer):
 
 
 class EquityCurveAnalyzer(bt.Analyzer):
-    """
-    Analyzer that records the portfolio equity value at each step.
-    """
     def __init__(self):
         self.equity_curve = []
         
     def next(self):
-        # Record timestamp and current equity
-        # Use datetime(0) to get python datetime object
         self.equity_curve.append({
             'timestamp': self.datas[0].datetime.datetime(0),
             'equity': self.strategy.broker.getvalue()

@@ -20,6 +20,7 @@ export interface BacktestConfig {
     trailing_stop_distance: number;
     breakeven_trigger_r: number;
     dynamic_position_sizing: boolean;
+    position_cap_adverse: number;
 }
 
 export interface BacktestStatus {
@@ -76,5 +77,6 @@ export const DEFAULT_CONFIG: BacktestConfig = {
     strategy_config: {},
     trailing_stop_distance: 0.04,
     breakeven_trigger_r: 1.5,
-    dynamic_position_sizing: true
+    dynamic_position_sizing: true,
+    position_cap_adverse: 0.5
 };

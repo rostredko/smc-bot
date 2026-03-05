@@ -17,7 +17,8 @@ describe('validateBacktestConfig', () => {
         strategy_config: {},
         trailing_stop_distance: 0.05,
         breakeven_trigger_r: 1.5,
-        dynamic_position_sizing: true
+        dynamic_position_sizing: true,
+        position_cap_adverse: 0.5
     });
 
     it('passes valid configuration', () => {
@@ -45,10 +46,12 @@ describe('validateBacktestConfig', () => {
         const config = getValidConfig();
         config.initial_capital = -100;
         config.risk_per_trade = 0;
+        config.position_cap_adverse = 0.2;
 
         const errors = validateBacktestConfig(config, []);
         expect(errors.initial_capital).toBe("Must be positive number");
         expect(errors.risk_per_trade).toBe("Must be positive number");
+        expect(errors.position_cap_adverse).toBe("Must be between 0.5 and 1.0");
     });
 
     it('validates dates correctly (must be valid and chronologically ordered)', () => {

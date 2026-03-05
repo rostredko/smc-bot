@@ -31,7 +31,7 @@ def test_delete_non_existent_file():
     assert response.json()["detail"] == "Not found"
 
 def test_delete_invalid_filename():
-    # Test invalid extension
-    response = client.delete("/api/backtest/history/server.py")
+    # Test backslash in filename (path traversal)
+    response = client.delete("/api/backtest/history/evil%5Cpath")
     assert response.status_code == 400
     assert "Invalid filename" in response.json()["detail"]

@@ -12,14 +12,20 @@ WebSocket live-log delivery:
 
 import logging
 import queue
+from contextlib import contextmanager
 from typing import Optional
 
 # ── Root logger name for the whole project ──────────────────────────────────
 PROJECT_ROOT_LOGGER = "backtrade"
+WS_LOG_QUEUE_MAXSIZE = 10000
+WS_SUPPRESSED_SUBSTRINGS = (
+    "OHLCV fetched:",
+    "chart_data added to",
+)
 
 # ── A single shared queue used by the WebSocket broadcaster ─────────────────
 # The server imports and uses this queue directly.
-ws_log_queue: queue.Queue = queue.Queue()
+ws_log_queue: queue.Queue = queue.Queue(maxsize=WS_LOG_QUEUE_MAXSIZE)
 
 
 # ── Custom handler that pushes formatted records into ws_log_queue ───────────
@@ -37,7 +43,17 @@ class QueueHandler(logging.Handler):
     def emit(self, record: logging.LogRecord) -> None:
         try:
             msg = self.format(record)
-            self._queue.put(msg)
+            if any(fragment in msg for fragment in WS_SUPPRESSED_SUBSTRINGS):
+                return
+            try:
+                self._queue.put_nowait(msg)
+            except queue.Full:
+                # Bounded queue: drop oldest line to avoid unbounded memory growth.
+                try:
+                    self._queue.get_nowait()
+                    self._queue.put_nowait(msg)
+                except queue.Empty:
+                    pass
         except Exception:
             self.handleError(record)
 
@@ -80,6 +96,24 @@ def setup_logging(
         # Format mirrors the current print() style so the UI looks the same
         ws_handler.setFormatter(logging.Formatter(f"{prefix}%(message)s"))
         root.addHandler(ws_handler)
+
+
+@contextmanager
+def suppress_ws_logging():
+    """
+    Temporarily disable WebSocket log broadcasting.
+    Use when handling API requests (e.g. /api/ohlcv for chart fetch) so their
+    logs don't flood the Live Output while backtest/live is running.
+    """
+    root = logging.getLogger(PROJECT_ROOT_LOGGER)
+    ws_handlers = [h for h in root.handlers if isinstance(h, QueueHandler)]
+    for h in ws_handlers:
+        root.removeHandler(h)
+    try:
+        yield
+    finally:
+        for h in ws_handlers:
+            root.addHandler(h)
 
 
 def get_logger(name: str) -> logging.Logger:

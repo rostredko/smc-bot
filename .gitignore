@@ -44,8 +44,8 @@ results/
 config/
 user_configs/
 
-# --- Migration (one-time) ---
-scripts/migrate_json_to_mongo.py
+# --- Scripts (one-time / local) ---
+scripts/
 
 # --- Misc ---
 *.bak
@@ -59,4 +59,3 @@ server_debug.log
 
 # --- Universal AI Agents ---
 .agents/
-

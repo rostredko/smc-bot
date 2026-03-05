@@ -346,3 +346,7 @@ def pytest_configure(config):
     config.addinivalue_line(
         "markers", "data_loader: marks tests for data loader"
     )
+    config.addinivalue_line(
+        "markers",
+        "live: marks E2E live trading tests requiring internet (opt-in: pytest -m live)"
+    )

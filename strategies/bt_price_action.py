@@ -1,13 +1,19 @@
+import datetime
 import backtrader as bt
 from .base_strategy import BaseStrategy
 from engine.logger import get_logger
 
 logger = get_logger(__name__)
 
+
+def _iso_utc(dt: datetime.datetime) -> str:
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=datetime.timezone.utc)
+    else:
+        dt = dt.astimezone(datetime.timezone.utc)
+    return dt.isoformat().replace("+00:00", "Z")
+
 class PriceActionStrategy(BaseStrategy):
-    """
-    Backtrader implementation of PriceActionStrategy.
-    """
     params = (
         ('min_range_factor', 0.8),
         ('min_wick_to_range', 0.6),
@@ -32,12 +38,14 @@ class PriceActionStrategy(BaseStrategy):
         ('leverage', 1.0),
         ('dynamic_position_sizing', True),
         ('max_drawdown', 50.0),
+        ('position_cap_adverse', 0.5),
         ('pattern_hammer', True),
         ('pattern_inverted_hammer', True),
         ('pattern_shooting_star', True),
         ('pattern_hanging_man', True),
         ('pattern_bullish_engulfing', True),
         ('pattern_bearish_engulfing', True),
+        ('force_signal_every_n_bars', 0),
     )
 
     def __init__(self):
@@ -60,14 +68,13 @@ class PriceActionStrategy(BaseStrategy):
         self.cdl_invertedhammer = bt.talib.CDLINVERTEDHAMMER(self.data_ltf.open, self.data_ltf.high, self.data_ltf.low, self.data_ltf.close)
         self.cdl_shootingstar = bt.talib.CDLSHOOTINGSTAR(self.data_ltf.open, self.data_ltf.high, self.data_ltf.low, self.data_ltf.close)
         self.cdl_hangingman = bt.talib.CDLHANGINGMAN(self.data_ltf.open, self.data_ltf.high, self.data_ltf.low, self.data_ltf.close)
-        self.open = self.data_ltf.open
-        self.high = self.data_ltf.high
-        self.low = self.data_ltf.low
-        self.close = self.data_ltf.close
+        self.open_line = self.data_ltf.open
+        self.high_line = self.data_ltf.high
+        self.low_line = self.data_ltf.low
+        self.close_line = self.data_ltf.close
         self.last_entry_bar = -1
 
     def get_execution_bar_indicators(self):
-        """Called at trade.justopened (bar N+1). Returns RSI/ADX at execution bar for narrative."""
         ind = {}
         if self.params.use_rsi_filter or self.params.use_rsi_momentum:
             ind['RSI'] = round(self.rsi[0], 1)
@@ -76,23 +83,50 @@ class PriceActionStrategy(BaseStrategy):
         return ind if ind else None
 
     def next(self):
+        if getattr(self, '_close_orphan_position', False):
+            self._close_orphan_position = False
+            if self.position:
+                self.close()
+                return
+        if self._oco_closed and not self.position:
+            self._oco_closed = False
         if self.order:
             return
+
+        self._update_equity_peak()
 
         if not self.position:
             self.initial_sl = None
 
-        if hasattr(self.stats, 'drawdown'):
-             dd = self.stats.drawdown.drawdown[0]
-             if dd > self.params.max_drawdown:
-                 if not getattr(self, '_dd_limit_hit', False):
-                     logger.warning(f"[{self.data_ltf.datetime.date(0).isoformat()}] CRITICAL: Max Drawdown {dd:.2f}% exceeded limit {self.params.max_drawdown}%. Stopping trading.")
-                     self._dd_limit_hit = True
-                     if self.position:
-                         self.close()
-                 return
+        if getattr(self, '_dd_limit_hit', False):
+            return
 
-        if self.position and self.stop_order:
+        max_dd = self.params.max_drawdown
+        if max_dd is not None and max_dd > 0 and self._equity_peak > 0:
+            current = self.broker.getvalue()
+            dd_pct = 100.0 * (self._equity_peak - current) / self._equity_peak
+            if dd_pct > max_dd:
+                if not getattr(self, '_dd_limit_hit', False):
+                    dt_str = self._get_local_dt_str(self.data_ltf.datetime.datetime(0))
+                    if self.params.stop_on_drawdown:
+                        logger.warning(f"[{dt_str}] CRITICAL: Drawdown {dd_pct:.2f}% exceeded limit {max_dd}%. Stopping trading.")
+                        self._dd_limit_hit = True
+                        if self.position:
+                            self._dd_close_order = self.close()
+                        else:
+                            self._dd_stop_runstop()
+                    else:
+                        logger.warning(f"[{dt_str}] Drawdown {dd_pct:.2f}% exceeded limit {max_dd}% (stop_on_drawdown=False).")
+                if self.params.stop_on_drawdown:
+                    return
+
+        entry_bar = getattr(self, '_entry_exec_bar', -1)
+        entry_data = getattr(self, '_entry_exec_data', None)
+        bar_ok = entry_data is None or len(entry_data) > entry_bar
+        stop_accepted = self.stop_order and self.stop_order.status == bt.Order.Accepted
+        tp_ok = self.tp_order is None or self.tp_order.status == bt.Order.Accepted
+
+        if self.position and self.stop_order and bar_ok and stop_accepted and tp_ok:
              current_sl = self.stop_order.price
              new_sl = current_sl
              sl_changed = False
@@ -103,9 +137,9 @@ class PriceActionStrategy(BaseStrategy):
                  if risk > 0:
                      profit = 0
                      if self.position.size > 0:
-                         profit = self.close[0] - self.position.price
+                         profit = self.close_line[0] - self.position.price
                      else:
-                         profit = self.position.price - self.close[0]
+                         profit = self.position.price - self.close_line[0]
                      
                      if profit >= (risk * self.params.breakeven_trigger_r):
                          be_price = self.position.price
@@ -122,23 +156,24 @@ class PriceActionStrategy(BaseStrategy):
 
              if self.params.trailing_stop_distance > 0:
                  if self.position.size > 0:
-                    dist = self.close[0] * self.params.trailing_stop_distance
-                    trail_price = self.close[0] - dist
+                    dist = self.close_line[0] * self.params.trailing_stop_distance
+                    trail_price = self.close_line[0] - dist
                     if trail_price > new_sl:
                         new_sl = trail_price
                         sl_changed = True
                         new_reason = "Trailing Stop"
 
                  elif self.position.size < 0:
-                    dist = self.close[0] * self.params.trailing_stop_distance
-                    trail_price = self.close[0] + dist
+                    dist = self.close_line[0] * self.params.trailing_stop_distance
+                    trail_price = self.close_line[0] + dist
                     if trail_price < new_sl:
                         new_sl = trail_price
                         sl_changed = True
                         new_reason = "Trailing Stop"
 
              if sl_changed:
-                 logger.info(f"[{self.data_ltf.datetime.date(0).isoformat()}] STOP UPDATE: {new_reason} -> {new_sl:.2f}")
+                 dt_str = self._get_local_dt_str(self.data_ltf.datetime.datetime(0))
+                 logger.info(f"[{dt_str}] STOP UPDATE: {new_reason} -> {new_sl:.2f}")
                  self.cancel_reason = f"{new_reason} Update"
                  
                  tp_price_val = None
@@ -151,23 +186,55 @@ class PriceActionStrategy(BaseStrategy):
                  self.stop_reason = new_reason
                  
                  self.sl_history.append({
-                     'time': self.data_ltf.datetime.datetime(0).isoformat(),
+                     'time': _iso_utc(self.data_ltf.datetime.datetime(0)),
                      'price': new_sl,
                      'reason': new_reason
                  })
 
                  if self.position.size > 0:
-                     self.stop_order = self.sell(price=new_sl, exectype=bt.Order.Stop, size=self.position.size)
                      if tp_price_val is not None:
+                         self.stop_order = self.sell(price=new_sl, exectype=bt.Order.Stop, size=self.position.size)
                          self.tp_order = self.sell(price=tp_price_val, exectype=bt.Order.Limit, size=self.position.size, oco=self.stop_order)
+                     else:
+                         self.stop_order = self.sell(price=new_sl, exectype=bt.Order.Stop, size=self.position.size)
                  else:
-                     self.stop_order = self.buy(price=new_sl, exectype=bt.Order.Stop, size=abs(self.position.size))
                      if tp_price_val is not None:
+                         self.stop_order = self.buy(price=new_sl, exectype=bt.Order.Stop, size=abs(self.position.size))
                          self.tp_order = self.buy(price=tp_price_val, exectype=bt.Order.Limit, size=abs(self.position.size), oco=self.stop_order)
-                 
-
+                     else:
+                         self.stop_order = self.buy(price=new_sl, exectype=bt.Order.Stop, size=abs(self.position.size))
 
         if self.position:
+            return
+
+        if self.data_ltf.islive():
+            import datetime
+            bar_dt = self.data_ltf.datetime.datetime(0)
+            now_dt = datetime.datetime.utcnow()
+
+            if len(self.data_ltf) >= 2:
+                prev_dt = self.data_ltf.datetime.datetime(-1)
+                bar_period_secs = max(60, (bar_dt - prev_dt).total_seconds())
+            else:
+                bar_period_secs = 60
+            max_age_secs = bar_period_secs * 2
+            age_secs = (now_dt - bar_dt).total_seconds()
+            if age_secs > max_age_secs:
+                return
+
+            if not getattr(self, '_warmup_finished', False):
+                self._warmup_finished = True
+                dt_str = self._get_local_dt_str(bar_dt)
+                logger.info(f"[{dt_str}] 🚀 WARM-UP COMPLETE. NOW RUNNING LIVE PAPER TRADING...")
+
+        if self.params.force_signal_every_n_bars > 0:
+            bar_num = len(self.data_ltf)
+            if bar_num % self.params.force_signal_every_n_bars == 0:
+                if not self.position and not self.order:
+                    if bar_num % (self.params.force_signal_every_n_bars * 2) == 0:
+                        self._enter_long("Force-Test LONG")
+                    else:
+                        self._enter_short("Force-Test SHORT")
             return
 
         if self._is_bullish_pinbar():
@@ -184,10 +251,6 @@ class PriceActionStrategy(BaseStrategy):
                 self._enter_short("Bearish Engulfing")
 
     def _build_entry_context(self, reason, direction):
-        """
-        Build entry context: why entry was decided here + indicator values at entry.
-        Only includes indicators that are enabled in strategy config.
-        """
         why_parts = [f"Pattern: {reason}"]
         indicators = {}
         indicators['ATR'] = round(self.atr[0], 4)
@@ -229,10 +292,6 @@ class PriceActionStrategy(BaseStrategy):
         }
 
     def _build_exit_context(self, exit_reason):
-        """
-        Build exit context: why exit was decided + indicator values at exit.
-        Same structure as entry_context for consistency.
-        """
         if exit_reason == "Take Profit":
             why_parts = ["Exit: Take Profit — price reached the target level."]
         elif exit_reason == "Stop Loss":
@@ -268,176 +327,67 @@ class PriceActionStrategy(BaseStrategy):
     def _enter_long(self, reason):
         atr = self.atr[0]
         sl_buffer = atr * self.params.sl_buffer_atr
-        sl_price = self.low[0] - sl_buffer
-        risk = self.close[0] - sl_price
-        tp_distance = risk * self.params.risk_reward_ratio
-        tp_price = self.close[0] + tp_distance
-        self.last_entry_bar = len(self.data_ltf)
-        size = self._calculate_position_size(self.close[0], sl_price)
-        if size <= 0:
-            logger.warning(f"[{self.data_ltf.datetime.date(0).isoformat()}] LONG size is 0, skipping entry. SL: {sl_price:.2f}")
-            return
-        
-        dt_str = self.data_ltf.datetime.date(0).isoformat()
-        logger.info(f"[{dt_str}] SIGNAL GENERATED: LONG Entry={self.close[0]:.2f} SL={sl_price:.2f} TP={tp_price:.2f} Size={size:.4f} Reason={reason}")
-        entry_context = self._build_entry_context(reason, 'long')
-        sl_calc = (
-            f"Math: Low ({self.low[0]:.2f}) - (ATR ({atr:.2f}) * Buffer ({self.params.sl_buffer_atr}))\n"
-            f"Result: {sl_price:.2f}\n"
-            f"---\n"
-            f"Low: Lowest price of setup candle\n"
-            f"ATR: Average True Range (Volatility) (Atr Period: {self.params.atr_period})\n"
-            f"Buffer: Safety margin multiplier (Sl Buffer Atr: {self.params.sl_buffer_atr})"
-        )
-        tp_calc = (
-            f"Math: Entry ({self.close[0]:.2f}) + (Risk ({risk:.2f}) * RR ({self.params.risk_reward_ratio}))\n"
-            f"Result: {tp_price:.2f}\n"
-            f"---\n"
-            f"Entry: Close price of setup candle\n"
-            f"Risk: Distance to Stop Loss\n"
-            f"RR: Risk to Reward Ratio (Risk Reward Ratio: {self.params.risk_reward_ratio})"
-        )
-        self.pending_metadata = {
-            'reason': reason,
-            'stop_loss': sl_price, 
-            'take_profit': tp_price,
-            'sl_calculation': sl_calc,
-            'tp_calculation': tp_calc,
-            'entry_context': entry_context
-        }
-        self.initial_sl = sl_price
-        self.stop_reason = "Stop Loss"
-
-        self.sl_history = [{
-            'time': self.data_ltf.datetime.datetime(0).isoformat(),
-            'price': sl_price,
-            'reason': 'Initial Stop Loss'
-        }]
-        orders = self.buy_bracket(
-            price=self.close[0], 
-            stopprice=sl_price, 
-            limitprice=tp_price,
-            exectype=bt.Order.Market,
-            size=size
-        )
-
-        if len(orders) > 0 and isinstance(orders[0], list):
-             orders = orders[0]
-
-        self.order = orders[0]
-        self.stop_order = orders[1]
-        self.tp_order = orders[2] if len(orders) > 2 else None
-
-        self.order.addinfo(
-            reason=reason,
-            stop_loss=sl_price,
-            take_profit=tp_price,
-            risk_reward=self.params.risk_reward_ratio,
-            sl_calculation=sl_calc,
-            tp_calculation=tp_calc
-        )
+        sl_distance = self.close_line[0] - (self.low_line[0] - sl_buffer)
+        sl_price_ref = self.close_line[0] - sl_distance
+        tp_price_ref = self.close_line[0] + sl_distance * self.params.risk_reward_ratio
+        self._place_entry(reason, 'long', sl_price_ref, tp_price_ref, sl_distance, sl_distance * self.params.risk_reward_ratio,
+                         f"Low ({self.low_line[0]:.2f}) - (ATR * Buffer)", f"Entry + (Risk * RR)")
 
     def _enter_short(self, reason):
         atr = self.atr[0]
         sl_buffer = atr * self.params.sl_buffer_atr
-        sl_price = self.high[0] + sl_buffer
-        risk = sl_price - self.close[0]
-        tp_distance = risk * self.params.risk_reward_ratio
-        tp_price = self.close[0] - tp_distance
+        sl_distance = (self.high_line[0] + sl_buffer) - self.close_line[0]
+        sl_price_ref = self.close_line[0] + sl_distance
+        tp_price_ref = self.close_line[0] - sl_distance * self.params.risk_reward_ratio
+        self._place_entry(reason, 'short', sl_price_ref, tp_price_ref, sl_distance, sl_distance * self.params.risk_reward_ratio,
+                         f"High ({self.high_line[0]:.2f}) + (ATR * Buffer)", f"Entry - (Risk * RR)")
 
+    def _place_entry(self, reason, direction, sl_price_ref, tp_price_ref, sl_distance, tp_distance, sl_calc_expr, tp_calc_expr):
         self.last_entry_bar = len(self.data_ltf)
-        size = self._calculate_position_size(self.close[0], sl_price)
+        size = self._calculate_position_size(self.close_line[0], sl_price_ref)
         if size <= 0:
-            logger.warning(f"[{self.data_ltf.datetime.date(0).isoformat()}] SHORT size is 0, skipping entry. SL: {sl_price:.2f}")
+            logger.warning(f"[{self._get_local_dt_str(self.data_ltf.datetime.datetime(0))}] {direction.upper()} size is 0, skipping. SL: {sl_price_ref:.2f}")
             return
-        
-        dt_str = self.data_ltf.datetime.date(0).isoformat()
-        logger.info(f"[{dt_str}] SIGNAL GENERATED: SHORT Entry={self.close[0]:.2f} SL={sl_price:.2f} TP={tp_price:.2f} Size={size:.4f} Reason={reason}")
-
-        entry_context = self._build_entry_context(reason, 'short')
-        sl_calc = (
-            f"Math: High ({self.high[0]:.2f}) + (ATR ({atr:.2f}) * Buffer ({self.params.sl_buffer_atr}))\n"
-            f"Result: {sl_price:.2f}\n"
-            f"---\n"
-            f"High: Highest price of setup candle\n"
-            f"ATR: Average True Range (Volatility) (Atr Period: {self.params.atr_period})\n"
-            f"Buffer: Safety margin multiplier (Sl Buffer Atr: {self.params.sl_buffer_atr})"
-        )
-        tp_calc = (
-            f"Math: Entry ({self.close[0]:.2f}) - (Risk ({risk:.2f}) * RR ({self.params.risk_reward_ratio}))\n"
-            f"Result: {tp_price:.2f}\n"
-            f"---\n"
-            f"Entry: Close price of setup candle\n"
-            f"Risk: Distance to Stop Loss\n"
-            f"RR: Risk to Reward Ratio (Risk Reward Ratio: {self.params.risk_reward_ratio})"
-        )
-
+        dt_str = self._get_local_dt_str(self.data_ltf.datetime.datetime(0))
+        logger.info(f"[{dt_str}] SIGNAL GENERATED: {direction.upper()} Entry={self.close_line[0]:.2f} SL={sl_price_ref:.2f} TP={tp_price_ref:.2f} Size={size:.4f} Reason={reason}")
+        atr = self.atr[0]
+        sl_calc = f"Math: {sl_calc_expr}\nResult: {sl_price_ref:.2f}\n---\nATR Period: {self.params.atr_period}"
+        tp_calc = f"Math: {tp_calc_expr}\nResult: {tp_price_ref:.2f}\n---\nAdjusted to actual fill price on execution"
         self.pending_metadata = {
-            'reason': reason,
-            'stop_loss': sl_price, 
-            'take_profit': tp_price,
-            'sl_calculation': sl_calc,
-            'tp_calculation': tp_calc,
-            'entry_context': entry_context
+            'reason': reason, 'stop_loss': sl_price_ref, 'take_profit': tp_price_ref,
+            'sl_distance': sl_distance, 'tp_distance': tp_distance, 'direction': direction, 'size': size,
+            'sl_calculation': sl_calc, 'tp_calculation': tp_calc, 'entry_context': self._build_entry_context(reason, direction)
         }
-        self.initial_sl = sl_price
+        self.initial_sl = sl_price_ref
         self.stop_reason = "Stop Loss"
+        self.sl_history = [{'time': _iso_utc(self.data_ltf.datetime.datetime(0)), 'price': sl_price_ref, 'reason': 'Initial Stop Loss'}]
 
-        self.sl_history = [{
-            'time': self.data_ltf.datetime.datetime(0).isoformat(),
-            'price': sl_price,
-            'reason': 'Initial Stop Loss'
-        }]
+        # Market order; SL/TP from exec_price in notify_order (OCO guard, Stop priority)
+        if direction == 'long':
+            self.order = self.buy(size=size, exectype=bt.Order.Market)
+        else:
+            self.order = self.sell(size=size, exectype=bt.Order.Market)
 
-        orders = self.sell_bracket(
-            price=self.close[0], 
-            stopprice=sl_price, 
-            limitprice=tp_price,
-            exectype=bt.Order.Market,
-            size=size
-        )
-
-        if len(orders) > 0 and isinstance(orders[0], list):
-             orders = orders[0]
-
-        self.order = orders[0]
-        self.stop_order = orders[1]
-        self.tp_order = orders[2] if len(orders) > 2 else None
-
-        self.order.addinfo(
-            reason=reason,
-            stop_loss=sl_price,
-            take_profit=tp_price,
-            risk_reward=self.params.risk_reward_ratio,
-            sl_calculation=sl_calc,
-            tp_calculation=tp_calc
-        )
 
     def _has_significant_range(self):
-        """Candle range must be at least min_range_factor * ATR (filters flat markets)."""
-        rng = self.high[0] - self.low[0]
+        rng = self.high_line[0] - self.low_line[0]
         return rng >= (self.atr[0] * self.params.min_range_factor)
 
     def _meets_pinbar_wick_body_ratio(self, check_lower_wick: bool) -> bool:
-        """
-        Pin bar must have: long wick (>= min_wick_to_range of range) and small body (<= max_body_to_range).
-        check_lower_wick: True = Hammer/Hanging Man (lower wick), False = Inverted Hammer/Shooting Star (upper wick).
-        """
-        rng = self.high[0] - self.low[0]
+        rng = self.high_line[0] - self.low_line[0]
         if rng <= 0:
             return False
-        body = abs(self.close[0] - self.open[0])
+        body = abs(self.close_line[0] - self.open_line[0])
         if body / rng > self.params.max_body_to_range:
             return False
         if check_lower_wick:
-            lower_wick = min(self.open[0], self.close[0]) - self.low[0]
+            lower_wick = min(self.open_line[0], self.close_line[0]) - self.low_line[0]
             return lower_wick / rng >= self.params.min_wick_to_range
         else:
-            upper_wick = self.high[0] - max(self.open[0], self.close[0])
+            upper_wick = self.high_line[0] - max(self.open_line[0], self.close_line[0])
             return upper_wick / rng >= self.params.min_wick_to_range
 
     def _is_bullish_pinbar(self):
-        """Bullish pin bar: Hammer (lower wick) OR Inverted Hammer (upper wick) at bottom of trend."""
         if not self._has_significant_range():
             return False
         if self.params.pattern_hammer and self.cdl_hammer[0] == 100 and self._meets_pinbar_wick_body_ratio(check_lower_wick=True):
@@ -447,7 +397,6 @@ class PriceActionStrategy(BaseStrategy):
         return False
 
     def _is_bearish_pinbar(self):
-        """Bearish pin bar: Shooting Star (upper wick) OR Hanging Man (lower wick) at top of trend."""
         if not self._has_significant_range():
             return False
         if self.params.pattern_shooting_star and self.cdl_shootingstar[0] == -100 and self._meets_pinbar_wick_body_ratio(check_lower_wick=False):
@@ -463,8 +412,8 @@ class PriceActionStrategy(BaseStrategy):
         return self.params.pattern_bearish_engulfing and self.cdl_engulfing[0] == -100 and self._has_significant_range()
 
     def _check_filters_long(self):
-        if self.position: return False
-        if self.last_entry_bar == len(self.data_ltf): return False
+        if self.position or self.order:
+            return False
         
         if self.params.use_trend_filter:
             if self.data_htf.close[0] < self.ema_htf[0]: return False
@@ -481,9 +430,8 @@ class PriceActionStrategy(BaseStrategy):
         return True
 
     def _check_filters_short(self):
-        if self.position: return False
-        if self.last_entry_bar == len(self.data_ltf): return False
-
+        if self.position or self.order:
+            return False
         if self.params.use_trend_filter:
              if self.data_htf.close[0] > self.ema_htf[0]: return False
 
@@ -498,5 +446,4 @@ class PriceActionStrategy(BaseStrategy):
             if self.adx[0] < self.params.adx_threshold: return False
             
         return True
-
 

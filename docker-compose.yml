@@ -1,6 +1,11 @@
 services:
   mongo:
     image: mongo:7
+    restart: always
+    command: >
+      mongod
+      --setParameter diagnosticDataCollectionEnabled=false
+      --wiredTigerCacheSizeGB 0.25
     ports:
       - "27017:27017"
     volumes:
@@ -8,8 +13,8 @@ services:
     healthcheck:
       test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
       interval: 5s
-      timeout: 5s
-      retries: 5
+      timeout: 10s
+      retries: 10
 
   backend:
     build:
@@ -20,6 +25,7 @@ services:
     environment:
       MONGODB_URI: mongodb://mongo:27017
       MONGODB_DB: backtrade
+      TZ: Europe/Kyiv
     volumes:
       - data_cache:/app/data_cache
     depends_on:

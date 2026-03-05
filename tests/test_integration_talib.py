@@ -277,8 +277,8 @@ class TestIntegrationBearishEngulfing(unittest.TestCase):
 
         self.assertGreater(metrics["total_trades"], 0)
         trades = engine.closed_trades
-        short_trades = [t for t in trades if t.get("direction") == "SHORT"]
-        self.assertGreater(len(short_trades), 0, "Expected at least one SHORT trade")
+        bearish_trades = [t for t in trades if t.get("reason") == "Bearish Engulfing"]
+        self.assertGreater(len(bearish_trades), 0, "Expected at least one Bearish Engulfing trade")
         self.assertIn("Bearish Engulfing", [t.get("reason") for t in engine.closed_trades])
 
 

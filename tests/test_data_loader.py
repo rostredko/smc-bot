@@ -8,6 +8,7 @@ All tests use mocked exchange to avoid network access.
 
 import sys
 import os
+from datetime import datetime, timedelta, timezone
 import pytest
 import pandas as pd
 from unittest.mock import patch, MagicMock
@@ -125,7 +126,7 @@ class TestDataValidation:
     def test_fetch_ohlcv_raises_on_none_dates(self, mock_init_exchange):
         from engine.data_loader import DataLoader
         mock_init_exchange.return_value = MagicMock()
-        loader = DataLoader()
+        loader = DataLoader(enable_db_cache=False)
         with pytest.raises(ValueError, match="start_date and end_date are required"):
             loader.fetch_ohlcv("BTC/USDT", "1h", None, "2024-01-31")
         with pytest.raises(ValueError, match="start_date and end_date are required"):
@@ -134,7 +135,7 @@ class TestDataValidation:
     def test_fetch_ohlcv_raises_when_start_after_end(self, mock_init_exchange):
         from engine.data_loader import DataLoader
         mock_init_exchange.return_value = MagicMock()
-        loader = DataLoader()
+        loader = DataLoader(enable_db_cache=False)
         with pytest.raises(ValueError, match="start_date.*must be <= end_date"):
             loader.fetch_ohlcv("BTC/USDT", "1h", "2024-12-31", "2024-01-01")
 
@@ -263,28 +264,28 @@ class TestFetchOhlcv:
     def test_raises_on_empty_start_date(self, mock_init_exchange):
         from engine.data_loader import DataLoader
         mock_init_exchange.return_value = MagicMock()
-        loader = DataLoader()
+        loader = DataLoader(enable_db_cache=False)
         with pytest.raises(ValueError, match="start_date and end_date are required"):
             loader.fetch_ohlcv("BTC/USDT", "1h", "", "2024-01-31")
 
     def test_raises_on_empty_end_date(self, mock_init_exchange):
         from engine.data_loader import DataLoader
         mock_init_exchange.return_value = MagicMock()
-        loader = DataLoader()
+        loader = DataLoader(enable_db_cache=False)
         with pytest.raises(ValueError, match="start_date and end_date are required"):
             loader.fetch_ohlcv("BTC/USDT", "1h", "2024-01-01", "")
 
     def test_raises_when_start_after_end(self, mock_init_exchange):
         from engine.data_loader import DataLoader
         mock_init_exchange.return_value = MagicMock()
-        loader = DataLoader()
+        loader = DataLoader(enable_db_cache=False)
         with pytest.raises(ValueError, match="start_date.*must be <= end_date"):
             loader.fetch_ohlcv("BTC/USDT", "1h", "2024-12-31", "2024-01-01")
 
     def test_returns_cached_data_when_fresh(self, mock_init_exchange):
         from engine.data_loader import DataLoader
         mock_init_exchange.return_value = MagicMock()
-        loader = DataLoader()
+        loader = DataLoader(enable_db_cache=False)
         expected = pd.DataFrame({"open": [100], "high": [105], "low": [95], "close": [101], "volume": [1000]}, index=pd.date_range("2024-01-01", periods=1, freq="h"))
         cache_path = loader._get_cache_file("BTC/USDT", "1h", "2024-01-01", "2024-01-31")
         os.makedirs(os.path.dirname(cache_path), exist_ok=True)
@@ -296,6 +297,157 @@ class TestFetchOhlcv:
         finally:
             if os.path.exists(cache_path):
                 os.remove(cache_path)
+
+
+@patch("engine.data_loader.DataLoader._initialize_exchange")
+class TestDbPartialCache:
+    """Test Mongo-backed partial cache behavior."""
+
+    def test_uses_db_cache_without_exchange_call_when_range_is_fully_cached(self, mock_init_exchange):
+        from engine.data_loader import DataLoader
+
+        mock_exchange = MagicMock()
+        mock_exchange.parse_timeframe.return_value = 86400
+        mock_exchange.fetch_ohlcv = MagicMock(side_effect=AssertionError("exchange call not expected"))
+        mock_init_exchange.return_value = mock_exchange
+
+        loader = DataLoader(enable_db_cache=True)
+        if loader._cache_collection is None:
+            pytest.skip("DB cache unavailable in test environment")
+
+        symbol = "TESTFULL/USDT"
+        timeframe = "1d"
+        ts = int(pd.Timestamp("2024-01-01").timestamp() * 1000)
+        identity = {
+            "exchange": loader.exchange_name,
+            "exchange_type": loader.exchange_type,
+            "symbol": symbol,
+            "timeframe": timeframe,
+        }
+        loader._cache_collection.delete_many(identity)
+        loader._cache_collection.insert_one(
+            {
+                **identity,
+                "timestamp": ts,
+                "open": 100.0,
+                "high": 110.0,
+                "low": 90.0,
+                "close": 105.0,
+                "volume": 1000.0,
+                "cached_at": datetime.now(timezone.utc),
+            }
+        )
+
+        result = loader.fetch_ohlcv(symbol, timeframe, "2024-01-01", "2024-01-01")
+        assert len(result) == 1
+        assert result["close"].iloc[0] == 105.0
+        assert mock_exchange.fetch_ohlcv.call_count == 0
+
+    def test_fetches_only_missing_gap_and_merges_with_cached_data(self, mock_init_exchange):
+        from engine.data_loader import DataLoader
+
+        day1 = int(pd.Timestamp("2024-01-01").timestamp() * 1000)
+        day2 = int(pd.Timestamp("2024-01-02").timestamp() * 1000)
+        day3 = int(pd.Timestamp("2024-01-03").timestamp() * 1000)
+
+        mock_exchange = MagicMock()
+        mock_exchange.parse_timeframe.return_value = 86400
+
+        def _fetch(symbol, timeframe, since=None, limit=None):
+            if since == day2:
+                return [[day2, 200.0, 210.0, 190.0, 205.0, 3000.0]]
+            return []
+
+        mock_exchange.fetch_ohlcv.side_effect = _fetch
+        mock_init_exchange.return_value = mock_exchange
+
+        loader = DataLoader(enable_db_cache=True)
+        if loader._cache_collection is None:
+            pytest.skip("DB cache unavailable in test environment")
+
+        symbol = "TESTPARTIAL/USDT"
+        timeframe = "1d"
+        identity = {
+            "exchange": loader.exchange_name,
+            "exchange_type": loader.exchange_type,
+            "symbol": symbol,
+            "timeframe": timeframe,
+        }
+        loader._cache_collection.delete_many(identity)
+        now = datetime.now(timezone.utc)
+        loader._cache_collection.insert_many(
+            [
+                {
+                    **identity,
+                    "timestamp": day1,
+                    "open": 100.0,
+                    "high": 105.0,
+                    "low": 95.0,
+                    "close": 101.0,
+                    "volume": 1000.0,
+                    "cached_at": now,
+                },
+                {
+                    **identity,
+                    "timestamp": day3,
+                    "open": 300.0,
+                    "high": 305.0,
+                    "low": 295.0,
+                    "close": 301.0,
+                    "volume": 2000.0,
+                    "cached_at": now,
+                },
+            ]
+        )
+
+        result = loader.fetch_ohlcv(symbol, timeframe, "2024-01-01", "2024-01-03")
+        assert len(result) == 3
+        assert result.loc[pd.Timestamp("2024-01-02"), "close"] == 205.0
+        assert mock_exchange.fetch_ohlcv.call_count == 1
+        assert mock_exchange.fetch_ohlcv.call_args.kwargs["since"] == day2
+
+    def test_refetches_recent_bars_when_cached_copy_is_stale(self, mock_init_exchange):
+        from engine.data_loader import DataLoader
+
+        today = pd.Timestamp(datetime.now(timezone.utc).date())
+        date_str = today.strftime("%Y-%m-%d")
+        ts = int(today.timestamp() * 1000)
+
+        mock_exchange = MagicMock()
+        mock_exchange.parse_timeframe.return_value = 86400
+        mock_exchange.fetch_ohlcv.return_value = [[ts, 400.0, 410.0, 390.0, 405.0, 5000.0]]
+        mock_init_exchange.return_value = mock_exchange
+
+        loader = DataLoader(enable_db_cache=True, max_cache_age_days=7.0)
+        if loader._cache_collection is None:
+            pytest.skip("DB cache unavailable in test environment")
+
+        symbol = "TESTSTALE/USDT"
+        timeframe = "1d"
+        identity = {
+            "exchange": loader.exchange_name,
+            "exchange_type": loader.exchange_type,
+            "symbol": symbol,
+            "timeframe": timeframe,
+        }
+        loader._cache_collection.delete_many(identity)
+        loader._cache_collection.insert_one(
+            {
+                **identity,
+                "timestamp": ts,
+                "open": 10.0,
+                "high": 11.0,
+                "low": 9.0,
+                "close": 10.5,
+                "volume": 100.0,
+                "cached_at": datetime.now(timezone.utc) - timedelta(days=8),
+            }
+        )
+
+        result = loader.fetch_ohlcv(symbol, timeframe, date_str, date_str)
+        assert len(result) == 1
+        assert result["close"].iloc[0] == 405.0
+        assert mock_exchange.fetch_ohlcv.call_count >= 1
 
 
 @patch("engine.data_loader.DataLoader._initialize_exchange")

@@ -13,6 +13,28 @@ import Plot from 'react-plotly.js';
 const PLOT_LEFT_MARGIN = 60;
 const PLOT_RIGHT_MARGIN = 10;
 
+function toIso(input: string | null | undefined): string {
+    if (!input) return '';
+    const normalized = input.replace(' ', 'T');
+    if (/[zZ]$/.test(normalized) || /[+\-]\d{2}:\d{2}$/.test(normalized)) {
+        return normalized;
+    }
+    return `${normalized}Z`;
+}
+
+function toUtcDateTimeDisplay(input: string | null | undefined): string {
+    const iso = toIso(input);
+    if (!iso) return 'N/A';
+    const dt = new Date(iso);
+    if (Number.isNaN(dt.getTime())) return 'N/A';
+    const mm = String(dt.getUTCMonth() + 1);
+    const dd = String(dt.getUTCDate());
+    const yyyy = String(dt.getUTCFullYear());
+    const hh = String(dt.getUTCHours()).padStart(2, '0');
+    const min = String(dt.getUTCMinutes()).padStart(2, '0');
+    return `${mm}/${dd}/${yyyy} ${hh}:${min} UTC`;
+}
+
 interface TradeAnalysisChartProps {
     trades: any[];
     onTradeClick: (trade: any) => void;
@@ -36,9 +58,7 @@ const TradeAnalysisChart: React.FC<TradeAnalysisChartProps> = ({
                 acc.y.push(pnl);
                 acc.colors.push(pnl >= 0 ? '#26a69a' : '#ef5350');
                 acc.customdata.push({
-                    date: trade.entry_time
-                        ? new Date(trade.entry_time).toLocaleDateString()
-                        : 'N/A',
+                    date: toUtcDateTimeDisplay(trade.entry_time),
                     fullTrade: trade,
                 });
                 return acc;
@@ -72,7 +92,7 @@ const TradeAnalysisChart: React.FC<TradeAnalysisChartProps> = ({
             customdata: customdata.map((d: { date: string; fullTrade: any }) => [d.date, d.fullTrade]),
             hovertemplate: [
                 '<b>Trade #%{x}</b><br>',
-                'Date: %{customdata[0]}<br>',
+                'Date (UTC): %{customdata[0]}<br>',
                 'PnL: <b>$%{y:.2f}</b>',
                 '<br><i>Click for details</i>',
                 '<extra></extra>',
