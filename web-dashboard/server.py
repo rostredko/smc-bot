@@ -715,9 +715,19 @@ async def get_result_file(filename: str):
 
 
 @app.get("/api/backtest/history")
-async def get_backtest_history(page: int = 1, page_size: int = 10):
+async def get_backtest_history(
+    page: int = 1, 
+    page_size: int = 10,
+    sort_field: Optional[str] = None,
+    sort_direction: Optional[str] = None
+):
     """Get paginated history of backtests with summary metrics."""
-    history, total_count = BacktestRepository().list_paginated(page=page, page_size=page_size)
+    history, total_count = BacktestRepository().list_paginated(
+        page=page, 
+        page_size=page_size,
+        sort_field=sort_field,
+        sort_direction=sort_direction
+    )
     total_pages = (total_count + page_size - 1) // page_size if total_count > 0 else 0
     return {
         "history": history,

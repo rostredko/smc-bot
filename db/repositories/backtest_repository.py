@@ -67,7 +67,7 @@ class BacktestRepository:
         return [d["_id"] for d in cursor]
 
     def list_paginated(
-        self, page: int = 1, page_size: int = 10
+        self, page: int = 1, page_size: int = 10, sort_field: Optional[str] = None, sort_direction: Optional[str] = None
     ) -> tuple[List[Dict[str, Any]], int]:
         coll = self._collection()
         total = coll.count_documents({})
@@ -77,7 +77,17 @@ class BacktestRepository:
         if page > total_pages and total_pages > 0:
             page = total_pages
         offset = (page - 1) * page_size
-        cursor = coll.find({}).sort("created_at", -1).skip(offset).limit(page_size)
+        
+        sort_config = [("created_at", -1)]
+        if sort_field and sort_direction in {"asc", "desc"}:
+            direction = 1 if sort_direction == "asc" else -1
+            # If the user sorts by created_at, we don't need a secondary sort by created_at
+            if sort_field == "created_at":
+                sort_config = [(sort_field, direction)]
+            else:
+                sort_config = [(sort_field, direction), ("created_at", -1)]
+            
+        cursor = coll.find({}).sort(sort_config).skip(offset).limit(page_size)
         history = []
         for doc in cursor:
             run_id = doc["_id"]

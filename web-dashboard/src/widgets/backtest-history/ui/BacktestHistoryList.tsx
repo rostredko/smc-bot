@@ -6,7 +6,7 @@ import {
 } from '@mui/material';
 import {
     KeyboardArrowDown, KeyboardArrowUp, History, NavigateBefore, NavigateNext,
-    FirstPage, LastPage, DeleteOutline, FileCopyOutlined
+    FirstPage, LastPage, DeleteOutline, FileCopyOutlined, ArrowUpward, ArrowDownward
 } from '@mui/icons-material';
 
 import { BacktestSummary } from '../model/types';
@@ -46,6 +46,8 @@ const BacktestHistoryList: React.FC = () => {
     const [totalPages, setTotalPages] = useState(0);
     const [totalCount, setTotalCount] = useState(0);
     const [loading, setLoading] = useState(false);
+    const [sortField, setSortField] = useState<string | undefined>(undefined);
+    const [sortDirection, setSortDirection] = useState<'asc' | 'desc' | undefined>(undefined);
     const [detailedResults, setDetailedResults] = useState<Record<string, any>>({});
     const [selectedTrade, setSelectedTrade] = useState<any | null>(null);
     const [isTradeModalOpen, setIsTradeModalOpen] = useState(false);
@@ -53,10 +55,10 @@ const BacktestHistoryList: React.FC = () => {
     const [tradeModalTrades, setTradeModalTrades] = useState<any[]>([]);
     const [expandedForChart, setExpandedForChart] = useState<Record<string, boolean>>({});
 
-    const loadData = useCallback(async (currentPage: number = 1) => {
+    const loadData = useCallback(async (currentPage: number = 1, field?: string, direction?: 'asc' | 'desc') => {
         setLoading(true);
         try {
-            const data = await fetchBacktestHistory(currentPage, pageSize);
+            const data = await fetchBacktestHistory(currentPage, pageSize, field ?? sortField, direction ?? sortDirection);
             setHistory(data.history || []);
             if (data.pagination) {
                 setTotalPages(data.pagination.total_pages);
@@ -68,7 +70,7 @@ const BacktestHistoryList: React.FC = () => {
         } finally {
             setLoading(false);
         }
-    }, [pageSize]);
+    }, [pageSize, sortField, sortDirection]);
 
     useEffect(() => {
         loadData(page);
@@ -98,6 +100,22 @@ const BacktestHistoryList: React.FC = () => {
             return changed ? next : prev;
         });
     }, [page, history]);
+
+    const handleSort = (field: string) => {
+        let newDirection: 'asc' | 'desc' | undefined;
+        if (sortField === field) {
+            if (sortDirection === 'desc') newDirection = 'asc';
+            else if (sortDirection === 'asc') newDirection = undefined;
+            else newDirection = 'desc';
+        } else {
+            newDirection = 'desc';
+        }
+
+        setSortField(newDirection ? field : undefined);
+        setSortDirection(newDirection);
+        setPage(1); // Reset to first page
+        loadData(1, newDirection ? field : undefined, newDirection);
+    };
 
     const toggleRow = async (filename: string) => {
         const isCurrentlyOpen = openRows[filename];
@@ -228,12 +246,47 @@ const BacktestHistoryList: React.FC = () => {
                         <TableHead>
                             <TableRow>
                                 <TableCell width="50px" />
-                                <TableCell>Time</TableCell>
-                                <TableCell>Strategy</TableCell>
+                                <TableCell sx={{ cursor: 'pointer', '&:hover': { color: 'primary.main' } }} onClick={() => handleSort('created_at')}>
+                                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                                        Time
+                                        {sortField === 'created_at' && sortDirection === 'desc' ? <ArrowDownward fontSize="small" color="primary" /> :
+                                            sortField === 'created_at' && sortDirection === 'asc' ? <ArrowUpward fontSize="small" color="primary" /> :
+                                                <Box sx={{ display: 'flex', flexDirection: 'column', opacity: 0.3 }}><KeyboardArrowUp sx={{ fontSize: 14, mb: -1 }} /><KeyboardArrowDown sx={{ fontSize: 14 }} /></Box>}
+                                    </Box>
+                                </TableCell>
+                                <TableCell sx={{ cursor: 'pointer', '&:hover': { color: 'primary.main' } }} onClick={() => handleSort('strategy')}>
+                                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                                        Strategy
+                                        {sortField === 'strategy' && sortDirection === 'desc' ? <ArrowDownward fontSize="small" color="primary" /> :
+                                            sortField === 'strategy' && sortDirection === 'asc' ? <ArrowUpward fontSize="small" color="primary" /> :
+                                                <Box sx={{ display: 'flex', flexDirection: 'column', opacity: 0.3 }}><KeyboardArrowUp sx={{ fontSize: 14, mb: -1 }} /><KeyboardArrowDown sx={{ fontSize: 14 }} /></Box>}
+                                    </Box>
+                                </TableCell>
                                 <TableCell>Period</TableCell>
-                                <TableCell>PnL</TableCell>
-                                <TableCell align="right">Win Rate</TableCell>
-                                <TableCell align="right">Drawdown</TableCell>
+                                <TableCell sx={{ cursor: 'pointer', '&:hover': { color: 'primary.main' } }} onClick={() => handleSort('total_pnl')}>
+                                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                                        PnL
+                                        {sortField === 'total_pnl' && sortDirection === 'desc' ? <ArrowDownward fontSize="small" color="primary" /> :
+                                            sortField === 'total_pnl' && sortDirection === 'asc' ? <ArrowUpward fontSize="small" color="primary" /> :
+                                                <Box sx={{ display: 'flex', flexDirection: 'column', opacity: 0.3 }}><KeyboardArrowUp sx={{ fontSize: 14, mb: -1 }} /><KeyboardArrowDown sx={{ fontSize: 14 }} /></Box>}
+                                    </Box>
+                                </TableCell>
+                                <TableCell align="right" sx={{ cursor: 'pointer', '&:hover': { color: 'primary.main' } }} onClick={() => handleSort('win_rate')}>
+                                    <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 0.5 }}>
+                                        {sortField === 'win_rate' && sortDirection === 'desc' ? <ArrowDownward fontSize="small" color="primary" /> :
+                                            sortField === 'win_rate' && sortDirection === 'asc' ? <ArrowUpward fontSize="small" color="primary" /> :
+                                                <Box sx={{ display: 'flex', flexDirection: 'column', opacity: 0.3 }}><KeyboardArrowUp sx={{ fontSize: 14, mb: -1 }} /><KeyboardArrowDown sx={{ fontSize: 14 }} /></Box>}
+                                        Win Rate
+                                    </Box>
+                                </TableCell>
+                                <TableCell align="right" sx={{ cursor: 'pointer', '&:hover': { color: 'primary.main' } }} onClick={() => handleSort('max_drawdown')}>
+                                    <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 0.5 }}>
+                                        {sortField === 'max_drawdown' && sortDirection === 'desc' ? <ArrowDownward fontSize="small" color="primary" /> :
+                                            sortField === 'max_drawdown' && sortDirection === 'asc' ? <ArrowUpward fontSize="small" color="primary" /> :
+                                                <Box sx={{ display: 'flex', flexDirection: 'column', opacity: 0.3 }}><KeyboardArrowUp sx={{ fontSize: 14, mb: -1 }} /><KeyboardArrowDown sx={{ fontSize: 14 }} /></Box>}
+                                        Drawdown
+                                    </Box>
+                                </TableCell>
                                 <TableCell align="center">Actions</TableCell>
                             </TableRow>
                         </TableHead>

@@ -1,7 +1,11 @@
 import { API_BASE } from '../../../shared/api/config';
 
-export const fetchBacktestHistory = async (page: number, pageSize: number = 10) => {
-    const response = await fetch(`${API_BASE}/api/backtest/history?page=${page}&page_size=${pageSize}`);
+export const fetchBacktestHistory = async (page: number, pageSize: number = 10, sortField?: string, sortDirection?: 'asc' | 'desc') => {
+    let url = `${API_BASE}/api/backtest/history?page=${page}&page_size=${pageSize}`;
+    if (sortField && sortDirection) {
+        url += `&sort_field=${sortField}&sort_direction=${sortDirection}`;
+    }
+    const response = await fetch(url);
     if (!response.ok) {
         throw new Error(`Failed to fetch history: HTTP ${response.status}`);
     }
