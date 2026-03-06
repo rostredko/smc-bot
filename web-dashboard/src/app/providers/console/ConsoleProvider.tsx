@@ -1,5 +1,7 @@
 import React, { createContext, useContext, useState, useRef, useCallback, useEffect } from 'react';
 
+const CLEAR_CONSOLE_SIGNAL = "__BTM_CLEAR_CONSOLE__";
+
 export interface UseConsoleReturn {
     consoleOutput: string[];
     setConsoleOutput: React.Dispatch<React.SetStateAction<string[]>>;
@@ -75,6 +77,15 @@ export const ConsoleProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
             ws.onmessage = (event) => {
                 if (event.data && event.data.trim()) {
+                    if (event.data.trim() === CLEAR_CONSOLE_SIGNAL) {
+                        logBuffer.current = [];
+                        if (flushTimeout.current) {
+                            clearTimeout(flushTimeout.current);
+                            flushTimeout.current = null;
+                        }
+                        setConsoleOutput([]);
+                        return;
+                    }
                     logBuffer.current.push(event.data);
                     const now = Date.now();
                     if (!flushTimeout.current) {

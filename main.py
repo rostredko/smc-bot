@@ -20,10 +20,23 @@ from engine.logger import get_logger, setup_logging
 from engine.bt_backtest_engine import BTBacktestEngine
 from engine.bt_live_engine import BTLiveEngine
 from strategies.bt_price_action import PriceActionStrategy
+from strategies.fast_test_strategy import FastTestStrategy
 
 # Bootstrap logging for CLI usage
 setup_logging(enable_ws=False)
 logger = get_logger("main")
+
+
+_CLI_STRATEGY_CLASS_MAP = {
+    "bt_price_action": PriceActionStrategy,
+    "price_action_strategy": PriceActionStrategy,
+    "fast_test_strategy": FastTestStrategy,
+}
+
+
+def _resolve_cli_strategy_class(strategy_name: str):
+    key = (strategy_name or "bt_price_action").strip().lower()
+    return _CLI_STRATEGY_CLASS_MAP.get(key, PriceActionStrategy)
 
 
 def create_default_config() -> Dict[str, Any]:
@@ -33,7 +46,6 @@ def create_default_config() -> Dict[str, Any]:
         "initial_capital": 10000,
         "risk_per_trade": 2.0,  # 2% risk per trade
         "max_drawdown": 15.0,   # 15% max drawdown
-        "max_positions": 3,
         "leverage": 10.0,
         # Trading pair and timeframes
         "symbol": "BTC/USDT",
@@ -50,7 +62,6 @@ def create_default_config() -> Dict[str, Any]:
             "risk_reward_ratio": 2.5,
         },
         # Risk management
-        "min_risk_reward": 3.0,
         "log_level": "INFO",
     }
 
@@ -140,7 +151,9 @@ def run_backtest_from_config(config: Dict[str, Any], config_name: str = "Backtes
 
     try:
         engine = BTBacktestEngine(config)
-        engine.add_strategy(PriceActionStrategy, **config.get('strategy_config', {}))
+        strategy_name = config.get("strategy", "bt_price_action")
+        strategy_class = _resolve_cli_strategy_class(strategy_name)
+        engine.add_strategy(strategy_class, **config.get('strategy_config', {}))
         metrics = engine.run_backtest()
 
         if config.get("save_results", False) or config.get("export_trades", False):
@@ -205,7 +218,6 @@ def _build_full_metrics(
         "initial_capital": config.get("initial_capital", 10000),
         "risk_per_trade": config.get("risk_per_trade", 2.0),
         "max_drawdown": config.get("max_drawdown", 15.0),
-        "max_positions": config.get("max_positions", 3),
         "leverage": config.get("leverage", 10.0),
         "symbol": config.get("symbol", "BTC/USDT"),
         "timeframes": config.get("timeframes", ["4h", "15m"]),

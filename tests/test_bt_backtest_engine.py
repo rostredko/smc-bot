@@ -62,6 +62,45 @@ class TestBTBacktestEngineInit(unittest.TestCase):
 
 
 @patch("engine.bt_backtest_engine.DataLoader")
+class TestBacktestCancellation(unittest.TestCase):
+    """Test cooperative cancellation behavior."""
+
+    def test_cancel_is_idempotent_and_calls_runstop_once(self, mock_dataloader_cls):
+        mock_dataloader_cls.return_value = MagicMock()
+        engine = BTBacktestEngine({"symbol": "BTC/USDT", "timeframes": ["1h"]})
+        engine.cerebro.runstop = MagicMock()
+
+        engine.cancel()
+        engine.cancel()
+
+        self.assertTrue(engine.should_cancel)
+        engine.cerebro.runstop.assert_called_once()
+
+    def test_run_backtest_returns_cancelled_when_flag_set_before_start(self, mock_dataloader_cls):
+        mock_dataloader_cls.return_value = MagicMock()
+        engine = BTBacktestEngine({"symbol": "BTC/USDT", "timeframes": ["1h"]})
+        engine.should_cancel = True
+
+        with patch.object(engine, "add_data") as add_data_mock:
+            metrics = engine.run_backtest()
+
+        self.assertEqual(metrics, {"cancelled": True})
+        add_data_mock.assert_not_called()
+
+    def test_run_backtest_returns_cancelled_if_flag_set_after_data_load(self, mock_dataloader_cls):
+        mock_dataloader_cls.return_value = MagicMock()
+        engine = BTBacktestEngine({"symbol": "BTC/USDT", "timeframes": ["1h"]})
+
+        def _set_cancel():
+            engine.should_cancel = True
+
+        with patch.object(engine, "add_data", side_effect=_set_cancel):
+            metrics = engine.run_backtest()
+
+        self.assertEqual(metrics, {"cancelled": True})
+
+
+@patch("engine.bt_backtest_engine.DataLoader")
 class TestAddData(unittest.TestCase):
     """Test add_data behavior."""
 

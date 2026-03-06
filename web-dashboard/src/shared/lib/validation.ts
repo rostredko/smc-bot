@@ -1,5 +1,20 @@
 import { BacktestConfig } from '../model/types';
 
+const timeframeToMinutes = (tf: string): number | null => {
+    const match = tf.match(/^(\d+)([mhdwM])$/);
+    if (!match) return null;
+    const value = Number(match[1]);
+    const unit = match[2];
+    const multipliers: Record<string, number> = {
+        m: 1,
+        h: 60,
+        d: 60 * 24,
+        w: 60 * 24 * 7,
+        M: 60 * 24 * 30,
+    };
+    return value * multipliers[unit];
+};
+
 export const validateBacktestConfig = (config: BacktestConfig, availableSymbols: string[] = []): Record<string, string> => {
     const newErrors: Record<string, string> = {};
     const timeframeRegex = /^\d+[mhdwM]$/;
@@ -19,6 +34,20 @@ export const validateBacktestConfig = (config: BacktestConfig, availableSymbols:
         newErrors['timeframe_secondary'] = "Required";
     } else if (!timeframeRegex.test(tfSecondary)) {
         newErrors['timeframe_secondary'] = "Invalid (e.g. 15m)";
+    }
+
+    if (!newErrors['timeframe_primary'] && !newErrors['timeframe_secondary']) {
+        const tfPrimaryMinutes = timeframeToMinutes(tfPrimary);
+        const tfSecondaryMinutes = timeframeToMinutes(tfSecondary);
+        if (
+            tfPrimaryMinutes !== null &&
+            tfSecondaryMinutes !== null &&
+            tfPrimaryMinutes < tfSecondaryMinutes
+        ) {
+            const msg = "Primary TF must be >= Entry TF";
+            newErrors['timeframe_primary'] = msg;
+            newErrors['timeframe_secondary'] = msg;
+        }
     }
 
     // 2. Numeric validation

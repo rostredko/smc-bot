@@ -130,8 +130,7 @@ def risk_manager():
         initial_capital=10000,
         leverage=1.0,
         risk_per_trade=2.0,
-        max_drawdown=15.0,
-        max_positions=3
+        max_drawdown=15.0
     )
 
 
@@ -266,7 +265,6 @@ def backtest_config():
         'initial_capital': 10000,
         'risk_per_trade': 2.0,
         'max_drawdown': 15.0,
-        'max_positions': 3,
         'leverage': 10.0,
         'symbol': 'BTC/USDT',
         'timeframes': ['4h', '15m'],
@@ -285,7 +283,6 @@ def spot_config():
         'initial_capital': 10000,
         'risk_per_trade': 0.5,
         'max_drawdown': 15.0,
-        'max_positions': 1,
         'leverage': 1.0,
         'symbol': 'BTC/USDT',
         'timeframes': ['4h', '15m'],

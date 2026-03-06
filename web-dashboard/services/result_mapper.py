@@ -6,6 +6,13 @@ def _trade_pnl_sum(trades: Iterable[Dict[str, Any]]) -> float:
     return float(sum(t.get("pnl", t.get("realized_pnl", 0.0)) for t in trades))
 
 
+def _to_float_or_none(value: Any) -> Optional[float]:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _max_drawdown_from_equity(equity_data: List[Dict[str, Any]]) -> float:
     """
     Compute max drawdown (%) from serialized equity curve [{date, equity}, ...].
@@ -208,9 +215,19 @@ def build_backtest_metrics_doc(
     signals_generated: int,
 ) -> Dict[str, Any]:
     trades_pnl_sum = _trade_pnl_sum(trades_data)
-    init_cap = engine_config.get("initial_capital", 10000)
+    init_cap = float(engine_config.get("initial_capital", 10000))
+    metric_total_pnl = _to_float_or_none(metrics.get("total_pnl"))
+    metric_final_capital = _to_float_or_none(metrics.get("final_capital"))
+
+    if metric_final_capital is not None:
+        final_capital = metric_final_capital
+        total_pnl = metric_total_pnl if metric_total_pnl is not None else (final_capital - init_cap)
+    else:
+        total_pnl = metric_total_pnl if metric_total_pnl is not None else trades_pnl_sum
+        final_capital = init_cap + total_pnl
+
     return {
-        "total_pnl": trades_pnl_sum,
+        "total_pnl": total_pnl,
         "winning_trades": metrics.get("win_count", 0),
         "losing_trades": metrics.get("loss_count", 0),
         "total_trades": metrics.get("total_trades", 0),
@@ -221,7 +238,7 @@ def build_backtest_metrics_doc(
         "avg_win": metrics.get("avg_win", 0),
         "avg_loss": metrics.get("avg_loss", 0),
         "initial_capital": init_cap,
-        "final_capital": init_cap + trades_pnl_sum,
+        "final_capital": final_capital,
         "signals_generated": signals_generated,
         "equity_curve": equity_data,
         "trades": trades_data,

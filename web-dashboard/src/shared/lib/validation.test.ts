@@ -7,7 +7,6 @@ describe('validateBacktestConfig', () => {
         initial_capital: 10000,
         risk_per_trade: 1,
         max_drawdown: 20,
-        max_positions: 1,
         leverage: 10,
         symbol: "BTC/USDT",
         timeframes: ["4h", "15m"],
@@ -40,6 +39,11 @@ describe('validateBacktestConfig', () => {
         config.timeframes = ["4h", ""];
         errors = validateBacktestConfig(config, []);
         expect(errors.timeframe_secondary).toBe("Required");
+
+        config.timeframes = ["15m", "4h"];
+        errors = validateBacktestConfig(config, []);
+        expect(errors.timeframe_primary).toBe("Primary TF must be >= Entry TF");
+        expect(errors.timeframe_secondary).toBe("Primary TF must be >= Entry TF");
     });
 
     it('fails with invalid numbers', () => {

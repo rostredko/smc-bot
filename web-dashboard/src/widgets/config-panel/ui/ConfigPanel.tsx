@@ -335,6 +335,7 @@ const ConfigPanel: React.FC = () => {
                                             startIcon={<PlayArrow />}
                                             onClick={() => {
                                                 setResults(null);
+                                                setConsoleOutput([]);
                                                 startLiveTrading();
                                             }}
                                             disabled={isRunning || isLiveRunning || !selectedStrategy}

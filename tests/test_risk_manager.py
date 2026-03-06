@@ -129,6 +129,30 @@ class TestRiskManager(unittest.TestCase):
         )
         self.assertAlmostEqual(size, 20.0, places=6)
 
+    def test_invalid_long_stop_above_entry_returns_zero(self):
+        size = RiskManager.calculate_position_size(
+            account_value=10000,
+            risk_per_trade_pct=1.0,
+            entry_price=100,
+            stop_loss=101,
+            leverage=10,
+            dynamic_sizing=True,
+            direction="long",
+        )
+        self.assertEqual(size, 0.0)
+
+    def test_invalid_short_stop_below_entry_returns_zero(self):
+        size = RiskManager.calculate_position_size(
+            account_value=10000,
+            risk_per_trade_pct=1.0,
+            entry_price=100,
+            stop_loss=99,
+            leverage=10,
+            dynamic_sizing=True,
+            direction="short",
+        )
+        self.assertEqual(size, 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()

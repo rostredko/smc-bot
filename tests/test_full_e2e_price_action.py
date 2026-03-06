@@ -133,7 +133,6 @@ class TestFullE2EPriceAction(unittest.TestCase):
             'initial_capital': tracer_capital,
             'risk_per_trade': tracer_risk,
             'max_drawdown': 20.0,
-            'max_positions': 3,
             'leverage': 5.0,
             'symbol': 'BTC/USDT',
             'timeframes': ['1h'], # Single TF for simplicity

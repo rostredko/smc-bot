@@ -7,10 +7,12 @@ import os
 import asyncio
 import sys
 import threading
+import logging
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any
 from pathlib import Path
 from uuid import uuid4
+from collections import deque
 
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT_DIR = os.path.dirname(CURRENT_DIR)
@@ -30,7 +32,13 @@ from pydantic import BaseModel, ConfigDict
 from engine.bt_backtest_engine import BTBacktestEngine
 from engine.bt_live_engine import BTLiveEngine
 from engine.data_loader import DataLoader
-from engine.logger import get_logger, setup_logging, ws_log_queue, suppress_ws_logging
+from engine.logger import (
+    get_logger,
+    setup_logging,
+    ws_log_queue,
+    suppress_ws_logging,
+    clear_ws_log_queue,
+)
 from services.strategy_runtime import resolve_strategy_class, build_runtime_strategy_config
 from services.result_mapper import (
     map_backtest_trades,
@@ -40,7 +48,7 @@ from services.result_mapper import (
     build_equity_series,
 )
 
-from db import is_database_available, init_db
+from db import get_database, is_database_available, init_db
 from db.repositories import BacktestRepository, UserConfigRepository, AppConfigRepository
 
 setup_logging(enable_ws=False)
@@ -59,6 +67,10 @@ def _read_version() -> str:
 
 
 APP_VERSION = _read_version()
+WS_CLEAR_CONSOLE_SIGNAL = "__BTM_CLEAR_CONSOLE__"
+RUN_LOGS_DIR = BASE_DIR / "logs" / "runs"
+RUN_LOG_CAPTURE_MAX_LINES = 12000
+RUN_LOG_DB_TAIL_LINES = 400
 
 os.makedirs(DATA_DIR, exist_ok=True)
 
@@ -105,7 +117,6 @@ class BacktestConfig(BaseModel):
     initial_capital: float = 10000
     risk_per_trade: float = 1.5
     max_drawdown: float = 20.0
-    max_positions: int = 3
     leverage: float = 10.0
     symbol: str = "BTC/USDT"
     timeframes: List[str] = ["4h", "15m"]
@@ -114,13 +125,10 @@ class BacktestConfig(BaseModel):
     confluence_required: str = "false"
     strategy: str = "smc_strategy"
     strategy_config: Dict[str, Any] = {}
-    min_risk_reward: float = 2.5
     trailing_stop_distance: float = 0.04
     breakeven_trigger_r: float = 1.5
-    max_total_risk_percent: float = 15.0
     dynamic_position_sizing: bool = True
     taker_fee: float = 0.04  # Default 0.04%
-    slippage_bp: float = 0.0 # Default 0 basis points
     exchange: str = "binance"
     exchange_type: str = "future"
     loaded_template_name: Optional[str] = None
@@ -160,34 +168,144 @@ strategy_schema_cache: Dict[str, Dict[str, Any]] = {}
 _broadcast_shutdown: asyncio.Event = asyncio.Event()
 
 
+def _latest_running_backtest_run_id() -> Optional[str]:
+    """Return the newest run_id still in running state."""
+    for rid, status in reversed(list(running_backtests.items())):
+        if status.status == "running":
+            return rid
+    return None
+
+
+class _RunLogCollector(logging.Handler):
+    """Collects tail logs for persistence in run result payloads."""
+
+    def __init__(self, max_lines: int = RUN_LOG_CAPTURE_MAX_LINES):
+        super().__init__(level=logging.INFO)
+        self._lines = deque(maxlen=max_lines)
+        self._lock = threading.Lock()
+        self.total_count = 0
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            msg = self.format(record).rstrip("\n")
+        except Exception:
+            self.handleError(record)
+            return
+        with self._lock:
+            self._lines.append(msg)
+            self.total_count += 1
+
+    def get_tail(self, max_lines: int = RUN_LOG_DB_TAIL_LINES) -> List[str]:
+        with self._lock:
+            if max_lines <= 0:
+                return []
+            lines = list(self._lines)
+        return lines[-max_lines:]
+
+
+def _attach_run_log_handlers(run_id: str) -> tuple[_RunLogCollector, logging.FileHandler, str]:
+    """Attach per-run file and in-memory log handlers to the project root logger."""
+    RUN_LOGS_DIR.mkdir(parents=True, exist_ok=True)
+    log_file_path = RUN_LOGS_DIR / f"{run_id}.log"
+    fmt = logging.Formatter(
+        "%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+
+    file_handler = logging.FileHandler(log_file_path, encoding="utf-8")
+    file_handler.setLevel(logging.INFO)
+    file_handler.setFormatter(fmt)
+
+    collector = _RunLogCollector(max_lines=RUN_LOG_CAPTURE_MAX_LINES)
+    collector.setFormatter(fmt)
+
+    root_logger = logging.getLogger("backtrade")
+    root_logger.addHandler(file_handler)
+    root_logger.addHandler(collector)
+    return collector, file_handler, str(log_file_path)
+
+
+def _detach_run_log_handlers(*handlers: Optional[logging.Handler]) -> None:
+    """Detach and close run-specific handlers safely."""
+    root_logger = logging.getLogger("backtrade")
+    for handler in handlers:
+        if handler is None:
+            continue
+        if handler in root_logger.handlers:
+            root_logger.removeHandler(handler)
+        try:
+            handler.flush()
+        except Exception:
+            pass
+        try:
+            handler.close()
+        except Exception:
+            pass
+
+
+def _attach_run_log_metadata(
+    payload: Dict[str, Any],
+    collector: Optional[_RunLogCollector],
+    log_file_path: Optional[str],
+) -> None:
+    """Embed log metadata into saved run payload."""
+    if collector is None:
+        payload["logs"] = []
+        payload["log_lines_total"] = 0
+        return
+    payload["logs"] = collector.get_tail(RUN_LOG_DB_TAIL_LINES)
+    payload["log_lines_total"] = collector.total_count
+    if log_file_path:
+        payload["log_file"] = log_file_path
+
+
+async def _prepare_live_output_for_new_run() -> None:
+    """
+    Clear buffered WS logs and notify connected clients to reset Live Output.
+    """
+    dropped = clear_ws_log_queue()
+    if dropped > 0:
+        logger.debug(f"Cleared {dropped} queued WS log messages before new run")
+    await broadcast_message(WS_CLEAR_CONSOLE_SIGNAL)
+
+
 async def broadcast_from_queue():
     """Periodically drain ws_log_queue and broadcast messages to WebSocket clients."""
     while not _broadcast_shutdown.is_set():
         try:
-            while True:
+            processed = 0
+            max_batch = 300
+            while processed < max_batch:
                 try:
                     message = ws_log_queue.get_nowait()
-                    with connection_lock:
-                        connections_copy = active_connections.copy()
-
-                    if not connections_copy:
-                        continue
-
-                    for connection in connections_copy:
-                        try:
-                            await connection.send_text(message)
-                        except Exception:
-                            with connection_lock:
-                                if connection in active_connections:
-                                    active_connections.remove(connection)
                 except Exception:
                     break
+
+                processed += 1
+                with connection_lock:
+                    connections_copy = active_connections.copy()
+
+                if not connections_copy:
+                    # No subscribers: drop queued line and continue.
+                    continue
+
+                for connection in connections_copy:
+                    try:
+                        await connection.send_text(message)
+                    except Exception:
+                        with connection_lock:
+                            if connection in active_connections:
+                                active_connections.remove(connection)
+
+                # Yield periodically to keep HTTP API responsive during log bursts.
+                if processed % 50 == 0:
+                    await asyncio.sleep(0)
         except asyncio.CancelledError:
             raise
         except Exception as e:
             logger.debug(f"Broadcaster loop error: {e}")
 
-        await asyncio.sleep(0.05)
+        await asyncio.sleep(0.02)
 
 
 _EXCLUDED_STRATEGY_FILES = frozenset({"__init__.py", "base_strategy.py"})
@@ -253,7 +371,6 @@ def get_strategy_config_schema(strategy_name: str):
             "risk_reduction_after_loss": {"type": "number", "default": 0.6},
             "min_notional": {"type": "number", "default": 10.0},
             "taker_fee": {"type": "number", "default": 0.0004},
-            "slippage_bp": {"type": "number", "default": 2},
         },
         "simple_test_strategy": {
             "threshold": {"type": "number", "default": 0.5},
@@ -274,15 +391,15 @@ def get_strategy_config_schema(strategy_name: str):
             "use_rsi_momentum": {"type": "boolean", "default": False},
             "rsi_momentum_threshold": {"type": "number", "default": 60},
             
-            "use_adx_filter": {"type": "boolean", "default": False},
+            "use_adx_filter": {"type": "boolean", "default": True},
             "adx_period": {"type": "number", "default": 14},
-            "adx_threshold": {"type": "number", "default": 25},
-            "min_range_factor": {"type": "number", "default": 0.8},
+            "adx_threshold": {"type": "number", "default": 30},
+            "min_range_factor": {"type": "number", "default": 1.2},
             "min_wick_to_range": {"type": "number", "default": 0.6},
             "max_body_to_range": {"type": "number", "default": 0.3},
 
-            "risk_reward_ratio": {"type": "number", "default": 2.5},
-            "sl_buffer_atr": {"type": "number", "default": 1.0},
+            "risk_reward_ratio": {"type": "number", "default": 2.0},
+            "sl_buffer_atr": {"type": "number", "default": 1.5},
 
             "pattern_hammer": {"type": "boolean", "default": True},
             "pattern_inverted_hammer": {"type": "boolean", "default": True},
@@ -345,7 +462,6 @@ def _config_to_flat(config: Dict[str, Any]) -> Dict[str, Any]:
         "initial_capital": account.get("initial_capital", 10000),
         "risk_per_trade": account.get("risk_per_trade", 2.0),
         "max_drawdown": account.get("max_drawdown", 15.0),
-        "max_positions": account.get("max_positions", 1),
         "leverage": account.get("leverage", 10.0),
         "symbol": trading.get("symbol", "BTC/USDT"),
         "timeframes": trading.get("timeframes", ["4h", "15m"]),
@@ -353,10 +469,8 @@ def _config_to_flat(config: Dict[str, Any]) -> Dict[str, Any]:
         "end_date": period.get("end_date", "2023-12-31"),
         "strategy": strategy_section.get("name", "smc_strategy"),
         "strategy_config": strategy_section.get("config", {}),
-        "min_risk_reward": config.get("min_risk_reward", 2.5),
         "trailing_stop_distance": config.get("trailing_stop_distance", 0.04),
         "breakeven_trigger_r": config.get("breakeven_trigger_r", 1.5),
-        "max_total_risk_percent": config.get("max_total_risk_percent", 15.0),
         "dynamic_position_sizing": config.get("dynamic_position_sizing", True),
         "position_cap_adverse": config.get("position_cap_adverse", 0.5),
     }
@@ -380,7 +494,7 @@ async def update_config(config: Dict[str, Any]):
         if section not in existing_config:
             existing_config[section] = {}
 
-    for key in ("initial_capital", "risk_per_trade", "max_drawdown", "max_positions", "leverage"):
+    for key in ("initial_capital", "risk_per_trade", "max_drawdown", "leverage"):
         if key in config:
             existing_config["account"][key] = config[key]
     for key in ("symbol", "timeframes"):
@@ -393,7 +507,7 @@ async def update_config(config: Dict[str, Any]):
         existing_config["strategy"]["name"] = config["strategy"]
     if "strategy_config" in config:
         existing_config["strategy"]["config"] = config["strategy_config"]
-    for key in ("min_risk_reward", "trailing_stop_distance", "breakeven_trigger_r", "max_total_risk_percent", "dynamic_position_sizing"):
+    for key in ("trailing_stop_distance", "breakeven_trigger_r", "dynamic_position_sizing"):
         if key in config:
             existing_config[key] = config[key]
     if "position_cap_adverse" in config:
@@ -426,7 +540,7 @@ async def update_live_config(config: Dict[str, Any]):
     """Save live trading configuration to DB."""
     existing = AppConfigRepository().get_live_config()
     for key in ("exchange", "apiKey", "secret", "sandbox", "symbol", "timeframes",
-                "initial_capital", "risk_per_trade", "max_drawdown", "max_positions",
+                "initial_capital", "risk_per_trade", "max_drawdown",
                 "leverage", "poll_interval", "strategy_config"):
         if key in config and not (key in ("apiKey", "secret") and _is_masked(config[key])):
             existing[key] = config[key]
@@ -507,6 +621,8 @@ async def start_backtest(request: BacktestRequest, background_tasks: BackgroundT
         for k in list(running_backtests.keys())[:-20]:
             del running_backtests[k]
 
+    await _prepare_live_output_for_new_run()
+
     running_backtests[run_id] = BacktestStatus(
         run_id=run_id,
         status="running",
@@ -575,7 +691,10 @@ def _default_configuration_for_legacy_backtest() -> Dict[str, Any]:
             "rsi_oversold": 30,
             "use_adx_filter": True,
             "adx_period": 14,
-            "adx_threshold": 25,
+            "adx_threshold": 30,
+            "min_range_factor": 1.2,
+            "risk_reward_ratio": 2.0,
+            "sl_buffer_atr": 1.5,
         },
     }
 
@@ -621,10 +740,22 @@ async def cancel_backtest(run_id: str):
     if status.status == "running":
         status.should_cancel = True  # Set flag to signal cancellation
         if status.engine:
-            status.engine.should_cancel = True
+            try:
+                status.engine.cancel()
+            except Exception:
+                status.engine.should_cancel = True
         status.message = "Cancellation requested..."
     
     return {"message": "Backtest cancellation requested"}
+
+
+@app.post("/backtest/active/stop")
+async def cancel_active_backtest():
+    """Cancel the most recent running backtest when run_id is unknown on the client."""
+    run_id = _latest_running_backtest_run_id()
+    if run_id is None:
+        raise HTTPException(status_code=404, detail="No running backtest found")
+    return await cancel_backtest(run_id)
 
 
 @app.delete("/api/backtest/history/{filename}")
@@ -651,6 +782,8 @@ async def start_live_trading(request: LiveStartRequest, background_tasks: Backgr
     config = request.config
     if not config:
         raise HTTPException(status_code=400, detail="Live configuration not found")
+
+    await _prepare_live_output_for_new_run()
 
     live_trading_state["is_running"] = True
     live_trading_state["start_time"] = datetime.now().isoformat()
@@ -710,7 +843,11 @@ async def websocket_endpoint(websocket: WebSocket):
     
     try:
         while True:
-            await asyncio.sleep(1)
+            try:
+                await asyncio.wait_for(websocket.receive_text(), timeout=30.0)
+            except asyncio.TimeoutError:
+                # Keep connection alive and periodically check for disconnects.
+                continue
     except WebSocketDisconnect:
         with connection_lock:
             if websocket in active_connections:
@@ -738,10 +875,14 @@ async def run_live_trading_task(config: Dict[str, Any]):
     session_start = datetime.now()
     signal_counter = None
     _root_logger = None
+    run_log_collector: Optional[_RunLogCollector] = None
+    run_log_file_handler: Optional[logging.FileHandler] = None
+    run_log_path: Optional[str] = None
 
     try:
         import logging as _logging
         setup_logging(level=_logging.INFO, run_id=run_id, enable_ws=True)
+        run_log_collector, run_log_file_handler, run_log_path = _attach_run_log_handlers(run_id)
 
         class _SignalCounter(_logging.Handler):
             def __init__(self):
@@ -821,6 +962,7 @@ async def run_live_trading_task(config: Dict[str, Any]):
             session_start=session_start,
             session_end=session_end,
         )
+        _attach_run_log_metadata(mapped_metrics, run_log_collector, run_log_path)
         
         # Save into repository as live
         BacktestRepository().save(run_id, mapped_metrics, is_live=True)
@@ -835,6 +977,7 @@ async def run_live_trading_task(config: Dict[str, Any]):
                 _root_logger.removeHandler(signal_counter)
             except Exception:
                 pass
+        _detach_run_log_handlers(run_log_collector, run_log_file_handler)
         live_trading_state["is_running"] = False
         live_trading_state["engine"] = None
         live_trading_state["start_time"] = None
@@ -846,7 +989,12 @@ async def run_live_trading_task(config: Dict[str, Any]):
 
 async def run_backtest_task(run_id: str, config: Dict[str, Any]):
     """Background task to run backtest."""
-    
+    signal_counter = None
+    _root_logger = None
+    run_log_collector: Optional[_RunLogCollector] = None
+    run_log_file_handler: Optional[logging.FileHandler] = None
+    run_log_path: Optional[str] = None
+
     try:
         running_backtests[run_id].message = "Initializing engine..."
         running_backtests[run_id].progress = 10.0
@@ -859,7 +1007,6 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
             'initial_capital': config.get('initial_capital', 10000),
             'risk_per_trade': config.get('risk_per_trade', 2.0),
             'max_drawdown': config.get('max_drawdown', 15.0),
-            'max_positions': config.get('max_positions', 3),
             'leverage': config.get('leverage', 10.0),
             'symbol': config.get('symbol', 'BTC/USDT'),
             'timeframes': config.get('timeframes', ['4h', '15m']),
@@ -869,15 +1016,12 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
             'end_date': config.get('end_date', '2023-12-31'),
             'strategy': config.get('strategy', 'smc_strategy'),
             'strategy_config': config.get('strategy_config', {}),
-            'min_risk_reward': config.get('min_risk_reward', 2.5),
             'trailing_stop_distance': config.get('trailing_stop_distance', 0.04),
             'breakeven_trigger_r': config.get('breakeven_trigger_r', 1.5),
-            'max_total_risk_percent': config.get('max_total_risk_percent', 15.0),
             'dynamic_position_sizing': config.get('dynamic_position_sizing', True),
             'position_cap_adverse': config.get('position_cap_adverse', 0.5),
             'commission': commission,
             'taker_fee': taker_fee_pct,
-            'slippage_bp': config.get('slippage_bp', 0.0),
             'log_level': 'INFO',
             'detailed_signals': True,
             'detailed_trades': True,
@@ -887,16 +1031,12 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
         if config.get('loaded_template_name'):
             engine_config['loaded_template_name'] = config['loaded_template_name']
         
-        if len(engine_config['timeframes']) >= 1:
-             pass
-        
         await broadcast_message(f"[{run_id}] ============================================================\n")
         await broadcast_message(f"[{run_id}] BACKTEST CONFIGURATION\n")
         await broadcast_message(f"[{run_id}] ============================================================\n")
         await broadcast_message(f"[{run_id}] Strategy: {engine_config['strategy']}\n")
         await broadcast_message(f"[{run_id}] Symbol: {engine_config['symbol']}\n")
         await broadcast_message(f"[{run_id}] Commission (Taker): {engine_config['taker_fee']}% ({engine_config['commission']})\n")
-        await broadcast_message(f"[{run_id}] Slippage: {engine_config['slippage_bp']} bp\n")
         await broadcast_message(f"[{run_id}] Timeframes: {', '.join(engine_config['timeframes'])}\n")
         await broadcast_message(f"[{run_id}] Period: {engine_config['start_date']} to {engine_config['end_date']}\n")
         await broadcast_message(f"[{run_id}] Initial Capital: ${engine_config['initial_capital']:,.2f}\n")
@@ -913,6 +1053,7 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
         
         import logging as _logging
         setup_logging(level=_logging.INFO, run_id=run_id, enable_ws=True)
+        run_log_collector, run_log_file_handler, run_log_path = _attach_run_log_handlers(run_id)
 
         class _SignalCounter(_logging.Handler):
             def __init__(self):
@@ -930,29 +1071,42 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
         try:
             await broadcast_message(f"[{run_id}] Creating engine instance...\n")
             engine = BTBacktestEngine(engine_config)
+            running_backtests[run_id].engine = engine
+
+            if running_backtests[run_id].should_cancel:
+                engine.cancel()
+                running_backtests[run_id].message = "Cancellation acknowledged before run start. Finalizing partial results..."
+                await broadcast_message(f"[{run_id}] Cancellation requested before execution. Preparing partial results...\n")
             
             st_config = build_runtime_strategy_config(engine_config)
             strategy_name = engine_config.get('strategy', 'bt_price_action')
             strategy_class = resolve_strategy_class(strategy_name)
             engine.add_strategy(strategy_class, **st_config)
-            
-            running_backtests[run_id].engine = engine
+
+            if running_backtests[run_id].should_cancel and not engine.should_cancel:
+                engine.cancel()
             
             await broadcast_message(f"[{run_id}] ✅ Engine created\n")
             
             running_backtests[run_id].message = "Loading data..."
             running_backtests[run_id].progress = 30.0
-            
-            if running_backtests[run_id].should_cancel:
-                running_backtests[run_id].status = "cancelled"
-                running_backtests[run_id].message = "Backtest cancelled"
-                await broadcast_message(f"[{run_id}] Backtest cancelled by user\n")
-                return
-            
+
             await broadcast_message(f"[{run_id}] Starting engine.run_backtest()...\n")
             
             loop = asyncio.get_event_loop()
             metrics = await loop.run_in_executor(None, engine.run_backtest)
+            if not isinstance(metrics, dict):
+                metrics = {}
+
+            cancel_requested = bool(
+                running_backtests[run_id].should_cancel
+                or engine.should_cancel
+                or bool(metrics.get("cancelled"))
+            )
+            if cancel_requested:
+                running_backtests[run_id].message = "Cancellation acknowledged. Finalizing partial results..."
+                running_backtests[run_id].progress = 75.0
+                await broadcast_message(f"[{run_id}] Cancellation acknowledged. Finalizing partial results...\n")
             
             await broadcast_message(f"[{run_id}] ✅ engine.run_backtest() completed\n")
             
@@ -981,10 +1135,12 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
                     equity_data=equity_data,
                     signals_generated=signal_counter.count,
                 )
+                mapped_metrics["cancelled"] = cancel_requested
+                _attach_run_log_metadata(mapped_metrics, run_log_collector, run_log_path)
                 
                 metrics.update(mapped_metrics)
-                
-                metrics['logs'] = []
+                metrics["cancelled"] = cancel_requested
+                _attach_run_log_metadata(metrics, run_log_collector, run_log_path)
                 
                 running_backtests[run_id].results = metrics
                 running_backtests[run_id].progress = 100.0
@@ -1006,8 +1162,6 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
                 import traceback
                 logger.error(f"Error saving results: {e}\n{traceback.format_exc()}")
                 await broadcast_message(f"[{run_id}] ⚠️ Error saving results: {str(e)}\n")
-            
-            setup_logging(enable_ws=False)
 
             try:
                 if mapped_metrics is None:
@@ -1023,10 +1177,12 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
                     
                     return_pct = (total_pnl / init_cap) * 100
                     
+                    summary_title = "BACKTEST PARTIAL RESULTS (CANCELLED)" if cancel_requested else "BACKTEST RESULTS SUMMARY"
                     summary_lines = [
                         "============================================================",
-                        "BACKTEST RESULTS SUMMARY",
+                        summary_title,
                         "============================================================",
+                        f"Status:           {'CANCELLED (partial run)' if cancel_requested else 'COMPLETED'}",
                         f"Final Balance:    ${final_cap:,.2f}",
                         f"Total PnL:        ${total_pnl:,.2f}",
                         f"Return:           {return_pct:.2f}%",
@@ -1046,14 +1202,16 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
                     for line in summary_lines:
                          await broadcast_message(f"[{run_id}] {line}\n")
                          await asyncio.sleep(0.2)
-                    
-                    logger.info(f"[{run_id}] Backtest Summary Generated")
                     await broadcast_message(f"[{run_id}] Report generated. Finalizing...\n")
                     await asyncio.sleep(1.0)
-                
-                if not engine.should_cancel:
-                     running_backtests[run_id].status = "completed"
-                     running_backtests[run_id].message = "Backtest completed successfully"
+
+                if cancel_requested:
+                    running_backtests[run_id].status = "cancelled"
+                    running_backtests[run_id].message = "Backtest cancelled. Partial results saved."
+                    await broadcast_message(f"[{run_id}] Backtest cancelled. Partial results saved to history.\n")
+                else:
+                    running_backtests[run_id].status = "completed"
+                    running_backtests[run_id].message = "Backtest completed successfully"
                      
             except Exception as e:
                 import traceback
@@ -1065,7 +1223,9 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
                 running_backtests[run_id].message = f"Report generation failed: {str(e)}"
         
         finally:
-            _root_logger.removeHandler(signal_counter)
+            if _root_logger is not None and signal_counter is not None:
+                _root_logger.removeHandler(signal_counter)
+            _detach_run_log_handlers(run_log_collector, run_log_file_handler)
             setup_logging(enable_ws=False)
         
     except Exception as e:
@@ -1166,6 +1326,26 @@ def _ohlcv_cache_set(key: str, value: list):
     _OHLCV_CACHE[key] = value
     if len(_OHLCV_CACHE) > _OHLCV_CACHE_MAX:
         _OHLCV_CACHE.popitem(last=False)
+
+
+def _build_ohlcv_indicator_key(
+    timeframe: str,
+    ema_period: int,
+    ema_timeframe: str,
+    rsi_period: int,
+    rsi_overbought: float,
+    rsi_oversold: float,
+    adx_period: int,
+    adx_threshold: float,
+    atr_period: int,
+) -> str:
+    effective_ema_tf = ema_timeframe if ema_timeframe else timeframe
+    return (
+        f"ema{ema_period}@{effective_ema_tf}"
+        f"_rsi{rsi_period}-{rsi_overbought}-{rsi_oversold}"
+        f"_adx{adx_period}-{adx_threshold}"
+        f"_atr{atr_period}"
+    )
 
 
 _TF_MS: dict = {
@@ -1330,6 +1510,15 @@ async def clear_ohlcv_cache(disk: bool = False):
     _OHLCV_CACHE.clear()
     logger.info("OHLCV in-memory cache cleared")
     msg = "In-memory cache cleared"
+    db_removed = 0
+    try:
+        if is_database_available():
+            db = get_database()
+            db_removed = db["ohlcv_cache"].delete_many({}).deleted_count
+            logger.info(f"OHLCV Mongo cache cleared: {db_removed} documents removed")
+            msg += f"; Mongo cache cleared ({db_removed} docs)"
+    except Exception as e:
+        logger.warning(f"Failed to clear Mongo OHLCV cache: {e}")
     if disk and os.path.isdir(DATA_DIR):
         removed = 0
         for f in os.listdir(DATA_DIR):
@@ -1410,7 +1599,17 @@ async def _get_ohlcv_impl(
         warmup_bars = 300
         fetch_since_ms = since_ms - bar_ms * warmup_bars
 
-        ind_key = f"ema{ema_period}_rsi{rsi_period}-{rsi_overbought}-{rsi_oversold}_adx{adx_period}-{adx_threshold}_atr{atr_period}"
+        ind_key = _build_ohlcv_indicator_key(
+            timeframe=timeframe,
+            ema_period=ema_period,
+            ema_timeframe=ema_timeframe,
+            rsi_period=rsi_period,
+            rsi_overbought=rsi_overbought,
+            rsi_oversold=rsi_oversold,
+            adx_period=adx_period,
+            adx_threshold=adx_threshold,
+            atr_period=atr_period,
+        )
         use_cache = not (backtest_start and backtest_end)  # Never cache backtest requests — always use fresh DataLoader data
         cache_key = _ohlcv_cache_key(symbol, timeframe, since_ms, until_ms) + f"|{exchange_type}|" + ind_key
         if backtest_start and backtest_end:

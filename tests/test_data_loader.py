@@ -139,6 +139,18 @@ class TestDataValidation:
         with pytest.raises(ValueError, match="start_date.*must be <= end_date"):
             loader.fetch_ohlcv("BTC/USDT", "1h", "2024-12-31", "2024-01-01")
 
+    def test_date_range_to_timestamps_uses_utc_boundaries(self, mock_init_exchange):
+        from engine.data_loader import DataLoader
+        mock_init_exchange.return_value = MagicMock()
+        loader = DataLoader(enable_db_cache=False)
+
+        start_ts, end_ts, _ = loader._date_range_to_timestamps("2024-01-01", "2024-01-01")
+        expected_start = int(pd.Timestamp("2024-01-01", tz="UTC").timestamp() * 1000)
+        expected_end = int((pd.Timestamp("2024-01-01", tz="UTC") + pd.Timedelta(days=1) - pd.Timedelta(milliseconds=1)).timestamp() * 1000)
+
+        assert start_ts == expected_start
+        assert end_ts == expected_end
+
     def test_ohlcv_data_integrity(self, mock_init_exchange, sample_ohlcv_data):
         df = sample_ohlcv_data
         assert (df["high"] >= df["low"]).all()
@@ -317,7 +329,7 @@ class TestDbPartialCache:
 
         symbol = "TESTFULL/USDT"
         timeframe = "1d"
-        ts = int(pd.Timestamp("2024-01-01").timestamp() * 1000)
+        ts = int(pd.Timestamp("2024-01-01", tz="UTC").timestamp() * 1000)
         identity = {
             "exchange": loader.exchange_name,
             "exchange_type": loader.exchange_type,
@@ -346,9 +358,9 @@ class TestDbPartialCache:
     def test_fetches_only_missing_gap_and_merges_with_cached_data(self, mock_init_exchange):
         from engine.data_loader import DataLoader
 
-        day1 = int(pd.Timestamp("2024-01-01").timestamp() * 1000)
-        day2 = int(pd.Timestamp("2024-01-02").timestamp() * 1000)
-        day3 = int(pd.Timestamp("2024-01-03").timestamp() * 1000)
+        day1 = int(pd.Timestamp("2024-01-01", tz="UTC").timestamp() * 1000)
+        day2 = int(pd.Timestamp("2024-01-02", tz="UTC").timestamp() * 1000)
+        day3 = int(pd.Timestamp("2024-01-03", tz="UTC").timestamp() * 1000)
 
         mock_exchange = MagicMock()
         mock_exchange.parse_timeframe.return_value = 86400
@@ -409,7 +421,7 @@ class TestDbPartialCache:
     def test_refetches_recent_bars_when_cached_copy_is_stale(self, mock_init_exchange):
         from engine.data_loader import DataLoader
 
-        today = pd.Timestamp(datetime.now(timezone.utc).date())
+        today = pd.Timestamp(datetime.now(timezone.utc).date(), tz="UTC")
         date_str = today.strftime("%Y-%m-%d")
         ts = int(today.timestamp() * 1000)
 

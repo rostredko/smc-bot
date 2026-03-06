@@ -15,23 +15,23 @@ def _iso_utc(dt: datetime.datetime) -> str:
 
 class PriceActionStrategy(BaseStrategy):
     params = (
-        ('min_range_factor', 0.8),
+        ('min_range_factor', 1.2),
         ('min_wick_to_range', 0.6),
         ('max_body_to_range', 0.3),
-        ('risk_reward_ratio', 2.5),
-        ('sl_buffer_atr', 0.5),
+        ('risk_reward_ratio', 2.0),
+        ('sl_buffer_atr', 1.5),
         ('atr_period', 14),
         ('use_trend_filter', True),
         ('trend_ema_period', 200),
-        ('use_rsi_filter', False),
+        ('use_rsi_filter', True),
         ('rsi_period', 14),
         ('rsi_overbought', 70),
         ('rsi_oversold', 30),
         ('use_rsi_momentum', False),
         ('rsi_momentum_threshold', 60),
-        ('use_adx_filter', False),
+        ('use_adx_filter', True),
         ('adx_period', 14),
-        ('adx_threshold', 21),
+        ('adx_threshold', 30),
         ('trailing_stop_distance', 0.0),
         ('breakeven_trigger_r', 0.0),
         ('risk_per_trade', 1.0),
@@ -344,7 +344,7 @@ class PriceActionStrategy(BaseStrategy):
 
     def _place_entry(self, reason, direction, sl_price_ref, tp_price_ref, sl_distance, tp_distance, sl_calc_expr, tp_calc_expr):
         self.last_entry_bar = len(self.data_ltf)
-        size = self._calculate_position_size(self.close_line[0], sl_price_ref)
+        size = self._calculate_position_size(self.close_line[0], sl_price_ref, direction=direction)
         if size <= 0:
             logger.warning(f"[{self._get_local_dt_str(self.data_ltf.datetime.datetime(0))}] {direction.upper()} size is 0, skipping. SL: {sl_price_ref:.2f}")
             return
@@ -446,4 +446,3 @@ class PriceActionStrategy(BaseStrategy):
             if self.adx[0] < self.params.adx_threshold: return False
             
         return True
-

@@ -74,6 +74,7 @@ export const ConfigProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     const [savedConfigs, setSavedConfigs] = useState<string[]>([]);
     const [topSymbols, setTopSymbols] = useState<string[]>([]);
     const [loadedTemplateName, setLoadedTemplateName] = useState<string | null>(null);
+    const [activeBacktestRunId, setActiveBacktestRunId] = useState<string | null>(null);
 
     const strategyMap = useMemo(() => new Map(strategies.map(s => [s.name, s])), [strategies]);
 
@@ -257,6 +258,7 @@ export const ConfigProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
             if (response.ok) {
                 const data = await response.json();
+                setActiveBacktestRunId(data.run_id ?? null);
                 setBacktestStatus({
                     run_id: data.run_id,
                     status: "running",
@@ -269,6 +271,7 @@ export const ConfigProvider: React.FC<{ children: React.ReactNode }> = ({ childr
             }
         } catch (error) {
             console.error("Failed to start backtest:", error);
+            setActiveBacktestRunId(null);
             setIsRunning(false);
             setIsConfigDisabled(false);
         }
@@ -276,8 +279,11 @@ export const ConfigProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
     const stopBacktest = async (currentRunId?: string) => {
         try {
-            if (currentRunId) {
-                await fetch(`${API_BASE}/backtest/${currentRunId}`, { method: "DELETE" });
+            const runId = currentRunId || activeBacktestRunId;
+            if (runId) {
+                await fetch(`${API_BASE}/backtest/${runId}`, { method: "DELETE" });
+            } else {
+                await fetch(`${API_BASE}/backtest/active/stop`, { method: "POST" });
             }
         } catch (error) { console.error("Failed to stop backtest:", error); }
     };
@@ -347,6 +353,12 @@ export const ConfigProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     useEffect(() => {
         checkLiveStatus();
     }, [checkLiveStatus]);
+
+    useEffect(() => {
+        if (!isRunning) {
+            setActiveBacktestRunId(null);
+        }
+    }, [isRunning]);
 
     // Poll live status while running/stopping so UI reflects state promptly.
     useEffect(() => {

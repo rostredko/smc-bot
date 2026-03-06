@@ -14,6 +14,8 @@ from engine.logger import (
     setup_logging,
     QueueHandler,
     PROJECT_ROOT_LOGGER,
+    ws_log_queue,
+    clear_ws_log_queue,
 )
 
 
@@ -118,3 +120,11 @@ class TestQueueHandler(unittest.TestCase):
         handler.emit(record)
 
         self.assertTrue(q.empty())
+
+    def test_clear_ws_log_queue_drains_messages(self):
+        clear_ws_log_queue()
+        ws_log_queue.put_nowait("line-1")
+        ws_log_queue.put_nowait("line-2")
+        removed = clear_ws_log_queue()
+        self.assertEqual(removed, 2)
+        self.assertTrue(ws_log_queue.empty())

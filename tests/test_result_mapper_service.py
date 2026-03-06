@@ -53,6 +53,27 @@ def test_build_backtest_metrics_doc_uses_trade_sum_for_final_capital():
     assert doc["signals_generated"] == 4
 
 
+def test_build_backtest_metrics_doc_prefers_broker_values_when_available():
+    metrics = {
+        "win_count": 1,
+        "loss_count": 1,
+        "total_trades": 2,
+        "total_pnl": 55.0,
+        "final_capital": 10055.0,
+    }
+    trades = [{"pnl": 50.0}, {"pnl": -20.0}]  # sum=30, intentionally different from broker
+    equity = [{"date": "2026-03-01T00:00:00Z", "equity": 10055.0}]
+    doc = build_backtest_metrics_doc(
+        engine_config={"initial_capital": 10000, "strategy": "bt_price_action"},
+        metrics=metrics,
+        trades_data=trades,
+        equity_data=equity,
+        signals_generated=4,
+    )
+    assert doc["total_pnl"] == 55.0
+    assert doc["final_capital"] == 10055.0
+
+
 def test_build_live_metrics_doc_includes_signals_generated():
     start = datetime(2026, 3, 5, 19, 0, tzinfo=timezone.utc)
     end = start + timedelta(minutes=5)

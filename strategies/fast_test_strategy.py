@@ -66,10 +66,10 @@ class FastTestStrategy(BaseStrategy):
         # Injected by BTLiveEngine tests
         self._stop_event = None
 
-    def _pick_size(self, entry: float, sl_ref: float) -> float:
+    def _pick_size(self, entry: float, sl_ref: float, direction: str | None = None) -> float:
         if self.params.fixed_size > 0:
             return float(self.params.fixed_size)
-        size = float(self._calculate_position_size(entry, sl_ref))
+        size = float(self._calculate_position_size(entry, sl_ref, direction=direction))
         if size > 0:
             return size
         if self.params.min_fallback_size > 0:
@@ -177,7 +177,7 @@ class FastTestStrategy(BaseStrategy):
         if go_long:
             sl_ref = close - sl_dist
             tp_ref = close + tp_dist
-            size = self._pick_size(close, sl_ref)
+            size = self._pick_size(close, sl_ref, direction='long')
             if size <= 0:
                 return
             self.pending_metadata = {
@@ -201,7 +201,7 @@ class FastTestStrategy(BaseStrategy):
 
         sl_ref = close + sl_dist
         tp_ref = close - tp_dist
-        size = self._pick_size(close, sl_ref)
+        size = self._pick_size(close, sl_ref, direction='short')
         if size <= 0:
             return
         self.pending_metadata = {

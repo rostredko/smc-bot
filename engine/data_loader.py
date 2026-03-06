@@ -6,7 +6,7 @@ Handles multi-timeframe data retrieval, caching, and preprocessing.
 import os
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Tuple, Callable, Optional
 
 import ccxt
 import pandas as pd
@@ -65,8 +65,18 @@ class DataLoader:
 
         self.last_request_time = 0.0
         self.min_request_interval = 0.1  # 100ms between requests
+        self.cancel_check: Optional[Callable[[], bool]] = None
 
         self._cache_collection = self._init_db_cache_collection() if self.enable_db_cache else None
+
+    def _is_cancel_requested(self) -> bool:
+        check = self.cancel_check
+        if check is None:
+            return False
+        try:
+            return bool(check())
+        except Exception:
+            return False
 
     def _initialize_exchange(self) -> ccxt.Exchange:
         """Initialize the ccxt exchange client."""
@@ -152,12 +162,26 @@ class DataLoader:
             raise ValueError(f"Unsupported timeframe: {timeframe}")
         return value * multipliers[unit]
 
+    @staticmethod
+    def _to_utc_timestamp(value: str) -> pd.Timestamp:
+        """Parse date/time and normalize to UTC."""
+        ts = pd.Timestamp(value)
+        if ts.tzinfo is None:
+            return ts.tz_localize("UTC")
+        return ts.tz_convert("UTC")
+
+    @classmethod
+    def _to_utc_naive(cls, value: str) -> pd.Timestamp:
+        """Return UTC-normalized timestamp without timezone for dataframe index comparisons."""
+        return cls._to_utc_timestamp(value).tz_localize(None)
+
     def _date_range_to_timestamps(self, start_date: str, end_date: str) -> Tuple[int, int, pd.Timestamp]:
         """Convert YYYY-MM-DD date range to millisecond timestamps (inclusive end)."""
-        start_ts = int(pd.Timestamp(start_date).timestamp() * 1000)
-        end_dt_inclusive = pd.Timestamp(end_date) + pd.Timedelta(days=1) - pd.Timedelta(milliseconds=1)
-        end_ts = int(end_dt_inclusive.timestamp() * 1000)
-        return start_ts, end_ts, end_dt_inclusive
+        start_dt_utc = self._to_utc_timestamp(start_date)
+        end_dt_utc_inclusive = self._to_utc_timestamp(end_date) + pd.Timedelta(days=1) - pd.Timedelta(milliseconds=1)
+        start_ts = int(start_dt_utc.timestamp() * 1000)
+        end_ts = int(end_dt_utc_inclusive.timestamp() * 1000)
+        return start_ts, end_ts, end_dt_utc_inclusive.tz_localize(None)
 
     def _cache_identity(self, symbol: str, timeframe: str) -> Dict[str, str]:
         return {
@@ -252,6 +276,9 @@ class DataLoader:
         retries = 0
 
         while current_ts <= range_end_ts:
+            if self._is_cancel_requested():
+                logger.info(f"Data fetch cancelled for {symbol} {timeframe}")
+                break
             self._rate_limit()
             try:
                 ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe, since=current_ts, limit=1000)
@@ -276,6 +303,9 @@ class DataLoader:
                 current_ts = next_ts
                 retries = 0
             except Exception as e:
+                if self._is_cancel_requested():
+                    logger.info(f"Data fetch cancelled during retry for {symbol} {timeframe}")
+                    break
                 logger.error(f"Error fetching data chunk for {symbol} {timeframe}: {e}")
                 retries += 1
                 if retries >= max_retries_per_chunk:
@@ -316,7 +346,7 @@ class DataLoader:
             return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
 
         df = pd.DataFrame(docs)
-        df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
+        df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True).dt.tz_convert(None)
         df.set_index("timestamp", inplace=True)
         ohlc_cols = ["open", "high", "low", "close", "volume"]
         df[ohlc_cols] = df[ohlc_cols].apply(pd.to_numeric, errors="coerce")
@@ -335,6 +365,9 @@ class DataLoader:
 
         fetched_total = 0
         for gap_start, gap_end in missing_ranges:
+            if self._is_cancel_requested():
+                logger.info(f"Stopping gap fetch due to cancellation: {symbol} {timeframe}")
+                break
             logger.info(
                 f"Fetching {symbol} {timeframe} gap from "
                 f"{pd.to_datetime(gap_start, unit='ms').strftime('%Y-%m-%d %H:%M:%S')} to "
@@ -348,11 +381,13 @@ class DataLoader:
             cached_docs = self._load_cached_docs(symbol, timeframe, start_ts, end_ts)
 
         if not cached_docs:
+            if self._is_cancel_requested():
+                raise RuntimeError(f"Data fetch cancelled for {symbol} {timeframe}")
             raise RuntimeError(f"No data fetched for {symbol} {timeframe}")
 
         df = self._docs_to_dataframe(cached_docs)
-        start_dt = pd.Timestamp(start_date)
-        end_dt = pd.Timestamp(end_date) + pd.Timedelta(days=1) - pd.Timedelta(milliseconds=1)
+        start_dt = self._to_utc_naive(start_date)
+        end_dt = self._to_utc_naive(end_date) + pd.Timedelta(days=1) - pd.Timedelta(milliseconds=1)
         df = df[(df.index >= start_dt) & (df.index <= end_dt)]
 
         if df.empty:
@@ -388,10 +423,12 @@ class DataLoader:
 
         all_data = self._fetch_ohlcv_range(symbol, timeframe, start_ts, end_ts)
         if not all_data:
+            if self._is_cancel_requested():
+                raise RuntimeError(f"Data fetch cancelled for {symbol} {timeframe}")
             raise RuntimeError(f"No data fetched for {symbol} {timeframe}")
 
         df = self._ohlcv_to_dataframe(all_data)
-        start_dt = pd.Timestamp(start_date)
+        start_dt = self._to_utc_naive(start_date)
         df = df[(df.index >= start_dt) & (df.index <= end_dt_inclusive)]
 
         df.to_csv(cache_file)
@@ -426,6 +463,8 @@ class DataLoader:
         Fetch most recent closed bars using REST API for live-engine warm-up.
         Returns a list of dictionaries with standard OHLCV keys.
         """
+        if self._is_cancel_requested():
+            return []
         self._rate_limit()
         logger.info(f"Fetching {limit} recent historical bars for {symbol} {timeframe}...")
         try:
@@ -477,7 +516,7 @@ class DataLoader:
     def _ohlcv_to_dataframe(self, ohlcv: List[List[Any]]) -> pd.DataFrame:
         """Convert OHLCV list to pandas DataFrame."""
         df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
-        df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
+        df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True).dt.tz_convert(None)
         df.set_index("timestamp", inplace=True)
 
         ohlc_cols = ["open", "high", "low", "close", "volume"]
@@ -491,6 +530,8 @@ class DataLoader:
 
     def _rate_limit(self) -> None:
         """Implement rate limiting between requests."""
+        if self._is_cancel_requested():
+            return
         current_time = time.time()
         time_since_last = current_time - self.last_request_time
 

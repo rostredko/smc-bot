@@ -28,6 +28,21 @@ WS_SUPPRESSED_SUBSTRINGS = (
 ws_log_queue: queue.Queue = queue.Queue(maxsize=WS_LOG_QUEUE_MAXSIZE)
 
 
+def clear_ws_log_queue() -> int:
+    """
+    Drain queued WebSocket log lines.
+    Returns number of removed messages.
+    """
+    removed = 0
+    while True:
+        try:
+            ws_log_queue.get_nowait()
+            removed += 1
+        except queue.Empty:
+            break
+    return removed
+
+
 # ── Custom handler that pushes formatted records into ws_log_queue ───────────
 class QueueHandler(logging.Handler):
     """

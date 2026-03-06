@@ -232,6 +232,8 @@ class TestIntegrationBullishEngulfing(unittest.TestCase):
             use_adx_filter=False,
             use_rsi_filter=False,
             risk_reward_ratio=2.0,
+            min_range_factor=0.8,
+            sl_buffer_atr=0.5,
         )
         metrics = engine.run_backtest()
 
@@ -272,6 +274,8 @@ class TestIntegrationBearishEngulfing(unittest.TestCase):
             use_adx_filter=False,
             use_rsi_filter=False,
             risk_reward_ratio=2.0,
+            min_range_factor=0.8,
+            sl_buffer_atr=0.5,
         )
         metrics = engine.run_backtest()
 
@@ -299,6 +303,7 @@ class TestIntegrationHammer(unittest.TestCase):
             df,
             pattern_bullish_engulfing=False,
             pattern_bearish_engulfing=False,
+            min_range_factor=0.8,
         )
 
         self.assertGreater(metrics["total_trades"], 0, "Hammer should trigger Bullish Pinbar")

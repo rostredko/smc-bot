@@ -9,7 +9,6 @@ export interface BacktestConfig {
     initial_capital: number;
     risk_per_trade: number;
     max_drawdown: number;
-    max_positions: number;
     leverage: number;
     symbol: string;
     timeframes: string[];
@@ -67,7 +66,6 @@ export const DEFAULT_CONFIG: BacktestConfig = {
     initial_capital: 10000,
     risk_per_trade: 1.5,
     max_drawdown: 30.0,
-    max_positions: 1,
     leverage: 10.0,
     symbol: "BTC/USDT",
     timeframes: ["4h", "1h"],

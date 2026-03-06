@@ -3,7 +3,6 @@ export const TOOLTIP_HINTS: Record<string, string> = {
     risk_per_trade: "Percentage of capital risked per single trade (e.g. 1.0 = 1%)",
     max_drawdown: "Maximum allowed decline in account equity before stopping",
     leverage: "Multiplier for position size (technical use only, risk is controlled by % per trade)",
-    max_positions: "Maximum number of simultaneous open trades",
 
     symbol: "Trading pair to backtest (e.g. BTC/USDT)",
     start_date: "Backtest start date",

@@ -39,7 +39,6 @@ ENGINE_CONFIG = {
     "exchange_type": "future",
     "initial_capital": 10000,
     "risk_per_trade": 1.0,
-    "max_positions": 1,
     "leverage": 10,
     "max_drawdown": 50,
 }

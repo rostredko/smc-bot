@@ -61,7 +61,7 @@ class BaseStrategy(bt.Strategy):
             dt = self.data.datetime.datetime(0)
         return dt.replace(tzinfo=datetime.timezone.utc).astimezone().strftime('%Y-%m-%d %H:%M:%S')
 
-    def _calculate_position_size(self, entry_price, stop_loss):
+    def _calculate_position_size(self, entry_price, stop_loss, direction=None):
         return RiskManager.calculate_position_size(
             account_value=self.broker.getvalue(),
             risk_per_trade_pct=self.params.risk_per_trade,
@@ -71,6 +71,7 @@ class BaseStrategy(bt.Strategy):
             dynamic_sizing=self.params.dynamic_position_sizing,
             max_drawdown_pct=self.params.max_drawdown,
             position_cap_adverse=getattr(self.params, 'position_cap_adverse', 0.5),
+            direction=direction,
         )
 
     def _update_equity_peak(self):
@@ -115,6 +116,9 @@ class BaseStrategy(bt.Strategy):
         return self.trade_map.get(trade_ref, {})
 
     def notify_order(self, order):
+        if isinstance(self.order, list):
+            self.order = self.order[0] if self.order else None
+
         if order.status in (order.Submitted, order.Accepted):
             return
 
@@ -126,9 +130,6 @@ class BaseStrategy(bt.Strategy):
                 logger.info(f"[{dt_str}] BUY EXECUTED, Price: {exec_price:.2f}, Cost: {order.executed.value:.2f}, Comm {order.executed.comm:.2f}")
             elif order.issell():
                 logger.info(f"[{dt_str}] SELL EXECUTED, Price: {exec_price:.2f}, Cost: {order.executed.value:.2f}, Comm {order.executed.comm:.2f}")
-
-            if isinstance(self.order, list):
-                self.order = self.order[0]
 
             if order == self.order:
                 self.order = None

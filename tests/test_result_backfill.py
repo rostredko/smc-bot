@@ -41,8 +41,14 @@ def test_legacy_result_backfill_adds_configuration():
     assert "strategy_config" in cfg
     sc = cfg["strategy_config"]
     assert sc.get("trend_ema_period") == 200
+    assert sc.get("use_rsi_filter") is True
     assert sc.get("rsi_period") == 14
+    assert sc.get("use_adx_filter") is True
     assert sc.get("adx_period") == 14
+    assert sc.get("adx_threshold") == 30
+    assert sc.get("min_range_factor") == 1.2
+    assert sc.get("risk_reward_ratio") == 2.0
+    assert sc.get("sl_buffer_atr") == 1.5
 
     persisted = BacktestRepository().get_by_id(run_id)
     assert "configuration" in persisted

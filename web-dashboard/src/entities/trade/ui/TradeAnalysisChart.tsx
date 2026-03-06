@@ -16,7 +16,7 @@ const PLOT_RIGHT_MARGIN = 10;
 function toIso(input: string | null | undefined): string {
     if (!input) return '';
     const normalized = input.replace(' ', 'T');
-    if (/[zZ]$/.test(normalized) || /[+\-]\d{2}:\d{2}$/.test(normalized)) {
+    if (/[zZ]$/.test(normalized) || /[-+]\d{2}:\d{2}$/.test(normalized)) {
         return normalized;
     }
     return `${normalized}Z`;
@@ -41,17 +41,33 @@ interface TradeAnalysisChartProps {
     height?: number;
 }
 
+function extractPatternLabel(trade: any): string {
+    const line: string | undefined = trade?.entry_context?.why_entry?.[0];
+    if (typeof line === 'string' && line.trim().length > 0) {
+        const prefix = 'Pattern: ';
+        if (line.startsWith(prefix)) {
+            return line.slice(prefix.length);
+        }
+        return line;
+    }
+    const reason: string | undefined = trade?.reason;
+    if (typeof reason === 'string' && reason.trim().length > 0) {
+        return reason;
+    }
+    return 'Unknown pattern';
+}
+
 const TradeAnalysisChart: React.FC<TradeAnalysisChartProps> = ({
     trades,
     onTradeClick,
     height = 300,
 }) => {
     const containerRef = useRef<HTMLDivElement>(null);
-    const { x, y, colors, customdata } = useMemo(() => {
+    const { x, y, colors, customdata, maxAbsPnl } = useMemo(() => {
         if (!trades || trades.length === 0) {
-            return { x: [], y: [], colors: [], customdata: [] };
+            return { x: [], y: [], colors: [], customdata: [], maxAbsPnl: 0 };
         }
-        return trades.reduce(
+        const aggregated = trades.reduce(
             (acc, trade, index) => {
                 const pnl = trade.pnl ?? 0;
                 acc.x.push(index + 1);
@@ -59,12 +75,18 @@ const TradeAnalysisChart: React.FC<TradeAnalysisChartProps> = ({
                 acc.colors.push(pnl >= 0 ? '#26a69a' : '#ef5350');
                 acc.customdata.push({
                     date: toUtcDateTimeDisplay(trade.entry_time),
+                    pattern: extractPatternLabel(trade),
                     fullTrade: trade,
                 });
                 return acc;
             },
             { x: [] as number[], y: [] as number[], colors: [] as string[], customdata: [] as any[] }
         );
+        const maxAbs = aggregated.y.reduce(
+            (max: number, value: number) => Math.max(max, Math.abs(value)),
+            0
+        );
+        return { ...aggregated, maxAbsPnl: maxAbs };
     }, [trades]);
 
     const handleContainerClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
@@ -89,10 +111,11 @@ const TradeAnalysisChart: React.FC<TradeAnalysisChartProps> = ({
             x,
             y,
             marker: { color: colors },
-            customdata: customdata.map((d: { date: string; fullTrade: any }) => [d.date, d.fullTrade]),
+            customdata: customdata.map((d: { date: string; pattern: string; fullTrade: any }) => [d.date, d.pattern, d.fullTrade]),
             hovertemplate: [
                 '<b>Trade #%{x}</b><br>',
                 'Date (UTC): %{customdata[0]}<br>',
+                'Pattern: <b>%{customdata[1]}</b><br>',
                 'PnL: <b>$%{y:.2f}</b>',
                 '<br><i>Click for details</i>',
                 '<extra></extra>',
@@ -101,33 +124,42 @@ const TradeAnalysisChart: React.FC<TradeAnalysisChartProps> = ({
         },
     ], [x, y, colors, customdata]);
 
-    const plotLayout = useMemo(() => ({
-        template: 'plotly_dark',
-        paper_bgcolor: 'rgba(0,0,0,0)',
-        plot_bgcolor: 'rgba(0,0,0,0)',
-        height,
-        margin: { t: 10, b: 40, l: 60, r: 10 },
-        font: { color: '#ccc', size: 11, family: 'Inter, system-ui, sans-serif' },
-        bargap: 0.15,
-        xaxis: {
-            title: { text: 'Trade #', standoff: 8 },
-            gridcolor: '#2a2a2a',
-            linecolor: '#333',
-            tickmode: 'linear' as any,
-            dtick: Math.max(1, Math.ceil(x.length / 20)),
-        },
-        yaxis: {
-            title: { text: 'PnL ($)', standoff: 8 },
-            gridcolor: '#2a2a2a',
-            linecolor: '#333',
-            zeroline: true,
-            zerolinecolor: '#555',
-            tickprefix: '$',
-            tickformat: '.0f',
-        },
-        showlegend: false,
-        hovermode: 'closest',
-    }), [height, x.length]);
+    const plotLayout = useMemo(() => {
+        let yTickFormat: string = '.0f';
+        if (maxAbsPnl < 1) {
+            yTickFormat = '.2f';
+        } else if (maxAbsPnl < 10) {
+            yTickFormat = '.1f';
+        }
+
+        return {
+            template: 'plotly_dark',
+            paper_bgcolor: 'rgba(0,0,0,0)',
+            plot_bgcolor: 'rgba(0,0,0,0)',
+            height,
+            margin: { t: 10, b: 40, l: 60, r: 10 },
+            font: { color: '#ccc', size: 11, family: 'Inter, system-ui, sans-serif' },
+            bargap: 0.15,
+            xaxis: {
+                title: { text: 'Trade #', standoff: 8 },
+                gridcolor: '#2a2a2a',
+                linecolor: '#333',
+                tickmode: 'linear' as any,
+                dtick: Math.max(1, Math.ceil(x.length / 20)),
+            },
+            yaxis: {
+                title: { text: 'PnL ($)', standoff: 8 },
+                gridcolor: '#2a2a2a',
+                linecolor: '#333',
+                zeroline: true,
+                zerolinecolor: '#555',
+                tickprefix: '$',
+                tickformat: yTickFormat,
+            },
+            showlegend: false,
+            hovermode: 'closest',
+        };
+    }, [height, x.length, maxAbsPnl]);
 
     const plotConfig = useMemo(() => ({
         displayModeBar: false,
