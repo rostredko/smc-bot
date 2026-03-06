@@ -50,6 +50,7 @@ const BacktestHistoryList: React.FC = () => {
     const [selectedTrade, setSelectedTrade] = useState<any | null>(null);
     const [isTradeModalOpen, setIsTradeModalOpen] = useState(false);
     const [tradeModalConfig, setTradeModalConfig] = useState<{ symbol: string; timeframes: string[]; strategyConfig: Record<string, any>; exchangeType: string; backtestStart?: string; backtestEnd?: string } | null>(null);
+    const [tradeModalTrades, setTradeModalTrades] = useState<any[]>([]);
     const [expandedForChart, setExpandedForChart] = useState<Record<string, boolean>>({});
 
     const loadData = useCallback(async (currentPage: number = 1) => {
@@ -122,9 +123,10 @@ const BacktestHistoryList: React.FC = () => {
         return undefined;
     }, []);
 
-    const handleTradeClick = useCallback((trade: any, config?: any, isLive: boolean = false) => {
+    const handleTradeClick = useCallback((trade: any, configOrResults?: any, isLive: boolean = false) => {
         if (trade) {
             setSelectedTrade(trade);
+            const config = configOrResults?.configuration ?? configOrResults;
             setTradeModalConfig(config ? {
                 symbol: getConfigValue(config, 'symbol') ?? 'BTC/USDT',
                 timeframes: (() => {
@@ -136,6 +138,7 @@ const BacktestHistoryList: React.FC = () => {
                 backtestStart: isLive ? undefined : getConfigValue(config, 'start_date'),
                 backtestEnd: isLive ? undefined : getConfigValue(config, 'end_date'),
             } : null);
+            setTradeModalTrades(configOrResults?.trades ?? []);
             setIsTradeModalOpen(true);
         }
     }, [getConfigValue]);
@@ -407,7 +410,7 @@ const BacktestHistoryList: React.FC = () => {
                                                                             <TradeAnalysisChart
                                                                                 key={item.filename}
                                                                                 trades={detailedResults[item.filename].trades}
-                                                                                onTradeClick={(t) => handleTradeClick(t, detailedResults[item.filename].configuration ?? item.configuration, !!item.is_live)}
+                                                                                onTradeClick={(t) => handleTradeClick(t, detailedResults[item.filename], !!item.is_live)}
                                                                                 height={200}
                                                                             />
                                                                         ) : (
@@ -486,6 +489,8 @@ const BacktestHistoryList: React.FC = () => {
                     open={isTradeModalOpen}
                     onClose={() => setIsTradeModalOpen(false)}
                     selectedTrade={selectedTrade}
+                    trades={tradeModalTrades}
+                    onSelectTrade={setSelectedTrade}
                     symbol={tradeModalConfig?.symbol ?? 'BTC/USDT'}
                     timeframes={tradeModalConfig?.timeframes ?? ['1h']}
                     strategyConfig={tradeModalConfig?.strategyConfig ?? {}}

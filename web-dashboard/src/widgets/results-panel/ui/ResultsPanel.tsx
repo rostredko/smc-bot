@@ -85,7 +85,7 @@ const MemoizedPieChart = React.memo(({ data }: { data: any[] }) => (
 ));
 
 const ResultsPanel: React.FC = () => {
-    const { results, equityData, pieData, handleBarClick, selectedTrade, isTradeModalOpen, setIsTradeModalOpen } = useResultsContext();
+    const { results, equityData, pieData, handleBarClick, selectedTrade, setSelectedTrade, isTradeModalOpen, setIsTradeModalOpen } = useResultsContext();
 
     // useMemo must run before early return (rules of hooks)
     const chartSymbol = useMemo(
@@ -126,6 +126,8 @@ const ResultsPanel: React.FC = () => {
                     open={isTradeModalOpen}
                     onClose={() => setIsTradeModalOpen(false)}
                     selectedTrade={selectedTrade}
+                    trades={results?.trades ?? []}
+                    onSelectTrade={setSelectedTrade}
                     symbol={chartSymbol}
                     timeframes={chartTimeframes}
                     strategyConfig={chartStrategyConfig}

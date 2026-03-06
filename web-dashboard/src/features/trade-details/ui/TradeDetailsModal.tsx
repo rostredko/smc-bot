@@ -12,9 +12,10 @@ import {
     Stack,
     Divider,
     Button,
-    CircularProgress
+    CircularProgress,
+    IconButton
 } from '@mui/material';
-import { InfoOutlined } from '@mui/icons-material';
+import { InfoOutlined, ChevronLeft, ChevronRight } from '@mui/icons-material';
 import MuiTooltip from '@mui/material/Tooltip';
 import { API_BASE } from '../../../shared/api/config';
 
@@ -24,6 +25,8 @@ interface TradeDetailsModalProps {
     open: boolean;
     onClose: () => void;
     selectedTrade: any | null;
+    trades?: any[];
+    onSelectTrade?: (trade: any) => void;
     symbol?: string;
     timeframes?: string[];
     strategyConfig?: Record<string, any>;
@@ -97,6 +100,8 @@ const TradeDetailsModal: React.FC<TradeDetailsModalProps> = ({
     open,
     onClose,
     selectedTrade,
+    trades = [],
+    onSelectTrade,
     symbol = 'BTC/USDT',
     timeframes = ['1h'],
     strategyConfig = {},
@@ -120,6 +125,33 @@ const TradeDetailsModal: React.FC<TradeDetailsModalProps> = ({
 
     const [indicatorsAtExitFallback, setIndicatorsAtExitFallback] = useState<Record<string, number> | null>(null);
     const [indicatorsAtExitLoading, setIndicatorsAtExitLoading] = useState(false);
+
+    const { currentIndex, canPrev, canNext } = useMemo(() => {
+        if (!selectedTrade || !trades?.length || !onSelectTrade) {
+            return { currentIndex: -1, canPrev: false, canNext: false };
+        }
+        const idx = trades.findIndex((t: any) => t?.id === selectedTrade?.id);
+        return {
+            currentIndex: idx,
+            canPrev: idx > 0,
+            canNext: idx >= 0 && idx < trades.length - 1,
+        };
+    }, [selectedTrade, trades, onSelectTrade]);
+
+    useEffect(() => {
+        if (!open || !onSelectTrade) return;
+        const handleKeyDown = (e: KeyboardEvent) => {
+            if (e.key === 'ArrowLeft' && canPrev && trades[currentIndex - 1]) {
+                e.preventDefault();
+                onSelectTrade(trades[currentIndex - 1]);
+            } else if (e.key === 'ArrowRight' && canNext && trades[currentIndex + 1]) {
+                e.preventDefault();
+                onSelectTrade(trades[currentIndex + 1]);
+            }
+        };
+        window.addEventListener('keydown', handleKeyDown);
+        return () => window.removeEventListener('keydown', handleKeyDown);
+    }, [open, onSelectTrade, canPrev, canNext, currentIndex, trades]);
 
     useEffect(() => {
         const needFetch = open && selectedTrade?.exit_time &&
@@ -197,6 +229,8 @@ const TradeDetailsModal: React.FC<TradeDetailsModalProps> = ({
             onClose={onClose}
             maxWidth="lg"
             fullWidth
+            disableScrollLock
+            disableAutoFocus
             PaperProps={{
                 sx: { bgcolor: '#1e1e1e', color: '#fff' }
             }}
@@ -204,8 +238,30 @@ const TradeDetailsModal: React.FC<TradeDetailsModalProps> = ({
             {selectedTrade && (
                 <>
                     <DialogTitle component="div" sx={{ borderBottom: '1px solid #333', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <Box display="flex" alignItems="center" gap={2}>
+                        <Box display="flex" alignItems="center" gap={1}>
+                            {trades.length > 1 && onSelectTrade && (
+                                <IconButton
+                                    size="small"
+                                    onClick={() => canPrev && onSelectTrade(trades[currentIndex - 1])}
+                                    disabled={!canPrev}
+                                    sx={{ color: '#fff', '&.Mui-disabled': { color: 'rgba(255,255,255,0.3)' } }}
+                                    aria-label="Previous trade"
+                                >
+                                    <ChevronLeft />
+                                </IconButton>
+                            )}
                             <Typography variant="h6">Trade #{selectedTrade.id}</Typography>
+                            {trades.length > 1 && onSelectTrade && (
+                                <IconButton
+                                    size="small"
+                                    onClick={() => canNext && onSelectTrade(trades[currentIndex + 1])}
+                                    disabled={!canNext}
+                                    sx={{ color: '#fff', '&.Mui-disabled': { color: 'rgba(255,255,255,0.3)' } }}
+                                    aria-label="Next trade"
+                                >
+                                    <ChevronRight />
+                                </IconButton>
+                            )}
                             <Chip
                                 label={selectedTrade.direction?.toUpperCase()}
                                 color={selectedTrade.direction === 'LONG' ? 'success' : 'error'}
