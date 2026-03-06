@@ -143,6 +143,7 @@ class TestFullE2EPriceAction(unittest.TestCase):
                 'rsi_period': tracer_rsi,
                 'risk_reward_ratio': 2.0,
                 'use_trend_filter': False, # Simplify for deterministic trigger
+                'use_structure_filter': False,
                 'use_adx_filter': False
             },
             'results_file': os.path.join(self.RESULTS_DIR, f"{run_name}.json"),

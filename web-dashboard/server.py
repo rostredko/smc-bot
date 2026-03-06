@@ -954,7 +954,7 @@ async def run_live_trading_task(config: Dict[str, Any]):
                             trades_for_chart,
                             live_engine_config,
                             data_loader=loader,
-                            context_bars=25,
+                            context_bars=DEFAULT_CHART_CONTEXT_BARS,
                         )
                 if len(trades_data) > chart_limit > 0:
                     logger.debug(f"chart_data added to first {chart_limit} live trades (total {len(trades_data)} — MongoDB size limit)")
@@ -1131,7 +1131,12 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
                 chart_limit = 75
                 trades_for_chart = trades_data[:chart_limit] if len(trades_data) > chart_limit else trades_data
                 try:
-                    _build_chart_data_for_trades(trades_for_chart, engine_config, data_loader=engine.data_loader, context_bars=25)
+                    _build_chart_data_for_trades(
+                        trades_for_chart,
+                        engine_config,
+                        data_loader=engine.data_loader,
+                        context_bars=DEFAULT_CHART_CONTEXT_BARS,
+                    )
                     if len(trades_data) > chart_limit:
                         logger.info(f"chart_data added to first {chart_limit} trades only (total {len(trades_data)} — MongoDB size limit)")
                 except Exception as chart_err:
@@ -1348,6 +1353,7 @@ def _build_ohlcv_indicator_key(
     adx_period: int,
     adx_threshold: float,
     atr_period: int,
+    fractal_period: int,
 ) -> str:
     effective_ema_tf = ema_timeframe if ema_timeframe else timeframe
     return (
@@ -1355,6 +1361,7 @@ def _build_ohlcv_indicator_key(
         f"_rsi{rsi_period}-{rsi_overbought}-{rsi_oversold}"
         f"_adx{adx_period}-{adx_threshold}"
         f"_atr{atr_period}"
+        f"_fr{fractal_period}"
     )
 
 
@@ -1375,12 +1382,112 @@ _TF_MS: dict = {
     "1w": 604_800_000,
 }
 
+DEFAULT_CHART_CONTEXT_BARS = 65  # Previous 45 + 20 bars
+
+
+def _compute_market_structure_levels(
+    highs: Any,
+    lows: Any,
+    closes: Any,
+    pivot_span: int = 2,
+) -> tuple[list[float], list[float], list[float]]:
+    """
+    Compute swing high/low + BOS structure (same idea as strategy MarketStructure).
+    Returns three arrays aligned with input bars: sh_level, sl_level, structure.
+    """
+    span = max(1, int(pivot_span))
+    count = min(len(highs), len(lows), len(closes))
+    nan = float("nan")
+
+    sh_out = [nan] * count
+    sl_out = [nan] * count
+    st_out = [0.0] * count
+
+    last_sh: Optional[float] = None
+    last_sl: Optional[float] = None
+    structure = 0.0
+
+    for i in range(count):
+        if i >= span * 2:
+            c_idx = i - span
+            cand_high = float(highs[c_idx])
+            cand_low = float(lows[c_idx])
+            is_pivot_high = True
+            is_pivot_low = True
+
+            for off in range(1, span + 1):
+                if cand_high <= float(highs[c_idx - off]) or cand_high <= float(highs[c_idx + off]):
+                    is_pivot_high = False
+                if cand_low >= float(lows[c_idx - off]) or cand_low >= float(lows[c_idx + off]):
+                    is_pivot_low = False
+
+            if is_pivot_high:
+                last_sh = cand_high
+            if is_pivot_low:
+                last_sl = cand_low
+
+        close_val = float(closes[i])
+        if last_sh is not None and close_val > last_sh:
+            structure = 1.0
+        elif last_sl is not None and close_val < last_sl:
+            structure = -1.0
+        elif structure == 0.0:
+            if last_sh is not None and last_sl is not None:
+                structure = 1.0 if close_val >= ((last_sh + last_sl) / 2.0) else -1.0
+            elif last_sh is not None:
+                structure = -1.0 if close_val < last_sh else 1.0
+            elif last_sl is not None:
+                structure = 1.0 if close_val > last_sl else -1.0
+
+        sh_out[i] = last_sh if last_sh is not None else nan
+        sl_out[i] = last_sl if last_sl is not None else nan
+        st_out[i] = structure
+
+    return sh_out, sl_out, st_out
+
+
+def _compute_fractal_markers(
+    highs: Any,
+    lows: Any,
+    pivot_span: int = 2,
+) -> tuple[list[float], list[float]]:
+    """
+    Compute TradingView-like fractal markers (strict pivot high/low).
+    Returns arrays aligned to bars:
+      - fractal_high: value at pivot-high bar, NaN otherwise
+      - fractal_low: value at pivot-low bar, NaN otherwise
+    """
+    span = max(1, int(pivot_span))
+    count = min(len(highs), len(lows))
+    nan = float("nan")
+    fr_high = [nan] * count
+    fr_low = [nan] * count
+
+    for c_idx in range(span, count - span):
+        cand_high = float(highs[c_idx])
+        cand_low = float(lows[c_idx])
+        is_fr_high = True
+        is_fr_low = True
+
+        for off in range(1, span + 1):
+            if cand_high <= float(highs[c_idx - off]) or cand_high <= float(highs[c_idx + off]):
+                is_fr_high = False
+            if cand_low >= float(lows[c_idx - off]) or cand_low >= float(lows[c_idx + off]):
+                is_fr_low = False
+
+        if is_fr_high:
+            fr_high[c_idx] = cand_high
+        if is_fr_low:
+            fr_low[c_idx] = cand_low
+
+    return fr_high, fr_low
+
 
 def _build_chart_data_for_trades(
     trades: List[Dict],
     config: Dict[str, Any],
     data_loader: Optional[Any] = None,
-    context_bars: int = 25,
+    context_bars: int = DEFAULT_CHART_CONTEXT_BARS,
 ) -> None:
     """
     Enrich each trade with chart_data (candles + indicators) from the SAME DataLoader
@@ -1409,7 +1516,9 @@ def _build_chart_data_for_trades(
 
     chart_tf = min(timeframes, key=lambda t: _TF_MS.get(t, 3600000)) if timeframes else "1h"
     ema_tf = max(timeframes, key=lambda t: _TF_MS.get(t, 0)) if len(timeframes) > 1 else chart_tf
-    ema_period = (strat_cfg.get("trend_ema_period", 200) or 200) if strat_cfg.get("use_trend_filter", True) else 0
+    structure_tf = ema_tf
+    ema_enabled = bool(strat_cfg.get("use_trend_filter", True) or strat_cfg.get("use_ema_filter", False))
+    ema_period = (strat_cfg.get("trend_ema_period", 200) or 200) if ema_enabled else 0
     use_rsi = bool(strat_cfg.get("use_rsi_filter", True) or strat_cfg.get("use_rsi_momentum", False))
     rsi_period = (strat_cfg.get("rsi_period", 14) or 14) if use_rsi else 0
     rsi_overbought = strat_cfg.get("rsi_overbought", 70) or 70
@@ -1418,6 +1527,7 @@ def _build_chart_data_for_trades(
     adx_period = (strat_cfg.get("adx_period", 14) or 14) if use_adx else 0
     adx_threshold = strat_cfg.get("adx_threshold", 30) or 30
     atr_period = strat_cfg.get("atr_period", 14) or 14
+    ms_pivot_span = max(1, int(strat_cfg.get("market_structure_pivot_span", 2) or 2))
 
     if not start_date or not end_date:
         return
@@ -1452,6 +1562,23 @@ def _build_chart_data_for_trades(
         indicators_raw["adx"] = talib.ADX(highs, lows, closes, timeperiod=adx_period)
     if atr_period > 0:
         indicators_raw["atr"] = talib.ATR(highs, lows, closes, timeperiod=atr_period)
+    fr_high, fr_low = _compute_fractal_markers(highs, lows, pivot_span=ms_pivot_span)
+    indicators_raw["fractal_high"] = fr_high
+    indicators_raw["fractal_low"] = fr_low
+    if structure_tf != chart_tf:
+        df_ms = loader.get_data(symbol, structure_tf, start_date, end_date)
+        if df_ms is not None and not df_ms.empty:
+            ms_ts = [int(ts.timestamp() * 1000) for ts in df_ms.index]
+            ms_highs = df_ms["high"].values.astype(float)
+            ms_lows = df_ms["low"].values.astype(float)
+            ms_closes = df_ms["close"].values.astype(float)
+            ms_sh, ms_sl, ms_st = _compute_market_structure_levels(ms_highs, ms_lows, ms_closes, pivot_span=ms_pivot_span)
+            indicators_raw["_ms_htf"] = (ms_ts, ms_sh, ms_sl, ms_st)
+    else:
+        ms_sh, ms_sl, ms_st = _compute_market_structure_levels(highs, lows, closes, pivot_span=ms_pivot_span)
+        indicators_raw["sh_level"] = ms_sh
+        indicators_raw["sl_level"] = ms_sl
+        indicators_raw["structure"] = ms_st
 
     def to_ms(iso: str) -> int:
         dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
@@ -1470,7 +1597,25 @@ def _build_chart_data_for_trades(
         until_ms = to_ms(exit_iso) + pad_ms
 
         out_candles = []
-        out_indicators = {"ema": [], "rsi": [], "adx": [], "atr": []}
+        out_indicators = {
+            "ema": [], "rsi": [], "adx": [], "atr": [],
+            "sh_level": [], "sl_level": [], "structure": [],
+            "fractal_high": [], "fractal_low": [],
+        }
+
+        ema_htf_ts = []
+        ema_htf_vals = []
+        ema_htf_idx = -1
+        if "_ema_htf" in indicators_raw:
+            ema_htf_ts, ema_htf_vals = indicators_raw["_ema_htf"]
+
+        ms_htf_ts = []
+        ms_htf_sh = []
+        ms_htf_sl = []
+        ms_htf_st = []
+        ms_htf_idx = -1
+        if "_ms_htf" in indicators_raw:
+            ms_htf_ts, ms_htf_sh, ms_htf_sl, ms_htf_st = indicators_raw["_ms_htf"]
 
         for i, ts_ms in enumerate(timestamps):
             if ts_ms < since_ms:
@@ -1486,7 +1631,7 @@ def _build_chart_data_for_trades(
                 "close": float(closes[i]),
                 "volume": float(volumes[i]),
             })
-            for key in ["rsi", "adx", "atr"]:
+            for key in ["rsi", "adx", "atr", "sh_level", "sl_level", "structure", "fractal_high", "fractal_low"]:
                 if key in indicators_raw:
                     arr = indicators_raw[key]
                     val = float(arr[i]) if i < len(arr) and not np.isnan(arr[i]) else None
@@ -1497,12 +1642,22 @@ def _build_chart_data_for_trades(
                 val = float(arr[i]) if i < len(arr) and not np.isnan(arr[i]) else None
                 if val is not None:
                     out_indicators["ema"].append({"time": dt_iso, "value": val})
-            elif "_ema_htf" in indicators_raw:
-                htf_ts, htf_ema = indicators_raw["_ema_htf"]
-                candidates = [idx for idx in range(len(htf_ts)) if htf_ts[idx] <= ts_ms]
-                j = candidates[-1] if candidates else 0
-                if j < len(htf_ema) and not np.isnan(htf_ema[j]):
-                    out_indicators["ema"].append({"time": dt_iso, "value": float(htf_ema[j])})
+            elif ema_htf_ts:
+                while (ema_htf_idx + 1) < len(ema_htf_ts) and ema_htf_ts[ema_htf_idx + 1] <= ts_ms:
+                    ema_htf_idx += 1
+                if ema_htf_idx >= 0 and ema_htf_idx < len(ema_htf_vals) and not np.isnan(ema_htf_vals[ema_htf_idx]):
+                    out_indicators["ema"].append({"time": dt_iso, "value": float(ema_htf_vals[ema_htf_idx])})
+
+            if ms_htf_ts:
+                while (ms_htf_idx + 1) < len(ms_htf_ts) and ms_htf_ts[ms_htf_idx + 1] <= ts_ms:
+                    ms_htf_idx += 1
+                if ms_htf_idx >= 0:
+                    if ms_htf_idx < len(ms_htf_sh) and not np.isnan(ms_htf_sh[ms_htf_idx]):
+                        out_indicators["sh_level"].append({"time": dt_iso, "value": float(ms_htf_sh[ms_htf_idx])})
+                    if ms_htf_idx < len(ms_htf_sl) and not np.isnan(ms_htf_sl[ms_htf_idx]):
+                        out_indicators["sl_level"].append({"time": dt_iso, "value": float(ms_htf_sl[ms_htf_idx])})
+                    if ms_htf_idx < len(ms_htf_st) and not np.isnan(ms_htf_st[ms_htf_idx]):
+                        out_indicators["structure"].append({"time": dt_iso, "value": float(ms_htf_st[ms_htf_idx])})
 
         indicators_out = {}
         if out_indicators["ema"]:
@@ -1522,6 +1677,16 @@ def _build_chart_data_for_trades(
             }
         if out_indicators["atr"]:
             indicators_out["atr"] = {"values": out_indicators["atr"], "period": atr_period}
+        if out_indicators["sh_level"]:
+            indicators_out["sh_level"] = {"values": out_indicators["sh_level"], "timeframe": structure_tf}
+        if out_indicators["sl_level"]:
+            indicators_out["sl_level"] = {"values": out_indicators["sl_level"], "timeframe": structure_tf}
+        if out_indicators["structure"]:
+            indicators_out["structure"] = {"values": out_indicators["structure"], "timeframe": structure_tf}
+        if out_indicators["fractal_high"]:
+            indicators_out["fractal_high"] = {"values": out_indicators["fractal_high"], "period": ms_pivot_span, "timeframe": chart_tf}
+        if out_indicators["fractal_low"]:
+            indicators_out["fractal_low"] = {"values": out_indicators["fractal_low"], "period": ms_pivot_span, "timeframe": chart_tf}
 
         trade["chart_data"] = {"candles": out_candles, "indicators": indicators_out}
 
@@ -1563,7 +1728,7 @@ async def get_ohlcv(
     timeframe: str = "1h",
     start: str = "",
     end: str = "",
-    context_bars: int = 25,
+    context_bars: int = DEFAULT_CHART_CONTEXT_BARS,
     exchange_type: str = "future",
     backtest_start: str = "",
     backtest_end: str = "",
@@ -1575,11 +1740,12 @@ async def get_ohlcv(
     adx_period: int = 0,
     adx_threshold: float = 25,
     atr_period: int = 0,
+    fractal_period: int = 2,
 ):
     """
     Fetch OHLCV candlestick data + optional TA-Lib indicators.
     Indicator params (pass 0 to skip): ema_period, rsi_period, adx_period, atr_period.
-    Returns candles and indicators (ema, rsi, adx, atr) with values per bar.
+    Returns candles and indicators (ema, rsi, adx, atr, sh_level, sl_level, structure, fractal_high, fractal_low) with values per bar.
     """
     with suppress_ws_logging():
         return await _get_ohlcv_impl(
@@ -1589,6 +1755,7 @@ async def get_ohlcv(
             ema_period=ema_period, ema_timeframe=ema_timeframe,
             rsi_period=rsi_period, rsi_overbought=rsi_overbought, rsi_oversold=rsi_oversold,
             adx_period=adx_period, adx_threshold=adx_threshold, atr_period=atr_period,
+            fractal_period=fractal_period,
         )
 
 
@@ -1599,6 +1766,7 @@ async def _get_ohlcv_impl(
     ema_period: int, ema_timeframe: str,
     rsi_period: int, rsi_overbought: float, rsi_oversold: float,
     adx_period: int, adx_threshold: float, atr_period: int,
+    fractal_period: int,
 ):
     try:
         def to_ms(iso_str: str) -> int:
@@ -1609,6 +1777,8 @@ async def _get_ohlcv_impl(
 
         bar_ms = _TF_MS.get(timeframe, 3_600_000)
         pad_ms = bar_ms * max(1, context_bars)
+        structure_tf = ema_timeframe if ema_timeframe else timeframe
+        ms_pivot_span = max(1, int(fractal_period or 2))
 
         if start:
             since_ms = to_ms(start) - pad_ms
@@ -1633,6 +1803,7 @@ async def _get_ohlcv_impl(
             adx_period=adx_period,
             adx_threshold=adx_threshold,
             atr_period=atr_period,
+            fractal_period=ms_pivot_span,
         )
         use_cache = not (backtest_start and backtest_end)  # Never cache backtest requests — always use fresh DataLoader data
         cache_key = _ohlcv_cache_key(symbol, timeframe, since_ms, until_ms) + f"|{exchange_type}|" + ind_key
@@ -1756,6 +1927,73 @@ async def _get_ohlcv_impl(
                 if atr_period > 0:
                     indicators_raw["atr"] = talib.ATR(highs, lows, closes, timeperiod=atr_period)
 
+            fr_high, fr_low = _compute_fractal_markers(highs, lows, pivot_span=ms_pivot_span)
+            indicators_raw["fractal_high"] = fr_high
+            indicators_raw["fractal_low"] = fr_low
+
+            if structure_tf != timeframe:
+                htf_bar_ms = _TF_MS.get(structure_tf, bar_ms)
+                htf_fetch_ms = since_ms - htf_bar_ms * 200
+                htf_limit = max(1, int((until_ms - htf_fetch_ms) / htf_bar_ms)) + 5
+                if use_loader and backtest_start and backtest_end:
+                    df_htf = loader.get_data(symbol, structure_tf, backtest_start[:10], backtest_end[:10])
+                    if df_htf is not None and not df_htf.empty:
+                        htf_highs = df_htf["high"].values.astype(float)
+                        htf_lows = df_htf["low"].values.astype(float)
+                        htf_closes = df_htf["close"].values.astype(float)
+                        htf_timestamps = [int(ts.timestamp() * 1000) for ts in df_htf.index]
+                    else:
+                        htf_highs = np.array([])
+                        htf_lows = np.array([])
+                        htf_closes = np.array([])
+                        htf_timestamps = []
+                else:
+                    raw_htf = exchange.fetch_ohlcv(
+                        fetch_symbol, structure_tf,
+                        since=htf_fetch_ms,
+                        limit=min(htf_limit, 1000),
+                    )
+                    raw_htf_arr = np.array(raw_htf, dtype=float) if raw_htf else np.array([])
+                    if raw_htf_arr.size > 0:
+                        htf_highs = raw_htf_arr[:, 2]
+                        htf_lows = raw_htf_arr[:, 3]
+                        htf_closes = raw_htf_arr[:, 4]
+                        htf_timestamps = raw_htf_arr[:, 0].astype(int).tolist()
+                    else:
+                        htf_highs = np.array([])
+                        htf_lows = np.array([])
+                        htf_closes = np.array([])
+                        htf_timestamps = []
+
+                if len(htf_closes) > 0:
+                    htf_sh, htf_sl, htf_st = _compute_market_structure_levels(
+                        htf_highs, htf_lows, htf_closes, pivot_span=ms_pivot_span
+                    )
+                    sh_series: list = []
+                    sl_series: list = []
+                    st_series: list = []
+                    for j, ts_ms_htf in enumerate(htf_timestamps):
+                        if ts_ms_htf < since_ms or ts_ms_htf > until_ms:
+                            continue
+                        iso = datetime.fromtimestamp(ts_ms_htf / 1000, tz=timezone.utc).isoformat()
+                        if j < len(htf_sh) and not np.isnan(htf_sh[j]):
+                            sh_series.append({"time": iso, "value": float(htf_sh[j])})
+                        if j < len(htf_sl) and not np.isnan(htf_sl[j]):
+                            sl_series.append({"time": iso, "value": float(htf_sl[j])})
+                        if j < len(htf_st) and not np.isnan(htf_st[j]):
+                            st_series.append({"time": iso, "value": float(htf_st[j])})
+                    if sh_series:
+                        indicators_out["sh_level"] = {"values": sh_series, "timeframe": structure_tf}
+                    if sl_series:
+                        indicators_out["sl_level"] = {"values": sl_series, "timeframe": structure_tf}
+                    if st_series:
+                        indicators_out["structure"] = {"values": st_series, "timeframe": structure_tf}
+            else:
+                ms_sh, ms_sl, ms_st = _compute_market_structure_levels(highs, lows, closes, pivot_span=ms_pivot_span)
+                indicators_raw["sh_level"] = ms_sh
+                indicators_raw["sl_level"] = ms_sl
+                indicators_raw["structure"] = ms_st
+
             candles = []
             indicator_series: dict = {k: [] for k in indicators_raw}
 
@@ -1806,6 +2044,33 @@ async def _get_ohlcv_impl(
                 indicators_out["atr"] = {
                     "values": indicator_series["atr"],
                     "period": atr_period,
+                }
+            if "sh_level" in indicator_series and indicator_series["sh_level"]:
+                indicators_out["sh_level"] = {
+                    "values": indicator_series["sh_level"],
+                    "timeframe": structure_tf,
+                }
+            if "sl_level" in indicator_series and indicator_series["sl_level"]:
+                indicators_out["sl_level"] = {
+                    "values": indicator_series["sl_level"],
+                    "timeframe": structure_tf,
+                }
+            if "structure" in indicator_series and indicator_series["structure"]:
+                indicators_out["structure"] = {
+                    "values": indicator_series["structure"],
+                    "timeframe": structure_tf,
+                }
+            if "fractal_high" in indicator_series and indicator_series["fractal_high"]:
+                indicators_out["fractal_high"] = {
+                    "values": indicator_series["fractal_high"],
+                    "period": ms_pivot_span,
+                    "timeframe": timeframe,
+                }
+            if "fractal_low" in indicator_series and indicator_series["fractal_low"]:
+                indicators_out["fractal_low"] = {
+                    "values": indicator_series["fractal_low"],
+                    "period": ms_pivot_span,
+                    "timeframe": timeframe,
                 }
 
             return {"candles": candles, "indicators": indicators_out}

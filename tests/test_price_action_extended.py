@@ -47,17 +47,27 @@ class TestPriceActionExtended(unittest.TestCase):
         self.strategy.params.rsi_oversold = 30
         self.strategy.params.rsi_momentum_threshold = 60
         self.strategy.params.adx_threshold = 21
-        self.strategy.params.use_trend_filter = True
+        self.strategy.params.use_trend_filter = False
+        self.strategy.params.use_structure_filter = True
+        self.strategy.params.use_ema_filter = False
         self.strategy.params.use_rsi_filter = True
         self.strategy.params.use_rsi_momentum = True
         self.strategy.params.use_adx_filter = True
         self.strategy.params.risk_reward_ratio = 2.5
+        self.strategy.params.structural_sl_buffer_atr = 0.1
+        self.strategy.params.sl_buffer_atr = 1.5
+        self.strategy.params.use_opposing_level_tp = False
+        self.strategy.params.poi_zone_upper_atr_mult = 0.3
+        self.strategy.params.poi_zone_lower_atr_mult = 0.2
+        self.strategy.params.use_ltf_choch_trigger = True
+        self.strategy.params.ltf_choch_entry_window_bars = 6
+        self.strategy.params.ltf_choch_arm_timeout_bars = 24
 
         # Mock indicators as simple lists/arrays that support [0]
-        self.strategy.close = [100.0]
-        self.strategy.open = [100.0]
-        self.strategy.high = [100.0]
-        self.strategy.low = [100.0]
+        self.strategy.close_line = [101.0]
+        self.strategy.open_line = [100.0]
+        self.strategy.high_line = [102.0]
+        self.strategy.low_line = [99.0]
         self.strategy.atr = [10.0]
         self.strategy.rsi = [55.0] 
         self.strategy.adx = [25.0] 
@@ -67,6 +77,12 @@ class TestPriceActionExtended(unittest.TestCase):
         htf_mock.close = [90.0]  # Default: close < ema → bearish
         self.strategy.data_htf = htf_mock
         self.strategy.ema_htf = [100.0]  # EMA above close → bearish
+
+        ms_mock = MagicMock()
+        ms_mock.structure = [1.0]
+        ms_mock.sl_level = [100.0]
+        ms_mock.sh_level = [120.0]
+        self.strategy.ms_4h = ms_mock
         
         ltf_mock = MagicMock()
         ltf_mock.__len__ = MagicMock(return_value=300)
@@ -77,12 +93,15 @@ class TestPriceActionExtended(unittest.TestCase):
 
         # Mock trade map
         self.strategy.trade_map = {}
+        self.strategy._long_choch_trigger_bar = 300
+        self.strategy._short_choch_trigger_bar = 300
 
     def test_filter_rsi_momentum_long(self):
         """Test RSI Momentum Logic for Long entries"""
-        # For long: data_htf.close > ema_htf (bullish trend)
-        self.strategy.data_htf.close = [110.0]
-        self.strategy.ema_htf = [100.0]
+        # For long: bullish structure + price in POI zone around 4H SL
+        self.strategy.ms_4h.structure = [1.0]
+        self.strategy.ms_4h.sl_level = [100.0]
+        self.strategy.close_line = [101.0]
         
         # Case 1: RSI = 55 (Too weak, threshold is 60)
         self.strategy.rsi = [55.0]
@@ -95,9 +114,10 @@ class TestPriceActionExtended(unittest.TestCase):
     def test_filter_rsi_momentum_short(self):
         """Test RSI Momentum Logic for Short entries"""
         # Threshold 60 means short threshold is 100-60 = 40.
-        # For short: data_htf.close < ema_htf (bearish trend)
-        self.strategy.data_htf.close = [80.0]
-        self.strategy.ema_htf = [90.0]
+        # For short: bearish structure + price in POI zone around 4H SH
+        self.strategy.ms_4h.structure = [-1.0]
+        self.strategy.ms_4h.sh_level = [100.0]
+        self.strategy.close_line = [101.0]
         
         # Case 1: RSI = 45 (Too weak, must be < 40)
         self.strategy.rsi = [45.0]
@@ -106,6 +126,25 @@ class TestPriceActionExtended(unittest.TestCase):
         # Case 2: RSI = 35 (Strong bearish, < 40)
         self.strategy.rsi = [35.0]
         self.assertTrue(self.strategy._check_filters_short(), "Should pass: RSI 35 < bearish_threshold 40")
+
+    def test_long_requires_recent_ltf_choch_trigger(self):
+        """Bullish setup requires a recent LTF CHoCH trigger when enabled."""
+        self.strategy.ms_4h.structure = [1.0]
+        self.strategy.ms_4h.sl_level = [100.0]
+        self.strategy.close_line = [104.0]  # Outside [98, 103] for ATR=10
+        self.strategy.rsi = [65.0]
+        self.strategy._long_choch_trigger_bar = -1
+        self.assertFalse(self.strategy._check_filters_long(), "Should fail: no CHoCH trigger")
+
+        self.strategy._long_choch_trigger_bar = 300
+        self.assertTrue(self.strategy._check_filters_long(), "Should pass: recent CHoCH trigger is present")
+
+    def test_structural_long_sl_uses_4h_level(self):
+        """SL should be anchored to HTF structural level when available."""
+        sl_price, sl_distance, sl_expr = self.strategy._resolve_structural_sl_long(entry_price=101.0)
+        self.assertAlmostEqual(sl_price, 99.0, places=6)
+        self.assertAlmostEqual(sl_distance, 2.0, places=6)
+        self.assertIn("SL_Level_4H", sl_expr)
 
 if __name__ == '__main__':
     unittest.main()

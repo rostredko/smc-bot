@@ -64,7 +64,7 @@ class TestBaseEngineBrokerSetup(unittest.TestCase):
             "leverage": 5.0,
         }
         engine = BTBacktestEngine(config)
-        engine.add_strategy(PriceActionStrategy, use_trend_filter=False, use_adx_filter=False, use_rsi_filter=False)
+        engine.add_strategy(PriceActionStrategy, use_trend_filter=False, use_structure_filter=False, use_adx_filter=False, use_rsi_filter=False)
         engine.add_data()
         results = engine.run()
         self.assertIsNotNone(results)
@@ -108,7 +108,7 @@ class TestBaseEngineAddStrategy(unittest.TestCase):
             "end_date": "2024-01-31",
         }
         engine = BTBacktestEngine(config)
-        engine.add_strategy(PriceActionStrategy, use_trend_filter=False, use_adx_filter=False, use_rsi_filter=False)
+        engine.add_strategy(PriceActionStrategy, use_trend_filter=False, use_structure_filter=False, use_adx_filter=False, use_rsi_filter=False)
         engine.add_data()
         results = engine.run()
         self.assertIsInstance(results[0], PriceActionStrategy)
@@ -127,7 +127,7 @@ class TestBaseEngineRun(unittest.TestCase):
             "end_date": "2024-01-31",
         }
         engine = BTBacktestEngine(config)
-        engine.add_strategy(PriceActionStrategy, use_trend_filter=False, use_adx_filter=False, use_rsi_filter=False)
+        engine.add_strategy(PriceActionStrategy, use_trend_filter=False, use_structure_filter=False, use_adx_filter=False, use_rsi_filter=False)
         engine.add_data()
         results = engine.run()
         self.assertIsInstance(results, list)

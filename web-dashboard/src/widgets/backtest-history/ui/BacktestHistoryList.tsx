@@ -77,11 +77,6 @@ const BacktestHistoryList: React.FC = () => {
     }, [loadData, page]);
 
     useEffect(() => {
-        const interval = setInterval(() => loadData(page), 10000);
-        return () => clearInterval(interval);
-    }, [loadData, page]);
-
-    useEffect(() => {
         setExpandedForChart({});
     }, [page]);
 

@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useMemo } from 'react';
+import React, { useEffect, useState, useMemo, useRef } from 'react';
 import Plot from 'react-plotly.js';
 import { Box, CircularProgress, Typography } from '@mui/material';
 import { API_BASE } from '../../../shared/api/config';
@@ -19,6 +19,10 @@ interface OHLCVResponse {
         ema?: IndicatorSeries;
         rsi?: IndicatorSeries;
         adx?: IndicatorSeries;
+        atr?: IndicatorSeries;
+        fractal_high?: IndicatorSeries;
+        fractal_low?: IndicatorSeries;
+        structure?: IndicatorSeries;
     };
 }
 
@@ -41,6 +45,8 @@ function toIso(str: string | null | undefined): string {
     return s;
 }
 
+const CHART_CONTEXT_BARS = 65;
+
 const TradeOHLCVChart: React.FC<TradeOHLCVChartProps> = ({
     trade,
     symbol,
@@ -56,34 +62,84 @@ const TradeOHLCVChart: React.FC<TradeOHLCVChartProps> = ({
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const [chartError, setChartError] = useState<string | null>(null);
+    const lastLoadedKeyRef = useRef<string>('');
 
     const indParams = useMemo(() => {
         const cfg = strategyConfig;
         const hasConfig = cfg && Object.keys(cfg).length > 0;
         const useDefaults = !hasConfig;
+        const emaEnabled = useDefaults || cfg?.use_trend_filter || cfg?.use_ema_filter;
         const rsiEnabled = useDefaults || cfg.use_rsi_filter || cfg.use_rsi_momentum;
         const adxEnabled = useDefaults || cfg.use_adx_filter;
         return {
-            emaPeriod: useDefaults || cfg.use_trend_filter ? (cfg?.trend_ema_period ?? 200) : 0,
+            emaPeriod: emaEnabled ? (cfg?.trend_ema_period ?? 200) : 0,
             rsiPeriod: rsiEnabled ? (cfg?.rsi_period ?? 14) : 0,
             rsiOb: cfg?.rsi_overbought ?? 70,
             rsiOs: cfg?.rsi_oversold ?? 30,
             adxPeriod: adxEnabled ? (cfg?.adx_period ?? 14) : 0,
             adxThreshold: cfg?.adx_threshold ?? 30,
+            fractalPeriod: cfg?.market_structure_pivot_span ?? 2,
         };
     }, [strategyConfig]);
 
+    const requestKey = useMemo(() => {
+        if (!trade) return '';
+        const entryIso = toIso(trade.entry_time);
+        const exitIso = toIso(trade.exit_time);
+        return [
+            String(trade.id ?? ''),
+            entryIso,
+            exitIso,
+            symbol,
+            timeframe,
+            emaTimeframe ?? '',
+            exchangeType,
+            backtestStart ?? '',
+            backtestEnd ?? '',
+            indParams.emaPeriod,
+            indParams.rsiPeriod,
+            indParams.rsiOb,
+            indParams.rsiOs,
+            indParams.adxPeriod,
+            indParams.adxThreshold,
+            indParams.fractalPeriod,
+        ].join('|');
+    }, [
+        trade?.id,
+        trade?.entry_time,
+        trade?.exit_time,
+        symbol,
+        timeframe,
+        emaTimeframe,
+        exchangeType,
+        backtestStart,
+        backtestEnd,
+        indParams,
+    ]);
+
     useEffect(() => {
-        if (!trade) return;
+        if (!trade || !requestKey) return;
+
+        if (lastLoadedKeyRef.current === requestKey && data) {
+            return;
+        }
 
         let cancelled = false;
+        const controller = new AbortController();
         setLoading(true);
         setError(null);
 
         if (trade.chart_data?.candles?.length) {
-            setData(trade.chart_data as OHLCVResponse);
-            setLoading(false);
-            return;
+            const cached = trade.chart_data as OHLCVResponse;
+            const hasFractals =
+                Boolean(cached?.indicators?.fractal_high?.values?.length) ||
+                Boolean(cached?.indicators?.fractal_low?.values?.length);
+            if (hasFractals) {
+                setData(cached);
+                lastLoadedKeyRef.current = requestKey;
+                setLoading(false);
+                return;
+            }
         }
 
         const entryIso = toIso(trade.entry_time);
@@ -92,7 +148,7 @@ const TradeOHLCVChart: React.FC<TradeOHLCVChartProps> = ({
         const params = new URLSearchParams({
             symbol,
             timeframe,
-            context_bars: '25',
+            context_bars: String(CHART_CONTEXT_BARS),
             exchange_type: exchangeType,
             ...(backtestStart ? { backtest_start: backtestStart } : {}),
             ...(backtestEnd ? { backtest_end: backtestEnd } : {}),
@@ -105,18 +161,33 @@ const TradeOHLCVChart: React.FC<TradeOHLCVChartProps> = ({
             rsi_oversold: String(indParams.rsiOs),
             adx_period: String(indParams.adxPeriod),
             adx_threshold: String(indParams.adxThreshold),
+            fractal_period: String(indParams.fractalPeriod),
         });
 
-        fetch(`${API_BASE}/api/ohlcv?${params}`)
+        fetch(`${API_BASE}/api/ohlcv?${params}`, { signal: controller.signal })
             .then(res => {
                 if (!res.ok) throw new Error(`HTTP ${res.status}`);
                 return res.json() as Promise<OHLCVResponse>;
             })
-            .then(d => { if (!cancelled) { setData(d); setLoading(false); } })
-            .catch(err => { if (!cancelled) { setError(err.message ?? 'Failed to load'); setLoading(false); } });
+            .then(d => {
+                if (!cancelled) {
+                    setData(d);
+                    lastLoadedKeyRef.current = requestKey;
+                    setLoading(false);
+                }
+            })
+            .catch(err => {
+                if (cancelled) return;
+                if (err?.name === 'AbortError') return;
+                setError(err.message ?? 'Failed to load');
+                setLoading(false);
+            });
 
-        return () => { cancelled = true; };
-    }, [trade, symbol, timeframe, emaTimeframe, exchangeType, backtestStart, backtestEnd, indParams]);
+        return () => {
+            cancelled = true;
+            controller.abort();
+        };
+    }, [requestKey, trade?.chart_data]);
 
     const figure = useMemo(() => {
         try {
@@ -128,6 +199,7 @@ const TradeOHLCVChart: React.FC<TradeOHLCVChartProps> = ({
             const highs = candles.map(c => c.high);
             const lows = candles.map(c => c.low);
             const closes = candles.map(c => c.close);
+            const timeMs = times.map(t => new Date(t).getTime());
 
             const hasRsi = indParams.rsiPeriod > 0 && Boolean(indicators.rsi?.values?.length);
             const hasAdx = indParams.adxPeriod > 0 && Boolean(indicators.adx?.values?.length);
@@ -170,21 +242,88 @@ const TradeOHLCVChart: React.FC<TradeOHLCVChartProps> = ({
                 });
             }
 
+            if (indicators.fractal_high?.values?.length) {
+                const frHighData = indicators.fractal_high;
+                const frHighLabel = `Fractal High${frHighData.timeframe ? ` (${frHighData.timeframe})` : ''}`;
+                traces.push({
+                    type: 'scatter',
+                    x: frHighData.values.map(p => p.time),
+                    y: frHighData.values.map(p => p.value),
+                    mode: 'markers',
+                    name: frHighLabel,
+                    xaxis: 'x', yaxis: 'y',
+                    marker: {
+                        symbol: 'square',
+                        size: 7,
+                        color: '#00c853',
+                        line: { color: '#0b3d0b', width: 0.8 },
+                    },
+                    hovertemplate: `${frHighLabel}: $%{y:.2f}<extra></extra>`,
+                    opacity: 0.9,
+                });
+            }
+
+            if (indicators.fractal_low?.values?.length) {
+                const frLowData = indicators.fractal_low;
+                const frLowLabel = `Fractal Low${frLowData.timeframe ? ` (${frLowData.timeframe})` : ''}`;
+                traces.push({
+                    type: 'scatter',
+                    x: frLowData.values.map(p => p.time),
+                    y: frLowData.values.map(p => p.value),
+                    mode: 'markers',
+                    name: frLowLabel,
+                    xaxis: 'x', yaxis: 'y',
+                    marker: {
+                        symbol: 'square',
+                        size: 7,
+                        color: '#ff1744',
+                        line: { color: '#5a0c16', width: 0.8 },
+                    },
+                    hovertemplate: `${frLowLabel}: $%{y:.2f}<extra></extra>`,
+                    opacity: 0.9,
+                });
+            }
+
+            const directionRaw = String(trade.direction ?? '').toUpperCase();
+            const inferredLong = directionRaw
+                ? ['LONG', 'BUY'].includes(directionRaw)
+                : Number(trade.exit_price) >= Number(trade.entry_price);
+            const isLongTrade = inferredLong;
             const isWin = trade.pnl >= 0;
+
+            const snapToDisplayedBar = (iso: string): string => {
+                const normalized = toIso(iso);
+                const targetMs = new Date(normalized).getTime();
+                if (!Number.isFinite(targetMs) || !times.length) return normalized;
+                if (targetMs <= timeMs[0]) return times[0];
+                let idx = 0;
+                for (let i = 0; i < timeMs.length; i++) {
+                    if (timeMs[i] <= targetMs) idx = i;
+                    else break;
+                }
+                return times[idx];
+            };
+
+            const entryMarkerTime = snapToDisplayedBar(trade.entry_time);
+            const exitMarkerTime = snapToDisplayedBar(trade.exit_time);
+            const entryMarkerSymbol = isLongTrade ? 'triangle-up' : 'triangle-down';
+            const exitMarkerSymbol = isLongTrade ? 'triangle-down' : 'triangle-up';
+            const entryMarkerColor = isLongTrade ? '#4caf50' : '#f44336';
+
             traces.push(
                 {
                     type: 'scatter', xaxis: 'x', yaxis: 'y',
-                    x: [toIso(trade.entry_time)], y: [trade.entry_price],
+                    x: [entryMarkerTime], y: [trade.entry_price],
                     mode: 'markers', name: 'Entry',
-                    marker: { symbol: 'triangle-up', size: 14, color: '#4caf50', line: { color: '#fff', width: 1 } },
-                    hovertemplate: `<b>ENTRY</b><br>$${trade.entry_price?.toFixed(2)}<extra></extra>`,
+                    marker: { symbol: entryMarkerSymbol, size: 14, color: entryMarkerColor, line: { color: '#fff', width: 1 } },
+                    hovertemplate: `<b>ENTRY</b><br>$${trade.entry_price?.toFixed(2)}<br>${entryMarkerTime}<extra></extra>`,
                 },
                 {
                     type: 'scatter', xaxis: 'x', yaxis: 'y',
-                    x: [toIso(trade.exit_time)], y: [trade.exit_price],
+                    x: [exitMarkerTime], y: [trade.exit_price],
                     mode: 'markers', name: 'Exit',
-                    marker: { symbol: 'triangle-down', size: 14, color: isWin ? '#4caf50' : '#f44336', line: { color: '#fff', width: 1 } },
-                    hovertemplate: `<b>EXIT</b> (${trade.exit_reason || 'Unknown'})<br>$${trade.exit_price?.toFixed(2)}<extra></extra>`,
+                    marker: { symbol: exitMarkerSymbol, size: 14, color: isWin ? '#4caf50' : '#f44336', line: { color: '#fff', width: 1 } },
+                    hovertemplate: `<b>EXIT</b> (${trade.exit_reason || 'Unknown'})<br>$${trade.exit_price?.toFixed(2)}<br>${exitMarkerTime}<extra></extra>`,
                 }
             );
 

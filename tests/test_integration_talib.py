@@ -183,6 +183,7 @@ def _run_backtest_with_patterns(
     engine = BTBacktestEngine(config)
     defaults = {
         "use_trend_filter": False,
+        "use_structure_filter": False,
         "use_adx_filter": False,
         "use_rsi_filter": False,
         "risk_reward_ratio": 2.0,
@@ -228,8 +229,7 @@ class TestIntegrationBullishEngulfing(unittest.TestCase):
         engine = BTBacktestEngine(config)
         engine.add_strategy(
             PriceActionStrategy,
-            use_trend_filter=False,
-            use_adx_filter=False,
+            use_trend_filter=False, use_structure_filter=False, use_adx_filter=False,
             use_rsi_filter=False,
             risk_reward_ratio=2.0,
             min_range_factor=0.8,
@@ -270,8 +270,7 @@ class TestIntegrationBearishEngulfing(unittest.TestCase):
         engine = BTBacktestEngine(config)
         engine.add_strategy(
             PriceActionStrategy,
-            use_trend_filter=False,
-            use_adx_filter=False,
+            use_trend_filter=False, use_structure_filter=False, use_adx_filter=False,
             use_rsi_filter=False,
             risk_reward_ratio=2.0,
             min_range_factor=0.8,
@@ -411,8 +410,7 @@ class TestIntegrationNoPattern(unittest.TestCase):
         engine = BTBacktestEngine(config)
         engine.add_strategy(
             PriceActionStrategy,
-            use_trend_filter=False,
-            use_adx_filter=False,
+            use_trend_filter=False, use_structure_filter=False, use_adx_filter=False,
             use_rsi_filter=False,
             pattern_hammer=False,
             pattern_inverted_hammer=False,
@@ -455,8 +453,7 @@ class TestIntegrationStopLoss(unittest.TestCase):
         engine = BTBacktestEngine(config)
         engine.add_strategy(
             PriceActionStrategy,
-            use_trend_filter=False,
-            use_adx_filter=False,
+            use_trend_filter=False, use_structure_filter=False, use_adx_filter=False,
             use_rsi_filter=False,
             risk_reward_ratio=2.0,
         )
@@ -501,8 +498,7 @@ class TestIntegrationDualTimeframe(unittest.TestCase):
         engine = BTBacktestEngine(config)
         engine.add_strategy(
             PriceActionStrategy,
-            use_trend_filter=False,
-            use_adx_filter=False,
+            use_trend_filter=False, use_structure_filter=False, use_adx_filter=False,
             use_rsi_filter=False,
         )
         metrics = engine.run_backtest()
@@ -517,10 +513,10 @@ class TestIntegrationDualTimeframe(unittest.TestCase):
 @pytest.mark.engine
 @patch("engine.bt_backtest_engine.DataLoader")
 class TestIntegrationWithFilters(unittest.TestCase):
-    """Strategy with EMA/RSI/ADX filters — indicators must compute correctly."""
+    """Strategy filters integration — EMA remains optional switch."""
 
-    def test_trend_filter_blocks_trade_in_downtrend(self, mock_dataloader_cls):
-        """When price is below EMA(200), long signals should be blocked."""
+    def test_optional_ema_filter_blocks_trade_in_downtrend(self, mock_dataloader_cls):
+        """When optional EMA filter is enabled and price is below EMA(200), longs are blocked."""
         df = _make_base_df(periods=350, flat=False)
         for i in range(350):
             if i < 200:
@@ -547,13 +543,13 @@ class TestIntegrationWithFilters(unittest.TestCase):
         engine = BTBacktestEngine(config)
         engine.add_strategy(
             PriceActionStrategy,
-            use_trend_filter=True,
+            use_trend_filter=False, use_structure_filter=False, use_ema_filter=True,
             use_adx_filter=False,
             use_rsi_filter=False,
         )
         metrics = engine.run_backtest()
 
-        self.assertEqual(metrics["total_trades"], 0, "EMA filter should block long in downtrend")
+        self.assertEqual(metrics["total_trades"], 0, "Optional EMA filter should block long in downtrend")
 
 
 @pytest.mark.integration

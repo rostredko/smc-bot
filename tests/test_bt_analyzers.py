@@ -49,7 +49,7 @@ class TestTradeListAnalyzer(unittest.TestCase):
     def test_produces_valid_structure(self):
         """TradeListAnalyzer produces records with required fields."""
         cerebro = bt.Cerebro()
-        cerebro.addstrategy(PriceActionStrategy, use_trend_filter=False, use_adx_filter=False, use_rsi_filter=False)
+        cerebro.addstrategy(PriceActionStrategy, use_trend_filter=False, use_structure_filter=False, use_adx_filter=False, use_rsi_filter=False)
         cerebro.addanalyzer(TradeListAnalyzer, _name="tradelist")
 
         data = bt.feeds.PandasData(dataname=_mock_df())
@@ -88,7 +88,7 @@ class TestTradeListAnalyzer(unittest.TestCase):
     def test_ignores_open_trades(self):
         """Only closed trades are recorded."""
         cerebro = bt.Cerebro()
-        cerebro.addstrategy(PriceActionStrategy, use_trend_filter=False, use_adx_filter=False, use_rsi_filter=False)
+        cerebro.addstrategy(PriceActionStrategy, use_trend_filter=False, use_structure_filter=False, use_adx_filter=False, use_rsi_filter=False)
         cerebro.addanalyzer(TradeListAnalyzer, _name="tradelist")
 
         data = bt.feeds.PandasData(dataname=_mock_df(20))
@@ -118,7 +118,7 @@ class TestTradeListAnalyzer(unittest.TestCase):
     def test_get_analysis_returns_list(self):
         """get_analysis returns a list."""
         cerebro = bt.Cerebro()
-        cerebro.addstrategy(PriceActionStrategy, use_trend_filter=False, use_adx_filter=False, use_rsi_filter=False)
+        cerebro.addstrategy(PriceActionStrategy, use_trend_filter=False, use_structure_filter=False, use_adx_filter=False, use_rsi_filter=False)
         cerebro.addanalyzer(TradeListAnalyzer, _name="tradelist")
         cerebro.adddata(bt.feeds.PandasData(dataname=_mock_df(50)))
 
@@ -133,7 +133,7 @@ class TestEquityCurveAnalyzer(unittest.TestCase):
     def test_records_during_backtest(self):
         """Equity curve has entries with timestamp and equity."""
         cerebro = bt.Cerebro()
-        cerebro.addstrategy(PriceActionStrategy, use_trend_filter=False, use_adx_filter=False, use_rsi_filter=False)
+        cerebro.addstrategy(PriceActionStrategy, use_trend_filter=False, use_structure_filter=False, use_adx_filter=False, use_rsi_filter=False)
         cerebro.addanalyzer(EquityCurveAnalyzer, _name="equity")
 
         data = bt.feeds.PandasData(dataname=_mock_df(50))
@@ -150,7 +150,7 @@ class TestEquityCurveAnalyzer(unittest.TestCase):
     def test_equity_values_non_negative(self):
         """Equity values are non-negative."""
         cerebro = bt.Cerebro()
-        cerebro.addstrategy(PriceActionStrategy, use_trend_filter=False, use_adx_filter=False, use_rsi_filter=False)
+        cerebro.addstrategy(PriceActionStrategy, use_trend_filter=False, use_structure_filter=False, use_adx_filter=False, use_rsi_filter=False)
         cerebro.addanalyzer(EquityCurveAnalyzer, _name="equity")
 
         data = bt.feeds.PandasData(dataname=_mock_df(50))

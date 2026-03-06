@@ -20,6 +20,7 @@ import MuiTooltip from '@mui/material/Tooltip';
 import { API_BASE } from '../../../shared/api/config';
 
 const TradeOHLCVChart = lazy(() => import('../../../entities/trade/ui/TradeOHLCVChart'));
+const CHART_CONTEXT_BARS = 65;
 
 interface TradeDetailsModalProps {
     open: boolean;
@@ -84,6 +85,33 @@ function utcDiffFromLocalLabel(str: string | null | undefined): string {
     return `${sign}${hours}h ${minutes}m from local`;
 }
 
+function extractEntryPatternLabel(trade: any): string {
+    const whyEntry = Array.isArray(trade?.entry_context?.why_entry)
+        ? trade.entry_context.why_entry
+        : [];
+
+    const patternLine = whyEntry.find((line: unknown) =>
+        typeof line === 'string' && line.startsWith('Pattern: ')
+    ) as string | undefined;
+
+    if (patternLine && patternLine.length > 'Pattern: '.length) {
+        return patternLine.slice('Pattern: '.length).trim();
+    }
+
+    const firstWhyEntry = whyEntry.find((line: unknown) =>
+        typeof line === 'string' && line.trim().length > 0
+    ) as string | undefined;
+
+    if (firstWhyEntry) {
+        return firstWhyEntry.trim();
+    }
+
+    const reason = typeof trade?.reason === 'string' ? trade.reason.trim() : '';
+    if (reason) return reason;
+
+    return 'Unknown pattern';
+}
+
 function valueAtTime(series: Array<{ time: string; value: number }> | undefined, targetIso: string): number | null {
     if (!series?.length || !targetIso) return null;
     const targetMs = new Date(targetIso).getTime();
@@ -111,14 +139,22 @@ const TradeDetailsModal: React.FC<TradeDetailsModalProps> = ({
 }) => {
     const chartTimeframe = pickSmallestTimeframe(timeframes);
     const emaTimeframe = pickLargestTimeframe(timeframes);
+    const [selectedChartTimeframe, setSelectedChartTimeframe] = useState<string | null>(null);
+    const activeChartTimeframe = selectedChartTimeframe || chartTimeframe;
+    const entryPatternLabel = useMemo(
+        () => extractEntryPatternLabel(selectedTrade),
+        [selectedTrade]
+    );
+
     const indParams = useMemo(() => {
         const cfg = strategyConfig;
         const hasConfig = cfg && Object.keys(cfg).length > 0;
         const useDefaults = !hasConfig;
+        const emaEnabled = useDefaults || cfg?.use_trend_filter || cfg?.use_ema_filter;
         const rsiEnabled = useDefaults || cfg?.use_rsi_filter || cfg?.use_rsi_momentum;
         const adxEnabled = useDefaults || cfg?.use_adx_filter;
         return {
-            emaPeriod: useDefaults || cfg?.use_trend_filter ? (cfg?.trend_ema_period ?? 200) : 0,
+            emaPeriod: emaEnabled ? (cfg?.trend_ema_period ?? 200) : 0,
             rsiPeriod: rsiEnabled ? (cfg?.rsi_period ?? 14) : 0,
             rsiOverbought: cfg?.rsi_overbought ?? 70,
             rsiOversold: cfg?.rsi_oversold ?? 30,
@@ -142,6 +178,11 @@ const TradeDetailsModal: React.FC<TradeDetailsModalProps> = ({
             canNext: idx >= 0 && idx < trades.length - 1,
         };
     }, [selectedTrade, trades, onSelectTrade]);
+
+    // Reset selected timeframe when trade changes or modal opens
+    useEffect(() => {
+        setSelectedChartTimeframe(null);
+    }, [selectedTrade?.id, open]);
 
     useEffect(() => {
         if (!open || !onSelectTrade) return;
@@ -169,6 +210,7 @@ const TradeDetailsModal: React.FC<TradeDetailsModalProps> = ({
         }
 
         let cancelled = false;
+        const controller = new AbortController();
         setIndicatorsAtExitLoading(true);
         setIndicatorsAtExitFallback(null);
 
@@ -181,10 +223,10 @@ const TradeDetailsModal: React.FC<TradeDetailsModalProps> = ({
 
         const params = new URLSearchParams({
             symbol,
-            timeframe: chartTimeframe,
+            timeframe: activeChartTimeframe,
             start: startIso,
             end: endIso,
-            context_bars: '25',
+            context_bars: String(CHART_CONTEXT_BARS),
             exchange_type: exchangeType || 'future',
             ema_period: String(indParams.emaPeriod),
             ...(emaTimeframe ? { ema_timeframe: emaTimeframe } : {}),
@@ -198,7 +240,7 @@ const TradeDetailsModal: React.FC<TradeDetailsModalProps> = ({
             ...(backtestEnd ? { backtest_end: backtestEnd } : {}),
         });
 
-        fetch(`${API_BASE}/api/ohlcv?${params}`)
+        fetch(`${API_BASE}/api/ohlcv?${params}`, { signal: controller.signal })
             .then(res => { if (!res.ok) throw new Error(`HTTP ${res.status}`); return res.json(); })
             .then((d: { candles?: Array<{ time: string }>; indicators?: Record<string, { values?: Array<{ time: string; value: number }>; period?: number }> }) => {
                 if (cancelled) return;
@@ -222,11 +264,18 @@ const TradeDetailsModal: React.FC<TradeDetailsModalProps> = ({
                 }
                 setIndicatorsAtExitFallback(Object.keys(ind).length ? ind : null);
             })
-            .catch(() => { if (!cancelled) setIndicatorsAtExitFallback(null); })
+            .catch((err: { name?: string }) => {
+                if (cancelled) return;
+                if (err?.name === 'AbortError') return;
+                setIndicatorsAtExitFallback(null);
+            })
             .finally(() => { if (!cancelled) setIndicatorsAtExitLoading(false); });
 
-        return () => { cancelled = true; };
-    }, [open, selectedTrade?.exit_time, selectedTrade?.exit_context?.indicators_at_exit, symbol, chartTimeframe, emaTimeframe, exchangeType, backtestStart, backtestEnd, indParams]);
+        return () => {
+            cancelled = true;
+            controller.abort();
+        };
+    }, [open, selectedTrade?.exit_time, selectedTrade?.exit_context?.indicators_at_exit, symbol, activeChartTimeframe, emaTimeframe, exchangeType, backtestStart, backtestEnd, indParams]);
 
     return (
         <Dialog
@@ -278,6 +327,22 @@ const TradeDetailsModal: React.FC<TradeDetailsModalProps> = ({
                                 color={selectedTrade.pnl >= 0 ? "success" : "error"}
                                 size="small"
                             />
+                            <Chip
+                                label={entryPatternLabel}
+                                size="small"
+                                variant="outlined"
+                                sx={{
+                                    borderColor: 'rgba(144,202,249,0.45)',
+                                    color: '#90caf9',
+                                    maxWidth: 320,
+                                    '& .MuiChip-label': {
+                                        overflow: 'hidden',
+                                        textOverflow: 'ellipsis',
+                                        whiteSpace: 'nowrap',
+                                    },
+                                }}
+                                title={entryPatternLabel}
+                            />
                         </Box>
                         <Typography variant="h5" color={selectedTrade.pnl >= 0 ? "success.main" : "error.main"}>
                             {selectedTrade.pnl >= 0 ? "+" : ""}${selectedTrade.pnl?.toFixed(2)} ({selectedTrade.pnl_percent?.toFixed(2)}%)
@@ -288,21 +353,46 @@ const TradeDetailsModal: React.FC<TradeDetailsModalProps> = ({
 
                             <Grid item xs={12}>
                                 <Paper variant="outlined" sx={{ p: 0, bgcolor: '#181818', borderColor: '#333', overflow: 'hidden' }}>
-                                    <Typography
-                                        variant="caption"
-                                        sx={{ color: '#fff', opacity: 0.6, display: 'block', px: 2, pt: 1.5, pb: 0.5 }}
-                                    >
-                                        PRICE CHART · {symbol} · {chartTimeframe.toUpperCase()} · UTC
-                                    </Typography>
+                                    <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', px: 2, pt: 1.5, pb: 0.5 }}>
+                                        <Typography variant="caption" sx={{ color: '#fff', opacity: 0.6 }}>
+                                            PRICE CHART · {symbol} · {activeChartTimeframe.toUpperCase()} · UTC
+                                        </Typography>
+                                        {timeframes && timeframes.length > 1 && (
+                                            <Box sx={{ display: 'flex', gap: 1 }}>
+                                                {timeframes.map((tf) => (
+                                                    <Chip
+                                                        key={`tf-switch-${tf}`}
+                                                        label={tf.toUpperCase()}
+                                                        size="small"
+                                                        onClick={() => setSelectedChartTimeframe(tf)}
+                                                        color={activeChartTimeframe === tf ? 'primary' : 'default'}
+                                                        variant={activeChartTimeframe === tf ? 'filled' : 'outlined'}
+                                                        sx={{
+                                                            height: 22,
+                                                            fontSize: '0.7rem',
+                                                            cursor: 'pointer',
+                                                            bgcolor: activeChartTimeframe === tf ? 'primary.main' : 'rgba(255,255,255,0.05)',
+                                                            color: activeChartTimeframe === tf ? '#fff' : '#b0bec5',
+                                                            '&:hover': { bgcolor: activeChartTimeframe === tf ? 'primary.dark' : 'rgba(255,255,255,0.1)' }
+                                                        }}
+                                                    />
+                                                ))}
+                                            </Box>
+                                        )}
+                                    </Box>
                                     <Suspense fallback={
                                         <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: 420 }}>
                                             <CircularProgress size={28} />
                                         </Box>
                                     }>
                                         <TradeOHLCVChart
-                                            trade={selectedTrade}
+                                            trade={
+                                                activeChartTimeframe !== chartTimeframe
+                                                    ? { ...selectedTrade, chart_data: undefined }
+                                                    : selectedTrade
+                                            }
                                             symbol={symbol}
-                                            timeframe={chartTimeframe}
+                                            timeframe={activeChartTimeframe}
                                             emaTimeframe={emaTimeframe}
                                             strategyConfig={strategyConfig}
                                             exchangeType={exchangeType}
@@ -588,8 +678,8 @@ const TradeDetailsModal: React.FC<TradeDetailsModalProps> = ({
                                                     })}
                                                 </Box>
                                             ) : indicatorsAtExitLoading ? (
-                                                    <CircularProgress size={14} sx={{ color: '#ffb74d' }} />
-                                                ) : null;
+                                                <CircularProgress size={14} sx={{ color: '#ffb74d' }} />
+                                            ) : null;
                                         })()}
                                     </Box>
 

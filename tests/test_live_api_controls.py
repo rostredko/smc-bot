@@ -3,6 +3,7 @@ import sys
 import asyncio
 import threading
 import time
+import math
 from uuid import uuid4
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -58,6 +59,24 @@ def _mock_chart_df(rows: int = 300) -> pd.DataFrame:
             "high": [c + 5 for c in close],
             "low": [c - 5 for c in close],
             "close": [c + 1 for c in close],
+            "volume": [1000.0] * rows,
+        },
+        index=idx,
+    )
+
+
+def _mock_chart_df_wave(rows: int = 300) -> pd.DataFrame:
+    idx = pd.date_range("2025-01-01", periods=rows, freq="h")
+    closes = [10000 + 320 * math.sin(i / 6.0) for i in range(rows)]
+    opens = [closes[i - 1] if i > 0 else closes[0] for i in range(rows)]
+    highs = [max(o, c) + 25 for o, c in zip(opens, closes)]
+    lows = [min(o, c) - 25 for o, c in zip(opens, closes)]
+    return pd.DataFrame(
+        {
+            "open": opens,
+            "high": highs,
+            "low": lows,
+            "close": closes,
             "volume": [1000.0] * rows,
         },
         index=idx,
@@ -150,6 +169,7 @@ def test_ohlcv_indicator_key_includes_ema_timeframe():
         adx_period=14,
         adx_threshold=21,
         atr_period=14,
+        fractal_period=2,
     )
     key_4h = _build_ohlcv_indicator_key(
         timeframe="1h",
@@ -161,6 +181,7 @@ def test_ohlcv_indicator_key_includes_ema_timeframe():
         adx_period=14,
         adx_threshold=21,
         atr_period=14,
+        fractal_period=2,
     )
     assert key_1h != key_4h
     assert "@4h" in key_4h
@@ -265,6 +286,97 @@ def test_chart_data_builder_uses_strategy_thresholds_for_rsi_adx():
     assert indicators["rsi"]["overbought"] == 80
     assert indicators["rsi"]["oversold"] == 20
     assert indicators["adx"]["threshold"] == 37
+
+
+def test_chart_data_builder_includes_structure_levels():
+    df_1h = _mock_chart_df_wave()
+    df_4h = (
+        df_1h.resample("4h")
+        .agg({"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"})
+        .dropna()
+    )
+    loader = MagicMock()
+
+    def _get_data(symbol, timeframe, start, end):
+        return df_4h if timeframe == "4h" else df_1h
+
+    loader.get_data.side_effect = _get_data
+    trade = {
+        "entry_time": "2025-01-05T00:00:00Z",
+        "exit_time": "2025-01-06T12:00:00Z",
+    }
+    config = {
+        "symbol": "BTC/USDT",
+        "timeframes": ["4h", "1h"],
+        "start_date": "2025-01-01",
+        "end_date": "2025-02-01",
+        "exchange_type": "future",
+        "strategy_config": {
+            "use_trend_filter": False,
+            "use_rsi_filter": False,
+            "use_rsi_momentum": False,
+            "use_adx_filter": False,
+            "market_structure_pivot_span": 2,
+        },
+    }
+
+    _build_chart_data_for_trades([trade], config, data_loader=loader, context_bars=20)
+
+    indicators = trade.get("chart_data", {}).get("indicators", {})
+    assert "sh_level" in indicators
+    assert "sl_level" in indicators
+    assert len(indicators["sh_level"]["values"]) > 0
+    assert len(indicators["sl_level"]["values"]) > 0
+
+
+def test_chart_data_builder_includes_fractal_markers():
+    rows = 240
+    idx = pd.date_range("2025-01-01", periods=rows, freq="h")
+    # Smooth wave with slight drift to guarantee strict local maxima/minima.
+    centers = [10000.0 + 180.0 * math.sin(i / 6.0) + 0.02 * i for i in range(rows)]
+    amplitudes = [18.0 + 2.0 * math.sin(i / 17.0) for i in range(rows)]
+    closes = [centers[i] + 3.0 * math.sin(i / 2.0) for i in range(rows)]
+    opens = [closes[i - 1] if i > 0 else closes[0] for i in range(rows)]
+    highs = [centers[i] + amplitudes[i] for i in range(rows)]
+    lows = [centers[i] - amplitudes[i] for i in range(rows)]
+    df = pd.DataFrame(
+        {
+            "open": opens,
+            "high": highs,
+            "low": lows,
+            "close": closes,
+            "volume": [1000.0] * rows,
+        },
+        index=idx,
+    )
+    loader = MagicMock()
+    loader.get_data.return_value = df
+    trade = {
+        "entry_time": "2025-01-02T00:00:00Z",
+        "exit_time": "2025-01-08T00:00:00Z",
+    }
+    config = {
+        "symbol": "BTC/USDT",
+        "timeframes": ["1h"],
+        "start_date": "2025-01-01",
+        "end_date": "2025-02-01",
+        "exchange_type": "future",
+        "strategy_config": {
+            "use_trend_filter": False,
+            "use_rsi_filter": False,
+            "use_rsi_momentum": False,
+            "use_adx_filter": False,
+            "market_structure_pivot_span": 2,
+        },
+    }
+
+    _build_chart_data_for_trades([trade], config, data_loader=loader, context_bars=20)
+
+    indicators = trade.get("chart_data", {}).get("indicators", {})
+    assert "fractal_high" in indicators
+    assert "fractal_low" in indicators
+    assert len(indicators["fractal_high"]["values"]) > 0
+    assert len(indicators["fractal_low"]["values"]) > 0
 
 
 def test_websocket_disconnect_cleans_active_connections():

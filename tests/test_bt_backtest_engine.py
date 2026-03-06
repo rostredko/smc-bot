@@ -186,7 +186,7 @@ class TestRunBacktest(unittest.TestCase):
             "start_date": "2024-01-01",
             "end_date": "2024-01-31",
         })
-        engine.add_strategy(PriceActionStrategy, use_trend_filter=False, use_adx_filter=False, use_rsi_filter=False)
+        engine.add_strategy(PriceActionStrategy, use_trend_filter=False, use_structure_filter=False, use_adx_filter=False, use_rsi_filter=False)
         metrics = engine.run_backtest()
 
         expected_keys = {
@@ -203,7 +203,7 @@ class TestRunBacktest(unittest.TestCase):
         mock_dataloader_cls.return_value = mock_loader
 
         engine = BTBacktestEngine({"symbol": "BTC/USDT", "timeframes": ["1h"], "start_date": "2024-01-01", "end_date": "2024-01-31"})
-        engine.add_strategy(PriceActionStrategy, use_trend_filter=False, use_adx_filter=False, use_rsi_filter=False)
+        engine.add_strategy(PriceActionStrategy, use_trend_filter=False, use_structure_filter=False, use_adx_filter=False, use_rsi_filter=False)
         engine.run_backtest()
 
         self.assertIsNotNone(engine.strategy)
@@ -215,7 +215,7 @@ class TestRunBacktest(unittest.TestCase):
         mock_dataloader_cls.return_value = mock_loader
 
         engine = BTBacktestEngine({"symbol": "BTC/USDT", "timeframes": ["1h"], "start_date": "2024-01-01", "end_date": "2024-01-31"})
-        engine.add_strategy(PriceActionStrategy, use_trend_filter=False, use_adx_filter=False, use_rsi_filter=False)
+        engine.add_strategy(PriceActionStrategy, use_trend_filter=False, use_structure_filter=False, use_adx_filter=False, use_rsi_filter=False)
         engine.run_backtest()
 
         self.assertIsInstance(engine.closed_trades, list)
@@ -226,7 +226,7 @@ class TestRunBacktest(unittest.TestCase):
         mock_dataloader_cls.return_value = mock_loader
 
         engine = BTBacktestEngine({"symbol": "BTC/USDT", "timeframes": ["1h"], "start_date": "2024-01-01", "end_date": "2024-01-31"})
-        engine.add_strategy(PriceActionStrategy, use_trend_filter=False, use_adx_filter=False, use_rsi_filter=False)
+        engine.add_strategy(PriceActionStrategy, use_trend_filter=False, use_structure_filter=False, use_adx_filter=False, use_rsi_filter=False)
         engine.run_backtest()
 
         self.assertIsInstance(engine.equity_curve, list)
@@ -246,7 +246,7 @@ class TestRunBacktest(unittest.TestCase):
             "end_date": "2024-01-31",
             "initial_capital": 25000,
         })
-        engine.add_strategy(PriceActionStrategy, use_trend_filter=False, use_adx_filter=False, use_rsi_filter=False)
+        engine.add_strategy(PriceActionStrategy, use_trend_filter=False, use_structure_filter=False, use_adx_filter=False, use_rsi_filter=False)
         metrics = engine.run_backtest()
 
         self.assertEqual(metrics["initial_capital"], 25000)
@@ -257,7 +257,7 @@ class TestRunBacktest(unittest.TestCase):
         mock_dataloader_cls.return_value = mock_loader
 
         engine = BTBacktestEngine({"symbol": "BTC/USDT", "timeframes": ["1h"], "start_date": "2024-01-01", "end_date": "2024-01-31"})
-        engine.add_strategy(PriceActionStrategy, use_trend_filter=False, use_adx_filter=False, use_rsi_filter=False)
+        engine.add_strategy(PriceActionStrategy, use_trend_filter=False, use_structure_filter=False, use_adx_filter=False, use_rsi_filter=False)
 
         with patch.object(engine, "run", return_value=[]):
             metrics = engine.run_backtest()

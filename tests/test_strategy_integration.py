@@ -67,8 +67,7 @@ class TestStrategyIntegration(unittest.TestCase):
         # We set use_ema_filter=False, use_adx_filter=False
         self.cerebro.addstrategy(
             PriceActionStrategy, 
-            use_trend_filter=False, 
-            use_adx_filter=False, 
+            use_trend_filter=False, use_structure_filter=False, use_adx_filter=False, 
             use_rsi_filter=False,
             risk_reward_ratio=2.0
         )
@@ -129,8 +128,7 @@ class TestStrategyIntegration(unittest.TestCase):
         cerebro2 = bt.Cerebro()
         cerebro2.addstrategy(
             PriceActionStrategy, 
-            use_trend_filter=False, 
-            use_adx_filter=False, 
+            use_trend_filter=False, use_structure_filter=False, use_adx_filter=False, 
             use_rsi_filter=False
         )
         cerebro2.adddata(data)
