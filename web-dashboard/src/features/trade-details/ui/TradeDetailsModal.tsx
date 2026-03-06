@@ -115,10 +115,15 @@ const TradeDetailsModal: React.FC<TradeDetailsModalProps> = ({
         const cfg = strategyConfig;
         const hasConfig = cfg && Object.keys(cfg).length > 0;
         const useDefaults = !hasConfig;
+        const rsiEnabled = useDefaults || cfg?.use_rsi_filter || cfg?.use_rsi_momentum;
+        const adxEnabled = useDefaults || cfg?.use_adx_filter;
         return {
             emaPeriod: useDefaults || cfg?.use_trend_filter ? (cfg?.trend_ema_period ?? 200) : 0,
-            rsiPeriod: useDefaults || cfg?.use_rsi_filter ? (cfg?.rsi_period ?? 14) : 0,
-            adxPeriod: useDefaults || cfg?.use_adx_filter ? (cfg?.adx_period ?? 14) : 0,
+            rsiPeriod: rsiEnabled ? (cfg?.rsi_period ?? 14) : 0,
+            rsiOverbought: cfg?.rsi_overbought ?? 70,
+            rsiOversold: cfg?.rsi_oversold ?? 30,
+            adxPeriod: adxEnabled ? (cfg?.adx_period ?? 14) : 0,
+            adxThreshold: cfg?.adx_threshold ?? 30,
             atrPeriod: cfg?.atr_period ?? 14,
         };
     }, [strategyConfig]);
@@ -184,10 +189,10 @@ const TradeDetailsModal: React.FC<TradeDetailsModalProps> = ({
             ema_period: String(indParams.emaPeriod),
             ...(emaTimeframe ? { ema_timeframe: emaTimeframe } : {}),
             rsi_period: String(indParams.rsiPeriod),
-            rsi_overbought: '70',
-            rsi_oversold: '30',
+            rsi_overbought: String(indParams.rsiOverbought),
+            rsi_oversold: String(indParams.rsiOversold),
             adx_period: String(indParams.adxPeriod),
-            adx_threshold: '25',
+            adx_threshold: String(indParams.adxThreshold),
             atr_period: String(indParams.atrPeriod),
             ...(backtestStart ? { backtest_start: backtestStart } : {}),
             ...(backtestEnd ? { backtest_end: backtestEnd } : {}),

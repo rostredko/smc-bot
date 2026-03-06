@@ -61,13 +61,15 @@ const TradeOHLCVChart: React.FC<TradeOHLCVChartProps> = ({
         const cfg = strategyConfig;
         const hasConfig = cfg && Object.keys(cfg).length > 0;
         const useDefaults = !hasConfig;
+        const rsiEnabled = useDefaults || cfg.use_rsi_filter || cfg.use_rsi_momentum;
+        const adxEnabled = useDefaults || cfg.use_adx_filter;
         return {
             emaPeriod: useDefaults || cfg.use_trend_filter ? (cfg?.trend_ema_period ?? 200) : 0,
-            rsiPeriod: useDefaults || cfg.use_rsi_filter ? (cfg?.rsi_period ?? 14) : 0,
+            rsiPeriod: rsiEnabled ? (cfg?.rsi_period ?? 14) : 0,
             rsiOb: cfg?.rsi_overbought ?? 70,
             rsiOs: cfg?.rsi_oversold ?? 30,
-            adxPeriod: useDefaults || cfg.use_adx_filter ? (cfg?.adx_period ?? 14) : 0,
-            adxThreshold: cfg?.adx_threshold ?? 25,
+            adxPeriod: adxEnabled ? (cfg?.adx_period ?? 14) : 0,
+            adxThreshold: cfg?.adx_threshold ?? 30,
         };
     }, [strategyConfig]);
 
@@ -127,8 +129,8 @@ const TradeOHLCVChart: React.FC<TradeOHLCVChartProps> = ({
             const lows = candles.map(c => c.low);
             const closes = candles.map(c => c.close);
 
-            const hasRsi = Boolean(indicators.rsi?.values?.length);
-            const hasAdx = Boolean(indicators.adx?.values?.length);
+            const hasRsi = indParams.rsiPeriod > 0 && Boolean(indicators.rsi?.values?.length);
+            const hasAdx = indParams.adxPeriod > 0 && Boolean(indicators.adx?.values?.length);
 
             const subplotCount = 1 + (hasRsi ? 1 : 0) + (hasAdx ? 1 : 0);
             const priceRatio = subplotCount === 1 ? 1 : subplotCount === 2 ? 0.65 : 0.55;
@@ -260,8 +262,8 @@ const TradeOHLCVChart: React.FC<TradeOHLCVChartProps> = ({
                 const rsiData = indicators.rsi!;
                 const rsiY = `y${rsiAxisIdx}`;
                 const rsiX = 'x';
-                const ob = rsiData.overbought ?? 70;
-                const os = rsiData.oversold ?? 30;
+                const ob = indParams.rsiOb ?? rsiData.overbought ?? 70;
+                const os = indParams.rsiOs ?? rsiData.oversold ?? 30;
                 shapes.push(
                     { type: 'line', xref: rsiX, yref: rsiY, x0: xMin, x1: xMax, y0: ob, y1: ob, line: { color: '#f44336', width: 1, dash: 'dash' } },
                     { type: 'line', xref: rsiX, yref: rsiY, x0: xMin, x1: xMax, y0: os, y1: os, line: { color: '#4caf50', width: 1, dash: 'dash' } },
@@ -272,7 +274,7 @@ const TradeOHLCVChart: React.FC<TradeOHLCVChartProps> = ({
             if (hasAdx) {
                 const adxAxisIdx = hasRsi ? 3 : 2;
                 const adxY = `y${adxAxisIdx}`;
-                const thr = indicators.adx!.threshold ?? 25;
+                const thr = indParams.adxThreshold ?? indicators.adx!.threshold ?? 30;
                 shapes.push({
                     type: 'line', xref: 'x', yref: adxY,
                     x0: xMin, x1: xMax, y0: thr, y1: thr,
@@ -494,7 +496,17 @@ const TradeOHLCVChart: React.FC<TradeOHLCVChartProps> = ({
             setTimeout(() => setChartError(err.message || String(err)), 0);
             return null;
         }
-    }, [data, trade, symbol, height]);
+    }, [
+        data,
+        trade,
+        symbol,
+        height,
+        indParams.rsiPeriod,
+        indParams.adxPeriod,
+        indParams.rsiOb,
+        indParams.rsiOs,
+        indParams.adxThreshold,
+    ]);
 
     if (loading) {
         return (

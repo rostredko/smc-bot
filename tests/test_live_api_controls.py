@@ -6,6 +6,7 @@ import time
 from uuid import uuid4
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
 
@@ -28,6 +29,7 @@ from server import (
     _broadcast_shutdown,
     connection_lock,
     ws_log_queue,
+    _build_chart_data_for_trades,
 )
 from db.connection import get_database
 from db.repositories import UserConfigRepository
@@ -45,6 +47,21 @@ def _reset_live_state():
 
 def _reset_backtest_state(run_id: str):
     running_backtests.pop(run_id, None)
+
+
+def _mock_chart_df(rows: int = 300) -> pd.DataFrame:
+    idx = pd.date_range("2025-01-01", periods=rows, freq="h")
+    close = [10000 + i * 2 for i in range(rows)]
+    return pd.DataFrame(
+        {
+            "open": close,
+            "high": [c + 5 for c in close],
+            "low": [c - 5 for c in close],
+            "close": [c + 1 for c in close],
+            "volume": [1000.0] * rows,
+        },
+        index=idx,
+    )
 
 
 def test_stop_live_accepts_request_before_engine_is_attached():
@@ -182,6 +199,72 @@ def test_clear_ohlcv_cache_endpoint_clears_mongo_cache():
     resp = client.post("/api/ohlcv/cache/clear")
     assert resp.status_code == 200
     assert col.count_documents({}) == 0
+
+
+def test_chart_data_builder_omits_rsi_adx_when_filters_disabled():
+    df = _mock_chart_df()
+    loader = MagicMock()
+    loader.get_data.return_value = df
+    trade = {
+        "entry_time": "2025-01-05T00:00:00Z",
+        "exit_time": "2025-01-06T00:00:00Z",
+    }
+    config = {
+        "symbol": "BTC/USDT",
+        "timeframes": ["1h"],
+        "start_date": "2025-01-01",
+        "end_date": "2025-02-01",
+        "exchange_type": "future",
+        "strategy_config": {
+            "use_trend_filter": True,
+            "use_rsi_filter": False,
+            "use_rsi_momentum": False,
+            "use_adx_filter": False,
+            "rsi_period": 14,
+            "adx_period": 14,
+        },
+    }
+
+    _build_chart_data_for_trades([trade], config, data_loader=loader, context_bars=10)
+
+    indicators = trade.get("chart_data", {}).get("indicators", {})
+    assert "rsi" not in indicators
+    assert "adx" not in indicators
+
+
+def test_chart_data_builder_uses_strategy_thresholds_for_rsi_adx():
+    df = _mock_chart_df()
+    loader = MagicMock()
+    loader.get_data.return_value = df
+    trade = {
+        "entry_time": "2025-01-05T00:00:00Z",
+        "exit_time": "2025-01-06T00:00:00Z",
+    }
+    config = {
+        "symbol": "BTC/USDT",
+        "timeframes": ["1h"],
+        "start_date": "2025-01-01",
+        "end_date": "2025-02-01",
+        "exchange_type": "future",
+        "strategy_config": {
+            "use_trend_filter": True,
+            "use_rsi_filter": True,
+            "use_rsi_momentum": False,
+            "use_adx_filter": True,
+            "rsi_period": 14,
+            "rsi_overbought": 80,
+            "rsi_oversold": 20,
+            "adx_period": 14,
+            "adx_threshold": 37,
+        },
+    }
+
+    _build_chart_data_for_trades([trade], config, data_loader=loader, context_bars=10)
+
+    indicators = trade.get("chart_data", {}).get("indicators", {})
+    assert indicators["rsi"]["overbought"] == 80
+    assert indicators["rsi"]["oversold"] == 20
+    assert indicators["adx"]["threshold"] == 37
 
 
 def test_websocket_disconnect_cleans_active_connections():

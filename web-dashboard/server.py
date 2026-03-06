@@ -1409,9 +1409,14 @@ def _build_chart_data_for_trades(
 
     chart_tf = min(timeframes, key=lambda t: _TF_MS.get(t, 3600000)) if timeframes else "1h"
     ema_tf = max(timeframes, key=lambda t: _TF_MS.get(t, 0)) if len(timeframes) > 1 else chart_tf
-    ema_period = 200 if strat_cfg.get("use_trend_filter", True) else 0
-    rsi_period = strat_cfg.get("rsi_period", 14) or 14
-    adx_period = strat_cfg.get("adx_period", 14) or 14
+    ema_period = (strat_cfg.get("trend_ema_period", 200) or 200) if strat_cfg.get("use_trend_filter", True) else 0
+    use_rsi = bool(strat_cfg.get("use_rsi_filter", True) or strat_cfg.get("use_rsi_momentum", False))
+    rsi_period = (strat_cfg.get("rsi_period", 14) or 14) if use_rsi else 0
+    rsi_overbought = strat_cfg.get("rsi_overbought", 70) or 70
+    rsi_oversold = strat_cfg.get("rsi_oversold", 30) or 30
+    use_adx = bool(strat_cfg.get("use_adx_filter", True))
+    adx_period = (strat_cfg.get("adx_period", 14) or 14) if use_adx else 0
+    adx_threshold = strat_cfg.get("adx_threshold", 30) or 30
     atr_period = strat_cfg.get("atr_period", 14) or 14
 
     if not start_date or not end_date:
@@ -1503,9 +1508,18 @@ def _build_chart_data_for_trades(
         if out_indicators["ema"]:
             indicators_out["ema"] = {"values": out_indicators["ema"], "period": ema_period, "timeframe": ema_tf}
         if out_indicators["rsi"]:
-            indicators_out["rsi"] = {"values": out_indicators["rsi"], "period": rsi_period, "overbought": 70, "oversold": 30}
+            indicators_out["rsi"] = {
+                "values": out_indicators["rsi"],
+                "period": rsi_period,
+                "overbought": rsi_overbought,
+                "oversold": rsi_oversold,
+            }
         if out_indicators["adx"]:
-            indicators_out["adx"] = {"values": out_indicators["adx"], "period": adx_period, "threshold": 25}
+            indicators_out["adx"] = {
+                "values": out_indicators["adx"],
+                "period": adx_period,
+                "threshold": adx_threshold,
+            }
         if out_indicators["atr"]:
             indicators_out["atr"] = {"values": out_indicators["atr"], "period": atr_period}
 
