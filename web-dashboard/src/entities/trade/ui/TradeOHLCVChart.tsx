@@ -617,6 +617,8 @@ const TradeOHLCVChart: React.FC<TradeOHLCVChartProps> = ({
                     orientation: 'h',
                     x: 0, y: 1.02, xanchor: 'left', yanchor: 'bottom',
                     font: { size: 10 },
+                    itemclick: false,
+                    itemdoubleclick: false,
                 },
                 shapes,
                 annotations,

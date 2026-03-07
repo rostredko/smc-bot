@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
     Box, Card, CardHeader, CardContent, Typography, Table, TableBody, TableCell,
     TableContainer, TableHead, TableRow, Paper, IconButton, Collapse, Button, Stack,
@@ -14,6 +14,7 @@ import { fetchBacktestHistory, fetchDetailedResults, saveUserConfigTemplate, del
 import TradeAnalysisChart from '../../../entities/trade/ui/TradeAnalysisChart';
 import TradeDetailsModal from '../../../features/trade-details/ui/TradeDetailsModal';
 import { useConfigContext } from '../../../app/providers/config/ConfigProvider';
+import { useResultsContext } from '../../../app/providers/results/ResultsProvider';
 
 const GENERAL_SETTINGS = [
     { label: "Initial Capital", key: "initial_capital", format: (v: any) => `$${v}` },
@@ -39,6 +40,7 @@ const STRATEGY_SECTIONS = [
 
 const BacktestHistoryList: React.FC = () => {
     const { loadUserConfigs } = useConfigContext();
+    const { backtestStatus } = useResultsContext();
     const [history, setHistory] = useState<BacktestSummary[]>([]);
     const [openRows, setOpenRows] = useState<Record<string, boolean>>({});
     const [page, setPage] = useState(1);
@@ -54,6 +56,7 @@ const BacktestHistoryList: React.FC = () => {
     const [tradeModalConfig, setTradeModalConfig] = useState<{ symbol: string; timeframes: string[]; strategyConfig: Record<string, any>; exchangeType: string; backtestStart?: string; backtestEnd?: string } | null>(null);
     const [tradeModalTrades, setTradeModalTrades] = useState<any[]>([]);
     const [expandedForChart, setExpandedForChart] = useState<Record<string, boolean>>({});
+    const lastHistorySyncRunRef = useRef<string>('');
 
     const loadData = useCallback(async (currentPage: number = 1, field?: string, direction?: 'asc' | 'desc') => {
         setLoading(true);
@@ -79,6 +82,23 @@ const BacktestHistoryList: React.FC = () => {
     useEffect(() => {
         setExpandedForChart({});
     }, [page]);
+
+    useEffect(() => {
+        const runId = backtestStatus?.run_id;
+        const status = backtestStatus?.status;
+        if (!runId || !status) return;
+        if (status !== 'completed' && status !== 'cancelled') return;
+
+        const syncKey = `${runId}:${status}`;
+        if (lastHistorySyncRunRef.current === syncKey) return;
+        lastHistorySyncRunRef.current = syncKey;
+
+        if (page !== 1) {
+            setPage(1);
+            return;
+        }
+        loadData(1);
+    }, [backtestStatus?.run_id, backtestStatus?.status, page, loadData]);
 
     useEffect(() => {
         if (history.length === 0) return;

@@ -70,7 +70,7 @@ const ConfigPanel: React.FC = () => {
         strategies, selectedStrategy, config, strategyConfig,
         errors, isRunning, isLiveRunning, isLiveStopping, isConfigDisabled, loadDialogOpen, savedConfigs,
         topSymbols, loadedTemplateName, handleStrategyChange, handleConfigChange, handleStrategyConfigChange,
-        startBacktest, stopBacktest, startLiveTrading, stopLiveTrading, resetDashboard, handleOpenLoadDialog, setLoadDialogOpen,
+        startBacktest, stopBacktest, startLiveTrading, stopLiveTrading, resetDashboard, resetStrategySettings, handleOpenLoadDialog, setLoadDialogOpen,
         handleLoadConfig, handleDeleteConfig, handleReorderConfigs
     } = useConfigContext();
 
@@ -256,6 +256,7 @@ const ConfigPanel: React.FC = () => {
                                         size="small"
                                         color="primary"
                                         variant="outlined"
+                                        onDelete={isRunning || isLiveRunning ? undefined : resetStrategySettings}
                                         sx={{ alignSelf: 'flex-start', fontSize: '0.72rem', maxWidth: 220, fontWeight: 600 }}
                                     />
                                 )}

@@ -50,6 +50,7 @@ export interface UseConfigReturn {
     handleStrategyChange: (strategyName: string) => void;
     handleConfigChange: (key: string, value: any) => void;
     handleStrategyConfigChange: (key: string, value: any) => void;
+    resetStrategySettings: () => void;
 }
 
 export const ConfigContext = createContext<UseConfigReturn | null>(null);
@@ -221,6 +222,19 @@ export const ConfigProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         setConfig(DEFAULT_CONFIG);
         setSelectedStrategy("");
         setStrategyConfig({});
+    };
+
+    const resetStrategySettings = () => {
+        setLoadedTemplateName(null);
+        if (selectedStrategy && selectedStrategy.trim() !== "") {
+            const strategy = strategyMap.get(selectedStrategy);
+            setStrategyConfig(getStrategyDefaults(strategy));
+            // Keep the selected strategy, just reset config fields
+            setConfig({ ...DEFAULT_CONFIG, strategy: selectedStrategy });
+        } else {
+            setStrategyConfig({});
+            setConfig(DEFAULT_CONFIG);
+        }
     };
 
     const startBacktest = async (
@@ -414,7 +428,8 @@ export const ConfigProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         setIsRunning, setIsLiveRunning, setIsLiveStopping, setIsConfigDisabled, setLoadDialogOpen, setSavedConfigs,
         loadStrategies, loadConfig, loadUserConfigs, handleOpenLoadDialog,
         handleLoadConfig, handleDeleteConfig, handleReorderConfigs, resetDashboard, startBacktest,
-        stopBacktest, startLiveTrading, stopLiveTrading, checkLiveStatus, handleStrategyChange, handleConfigChange, handleStrategyConfigChange
+        stopBacktest, startLiveTrading, stopLiveTrading, checkLiveStatus, handleStrategyChange, handleConfigChange, handleStrategyConfigChange,
+        resetStrategySettings
     };
 
     return <ConfigContext.Provider value={value}>{children}</ConfigContext.Provider>;
