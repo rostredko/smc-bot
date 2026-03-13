@@ -30,5 +30,6 @@ def build_runtime_strategy_config(config: Dict[str, Any]) -> Dict[str, Any]:
     st_config["dynamic_position_sizing"] = config.get("dynamic_position_sizing", True)
     st_config["max_drawdown"] = config.get("max_drawdown", 50.0)
     st_config["position_cap_adverse"] = config.get("position_cap_adverse", 0.5)
+    st_config["funding_rate_per_8h"] = config.get("funding_rate_per_8h", 0.0)
+    st_config["funding_interval_hours"] = config.get("funding_interval_hours", 8)
     return st_config
-

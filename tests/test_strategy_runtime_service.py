@@ -22,6 +22,8 @@ def test_build_runtime_strategy_config_overrides_runtime_controls():
         "trailing_stop_distance": 0.02,
         "breakeven_trigger_r": 1.2,
         "position_cap_adverse": 0.8,
+        "funding_rate_per_8h": 0.0001,
+        "funding_interval_hours": 8,
         "strategy_config": {
             "risk_per_trade": 999,
             "trailing_stop_distance": 999,
@@ -36,5 +38,6 @@ def test_build_runtime_strategy_config_overrides_runtime_controls():
     assert st["trailing_stop_distance"] == 0.02
     assert st["breakeven_trigger_r"] == 1.2
     assert st["position_cap_adverse"] == 0.8
+    assert st["funding_rate_per_8h"] == 0.0001
+    assert st["funding_interval_hours"] == 8
     assert st["custom_param"] == 42
-

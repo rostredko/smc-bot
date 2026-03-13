@@ -43,6 +43,19 @@ class _OneTradeStrategy(bt.Strategy):
             self.order = self.close()
 
 
+class _OneTradeStrategyWithFundingInfo(_OneTradeStrategy):
+    """Closed-trade metadata includes funding adjustment for analyzer merge."""
+
+    def get_trade_info(self, trade_ref):
+        return {
+            "direction": "long",
+            "funding_adjustment": -12.5,
+            "reason": "Funding test",
+            "exit_reason": "Take Profit",
+            "size": 10,
+        }
+
+
 class TestTradeListAnalyzer(unittest.TestCase):
     """Integration tests for TradeListAnalyzer."""
 
@@ -114,6 +127,30 @@ class TestTradeListAnalyzer(unittest.TestCase):
         trades = results[0].analyzers.tradelist.get_analysis()
         if trades:
             self.assertIn("commission", trades[0])
+
+    def test_funding_adjustment_is_applied_to_realized_pnl(self):
+        """Analyzer merges funding cashflow into realized PnL without losing gross PnL."""
+        cerebro = bt.Cerebro()
+        cerebro.addstrategy(_OneTradeStrategyWithFundingInfo)
+        cerebro.addanalyzer(TradeListAnalyzer, _name="tradelist")
+
+        data = bt.feeds.PandasData(dataname=_mock_df(50))
+        cerebro.adddata(data)
+
+        results = cerebro.run()
+        trades = results[0].analyzers.tradelist.get_analysis()
+
+        self.assertGreaterEqual(len(trades), 1)
+        trade = trades[0]
+        self.assertIn("gross_realized_pnl", trade)
+        self.assertIn("funding_adjustment", trade)
+        self.assertEqual(trade["direction"], "LONG")
+        self.assertEqual(trade["signal_direction"], "long")
+        self.assertAlmostEqual(trade["funding_adjustment"], -12.5)
+        self.assertAlmostEqual(
+            trade["realized_pnl"],
+            trade["gross_realized_pnl"] + trade["funding_adjustment"],
+        )
 
     def test_get_analysis_returns_list(self):
         """get_analysis returns a list."""

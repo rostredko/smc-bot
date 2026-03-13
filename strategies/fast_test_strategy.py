@@ -145,6 +145,7 @@ class FastTestStrategy(BaseStrategy):
                 return
 
         if self.position:
+            self._apply_funding_adjustment(self.data_ltf, self.data_ltf.close[0])
             if self._force_time_exit_if_needed():
                 return
             return

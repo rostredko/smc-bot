@@ -1,12 +1,15 @@
 import backtrader as bt
 import pandas as pd
+import logging
 import threading
+from datetime import timezone
 from typing import Dict, Any
 from .base_engine import BaseEngine
 from .data_loader import DataLoader
 from .logger import get_logger
 
 from .bt_analyzers import TradeListAnalyzer, EquityCurveAnalyzer
+from .trade_metrics import build_closed_trade_metrics
 
 logger = get_logger(__name__)
 
@@ -26,7 +29,8 @@ class BTBacktestEngine(BaseEngine):
         super().__init__(config)
         self.data_loader = DataLoader(
             exchange_name=config.get("exchange", "binance"),
-            exchange_type=config.get("exchange_type", "future")
+            exchange_type=config.get("exchange_type", "future"),
+            log_level=config.get("log_level", logging.INFO),
         )
         self.data_loader.cancel_check = lambda: self.should_cancel
         self.closed_trades = []
@@ -62,7 +66,7 @@ class BTBacktestEngine(BaseEngine):
         start_date = self.config.get("start_date") or "2024-01-01"
         end_date = self.config.get("end_date") or "2024-12-31"
 
-        ordered_timeframes = list(reversed(timeframes)) if len(timeframes) > 1 else timeframes
+        ordered_timeframes = self._ordered_timeframes(timeframes)
         
         for tf in ordered_timeframes:
             if self.should_cancel:
@@ -157,33 +161,173 @@ class BTBacktestEngine(BaseEngine):
         # Capture equity curve
         self.equity_curve = strat.analyzers.equity.get_analysis()
 
+        forced_final_close_count = self._append_forced_final_closes(strat)
+        realized_final_capital = self._compute_realized_final_capital()
+        if forced_final_close_count and self.equity_curve:
+            self.equity_curve[-1]["equity"] = realized_final_capital
+
         sharpe = strat.analyzers.sharpe.get_analysis().get('sharperatio')
         if sharpe is None: sharpe = 0.0
 
         drawdown_info = strat.analyzers.drawdown.get_analysis()
         max_dd = self._safe_max_drawdown(drawdown_info)
 
-        trade_analysis = strat.analyzers.trades.get_analysis()
-        won = trade_analysis.get('won', {})
-        lost = trade_analysis.get('lost', {})
+        trade_metrics = build_closed_trade_metrics(
+            initial_capital=self.cerebro.broker.startingcash,
+            final_capital=realized_final_capital,
+            closed_trades=self.closed_trades,
+        )
 
         metrics = {
-            "initial_capital": self.cerebro.broker.startingcash,
-            "final_capital": self.cerebro.broker.getvalue(),
-            "total_pnl": self.cerebro.broker.getvalue() - self.cerebro.broker.startingcash,
+            "initial_capital": trade_metrics["initial_capital"],
+            "final_capital": trade_metrics["final_capital"],
+            "total_pnl": trade_metrics["total_pnl"],
             "sharpe_ratio": sharpe,
             "max_drawdown": max_dd,
-            "total_trades": trade_analysis.get('total', {}).get('closed', 0),
-            "win_rate": self._calculate_win_rate(trade_analysis),
-            "profit_factor": self._calculate_profit_factor(trade_analysis),
-            "win_count": won.get('total', 0) if isinstance(won, dict) else (won if isinstance(won, int) else 0),
-            "loss_count": lost.get('total', 0) if isinstance(lost, dict) else (lost if isinstance(lost, int) else 0),
-            "avg_win": won.get('pnl', {}).get('average', 0.0) if isinstance(won, dict) else 0.0,
-            "avg_loss": lost.get('pnl', {}).get('average', 0.0) if isinstance(lost, dict) else 0.0,
+            "total_trades": trade_metrics["total_trades"],
+            "win_rate": trade_metrics["win_rate"],
+            "profit_factor": trade_metrics["profit_factor"],
+            "win_count": trade_metrics["win_count"],
+            "loss_count": trade_metrics["loss_count"],
+            "avg_win": trade_metrics["avg_win"],
+            "avg_loss": trade_metrics["avg_loss"],
             "cancelled": bool(self.should_cancel),
+            "forced_final_close_count": forced_final_close_count,
         }
 
         return metrics
+
+    def _compute_realized_final_capital(self) -> float:
+        return self.cerebro.broker.startingcash + sum(
+            self._safe_float(trade.get("realized_pnl", 0.0))
+            for trade in (self.closed_trades or [])
+        )
+
+    def _append_forced_final_closes(self, strat) -> int:
+        appended = 0
+        seen_refs = {trade.get("id") for trade in self.closed_trades if trade.get("id") is not None}
+
+        for trades_by_id in getattr(strat, "_trades", {}).values():
+            for trade_list in trades_by_id.values():
+                if not trade_list:
+                    continue
+                trade = trade_list[-1]
+                if getattr(trade, "ref", None) in seen_refs:
+                    continue
+                if not getattr(trade, "isopen", False) or getattr(trade, "isclosed", False):
+                    continue
+
+                forced_trade = self._build_forced_final_close_record(strat, trade)
+                if forced_trade is None:
+                    continue
+
+                logger.warning(
+                    "Backtest ended with open %s trade ref=%s. "
+                    "Synthesizing forced final close at %.2f.",
+                    forced_trade["direction"],
+                    forced_trade["id"],
+                    forced_trade["exit_price"],
+                )
+                self.closed_trades.append(forced_trade)
+                seen_refs.add(forced_trade["id"])
+                appended += 1
+
+        return appended
+
+    def _build_forced_final_close_record(self, strat, trade) -> Dict[str, Any] | None:
+        data = getattr(trade, "data", None)
+        if data is None and self.cerebro.datas:
+            data = self.cerebro.datas[0]
+        if data is None:
+            return None
+
+        try:
+            last_close = float(data.close[0])
+            entry_price = float(trade.price)
+            raw_size = float(trade.size)
+        except (TypeError, ValueError):
+            return None
+        if last_close <= 0 or entry_price <= 0 or raw_size == 0:
+            return None
+
+        size = abs(raw_size)
+        direction = "LONG" if raw_size > 0 else "SHORT"
+        slippage = self._resolve_slippage_perc()
+        if direction == "LONG":
+            exit_price = last_close * (1.0 - slippage)
+            gross_pnl = (exit_price - entry_price) * size
+        else:
+            exit_price = last_close * (1.0 + slippage)
+            gross_pnl = (entry_price - exit_price) * size
+
+        commission_rate = self._safe_float(self.config.get("commission", 0.0004))
+        close_commission = size * exit_price * commission_rate
+        open_commission = max(0.0, self._safe_float(getattr(trade, "pnl", 0.0)) - self._safe_float(getattr(trade, "pnlcomm", 0.0)))
+        gross_realized_pnl = gross_pnl - open_commission - close_commission
+
+        funding_adjustment = self._safe_float(getattr(strat, "_open_trade_funding_adjustment", 0.0))
+        realized_pnl = gross_realized_pnl + funding_adjustment
+
+        entry_dt = bt.num2date(trade.dtopen)
+        if entry_dt.tzinfo is None:
+            entry_dt = entry_dt.replace(tzinfo=timezone.utc)
+        else:
+            entry_dt = entry_dt.astimezone(timezone.utc)
+
+        exit_dt = data.datetime.datetime(0)
+        if exit_dt.tzinfo is None:
+            exit_dt = exit_dt.replace(tzinfo=timezone.utc)
+        else:
+            exit_dt = exit_dt.astimezone(timezone.utc)
+
+        info = dict(getattr(strat, "trade_map", {}).get(trade.ref, {}) or {})
+        exit_reason = "Forced Final Close"
+        exit_context = None
+        if hasattr(strat, "_build_exit_context"):
+            exit_context = strat._build_exit_context(exit_reason)
+
+        record = {
+            "id": trade.ref,
+            "direction": direction,
+            "entry_price": entry_price,
+            "entry_time": entry_dt.isoformat().replace("+00:00", "Z"),
+            "exit_time": exit_dt.isoformat().replace("+00:00", "Z"),
+            "duration": str(exit_dt - entry_dt),
+            "exit_price": exit_price,
+            "size": size,
+            "realized_pnl": realized_pnl,
+            "gross_realized_pnl": gross_realized_pnl,
+            "funding_adjustment": funding_adjustment,
+            "commission": open_commission + close_commission,
+            "reason": info.get("reason", "Signal"),
+            "exit_reason": exit_reason,
+            "narrative": (
+                f"Backtest reached the final bar with an open {direction} position. "
+                f"The position was force-closed at {exit_price:.2f} to keep results fully realized."
+            ),
+            "stop_loss": info.get("stop_loss", 0.0),
+            "take_profit": info.get("take_profit", 0.0),
+            "sl_calculation": info.get("sl_calculation"),
+            "tp_calculation": info.get("tp_calculation"),
+            "entry_context": info.get("entry_context"),
+            "sl_history": list(getattr(strat, "sl_history", []) or info.get("sl_history", [])),
+        }
+        if exit_context is not None:
+            record["exit_context"] = exit_context
+        return record
+
+    def _resolve_slippage_perc(self) -> float:
+        slip_perc = self._safe_float(self.config.get("slippage_perc", 0.0))
+        if slip_perc > 0:
+            return slip_perc
+        return self._safe_float(self.config.get("slippage_bps", 0.0)) / 10000.0
+
+    @staticmethod
+    def _safe_float(value):
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return 0.0
 
     def _calculate_win_rate(self, trade_analysis):
         total = trade_analysis.get('total', {}).get('closed', 0)

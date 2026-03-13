@@ -70,6 +70,18 @@ class TestBaseEngineBrokerSetup(unittest.TestCase):
         self.assertIsNotNone(results)
         self.assertEqual(len(results), 1)
 
+    def test_slippage_bps_configures_broker(self, mock_dataloader_cls):
+        mock_dataloader_cls.return_value.get_data.return_value = _mock_df()
+        config = {
+            "symbol": "BTC/USDT",
+            "timeframes": ["1h"],
+            "start_date": "2024-01-01",
+            "end_date": "2024-01-31",
+            "slippage_bps": 2.5,
+        }
+        engine = BTBacktestEngine(config)
+        self.assertAlmostEqual(engine.cerebro.broker.p.slip_perc, 0.00025)
+
 
 @patch("engine.bt_backtest_engine.DataLoader")
 class TestBaseEngineInitialState(unittest.TestCase):
@@ -112,6 +124,16 @@ class TestBaseEngineAddStrategy(unittest.TestCase):
         engine.add_data()
         results = engine.run()
         self.assertIsInstance(results[0], PriceActionStrategy)
+
+
+@patch("engine.bt_backtest_engine.DataLoader")
+class TestBaseEngineTimeframeOrderingHelpers(unittest.TestCase):
+    def test_ordered_timeframes_normalizes_mtf_order(self, mock_dataloader_cls):
+        mock_dataloader_cls.return_value.get_data.return_value = _mock_df()
+        engine = BTBacktestEngine({"symbol": "BTC/USDT", "timeframes": ["4h", "1h", "15m"]})
+
+        self.assertEqual(engine._ordered_timeframes(["4h", "1h", "15m"]), ["15m", "1h", "4h"])
+        self.assertEqual(engine._ordered_timeframes(["1h", "4h"]), ["1h", "4h"])
 
 
 @patch("engine.bt_backtest_engine.DataLoader")

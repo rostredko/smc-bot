@@ -31,6 +31,9 @@ def test_run_backtest_from_config_uses_fast_test_strategy(engine_cls):
 
     strategy_cls = engine.add_strategy.call_args.args[0]
     assert strategy_cls is FastTestStrategy
+    kwargs = engine.add_strategy.call_args.kwargs
+    assert kwargs["risk_per_trade"] == 1.0
+    assert kwargs["position_cap_adverse"] == 0.5
 
 
 @patch("main.BTBacktestEngine")
@@ -43,3 +46,34 @@ def test_run_backtest_from_config_falls_back_to_price_action_for_unknown_strateg
 
     strategy_cls = engine.add_strategy.call_args.args[0]
     assert strategy_cls is PriceActionStrategy
+
+
+@patch("main.BTBacktestEngine")
+def test_run_backtest_from_config_injects_runtime_controls(engine_cls):
+    engine = MagicMock()
+    engine.run_backtest.return_value = {}
+    engine_cls.return_value = engine
+
+    config = _minimal_config("bt_price_action")
+    config.update({
+        "risk_per_trade": 1.5,
+        "leverage": 7.0,
+        "trailing_stop_distance": 0.03,
+        "breakeven_trigger_r": 1.1,
+        "dynamic_position_sizing": False,
+        "max_drawdown": 25.0,
+        "position_cap_adverse": 0.7,
+        "funding_rate_per_8h": 0.0001,
+    })
+
+    main.run_backtest_from_config(config)
+
+    kwargs = engine.add_strategy.call_args.kwargs
+    assert kwargs["risk_per_trade"] == 1.5
+    assert kwargs["leverage"] == 7.0
+    assert kwargs["trailing_stop_distance"] == 0.03
+    assert kwargs["breakeven_trigger_r"] == 1.1
+    assert kwargs["dynamic_position_sizing"] is False
+    assert kwargs["max_drawdown"] == 25.0
+    assert kwargs["position_cap_adverse"] == 0.7
+    assert kwargs["funding_rate_per_8h"] == 0.0001

@@ -16,6 +16,8 @@ class BaseStrategy(bt.Strategy):
         ('max_drawdown', None),
         ('stop_on_drawdown', True),
         ('position_cap_adverse', 0.5),
+        ('funding_rate_per_8h', 0.0),
+        ('funding_interval_hours', 8),
     )
 
     def __init__(self):
@@ -38,6 +40,8 @@ class BaseStrategy(bt.Strategy):
         self._oco_closed = False  # Set on first exit; reset in next() when no position
         self._entry_exec_bar = -1  # Bar index when entry filled; no trailing/breakeven on this bar
         self._entry_exec_data = None
+        self._open_trade_funding_adjustment = 0.0
+        self._next_funding_dt = None
 
     def _cancel_all_exit_orders_for_data(self, data):
         """Hard cleanup: cancel all live exit orders for this data to prevent orphan orders."""
@@ -73,6 +77,123 @@ class BaseStrategy(bt.Strategy):
             position_cap_adverse=getattr(self.params, 'position_cap_adverse', 0.5),
             direction=direction,
         )
+
+    @staticmethod
+    def _as_utc(dt):
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=datetime.timezone.utc)
+        return dt.astimezone(datetime.timezone.utc)
+
+    def _funding_interval_hours(self) -> int:
+        try:
+            hours = int(getattr(self.params, 'funding_interval_hours', 8))
+        except (TypeError, ValueError):
+            hours = 8
+        return max(1, hours)
+
+    def _next_funding_boundary(self, after_dt):
+        dt_utc = self._as_utc(after_dt)
+        interval_hours = self._funding_interval_hours()
+        total_seconds = int(dt_utc.timestamp())
+        interval_seconds = interval_hours * 60 * 60
+        next_boundary = ((total_seconds // interval_seconds) + 1) * interval_seconds
+        return datetime.datetime.fromtimestamp(next_boundary, tz=datetime.timezone.utc)
+
+    def _apply_funding_adjustment(self, data, mark_price):
+        try:
+            funding_rate = float(getattr(self.params, 'funding_rate_per_8h', 0.0) or 0.0)
+        except (TypeError, ValueError):
+            funding_rate = 0.0
+
+        if funding_rate == 0.0 or not self.position:
+            return
+
+        try:
+            price = float(mark_price)
+        except (TypeError, ValueError):
+            return
+        if price <= 0:
+            return
+
+        current_dt = self._as_utc(data.datetime.datetime(0))
+        if self._next_funding_dt is None:
+            self._next_funding_dt = self._next_funding_boundary(current_dt)
+            return
+
+        while current_dt >= self._next_funding_dt and self.position:
+            notional = abs(float(self.position.size)) * price
+            if notional <= 0:
+                break
+            side_sign = 1.0 if self.position.size > 0 else -1.0
+            funding_cashflow = -(side_sign * funding_rate * notional)
+            if funding_cashflow != 0.0:
+                self.broker.add_cash(funding_cashflow)
+                self._open_trade_funding_adjustment += funding_cashflow
+                dt_str = self._get_local_dt_str(self._next_funding_dt)
+                logger.info(
+                    f"[{dt_str}] FUNDING {'CREDIT' if funding_cashflow > 0 else 'DEBIT'}: "
+                    f"{funding_cashflow:.2f} on notional {notional:.2f} at rate {funding_rate:.6f}"
+                )
+            self._next_funding_dt += datetime.timedelta(hours=self._funding_interval_hours())
+
+    @staticmethod
+    def _format_signal_indicator_value(key, value):
+        if value is None:
+            return None
+        if key == 'Structure':
+            try:
+                structure_value = float(value)
+            except (TypeError, ValueError):
+                return str(value)
+            if structure_value > 0:
+                return 'bullish'
+            if structure_value < 0:
+                return 'bearish'
+            return 'neutral'
+        return str(value)
+
+    def _log_signal_thesis(
+        self,
+        dt_str,
+        *,
+        entry_context=None,
+        sl_price_ref=None,
+        tp_price_ref=None,
+        sl_calc_expr=None,
+        tp_calc_expr=None,
+    ):
+        context = entry_context or {}
+        thought_lines = []
+
+        why_parts = [part for part in (context.get('why_entry') or []) if part]
+        if why_parts:
+            trigger = why_parts[0]
+            if trigger.startswith("Pattern: "):
+                trigger = trigger[len("Pattern: "):]
+            thought_lines.append(f"Trigger: {trigger}")
+            if len(why_parts) > 1:
+                thought_lines.append(f"Filters: {' | '.join(why_parts[1:])}")
+
+        indicator_parts = []
+        indicators = context.get('indicators_at_entry') or {}
+        for key, value in indicators.items():
+            formatted_value = self._format_signal_indicator_value(key, value)
+            if formatted_value is None:
+                continue
+            indicator_parts.append(f"{key}={formatted_value}")
+        if indicator_parts:
+            thought_lines.append(f"Context: {' | '.join(indicator_parts)}")
+
+        risk_parts = []
+        if sl_price_ref is not None and sl_calc_expr:
+            risk_parts.append(f"SL {sl_price_ref:.2f} via {sl_calc_expr}")
+        if tp_price_ref is not None and tp_calc_expr:
+            risk_parts.append(f"TP {tp_price_ref:.2f} via {tp_calc_expr}")
+        if risk_parts:
+            thought_lines.append(f"Risk plan: {' | '.join(risk_parts)}")
+
+        for thought_line in thought_lines[:4]:
+            logger.info(f"[{dt_str}] SIGNAL THESIS: {thought_line}")
 
     def _update_equity_peak(self):
         self._equity_peak = max(self._equity_peak, self.broker.getvalue())
@@ -220,6 +341,8 @@ class BaseStrategy(bt.Strategy):
     def notify_trade(self, trade):
         if trade.justopened:
             current_size = abs(trade.size)
+            self._open_trade_funding_adjustment = 0.0
+            self._next_funding_dt = self._next_funding_boundary(bt.num2date(trade.dtopen))
             if self.pending_metadata:
                 self.pending_metadata['size'] = current_size
                 if hasattr(self, 'get_execution_bar_indicators') and callable(getattr(self, 'get_execution_bar_indicators')):
@@ -276,8 +399,11 @@ class BaseStrategy(bt.Strategy):
             rec.update({
                 'exit_reason': self.last_exit_reason,
                 'narrative': narrative,
-                'sl_history': self.sl_history[:]
+                'sl_history': self.sl_history[:],
+                'funding_adjustment': self._open_trade_funding_adjustment,
             })
             if exit_context is not None:
                 rec['exit_context'] = exit_context
             self.trade_map[trade.ref] = rec
+            self._open_trade_funding_adjustment = 0.0
+            self._next_funding_dt = None

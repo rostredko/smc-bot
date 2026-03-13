@@ -62,6 +62,7 @@ class TestPriceActionExtended(unittest.TestCase):
         self.strategy.params.use_ltf_choch_trigger = True
         self.strategy.params.ltf_choch_entry_window_bars = 6
         self.strategy.params.ltf_choch_arm_timeout_bars = 24
+        self.strategy.params.ltf_choch_max_pullaway_atr_mult = 1.5
 
         # Mock indicators as simple lists/arrays that support [0]
         self.strategy.close_line = [101.0]
@@ -69,6 +70,7 @@ class TestPriceActionExtended(unittest.TestCase):
         self.strategy.high_line = [102.0]
         self.strategy.low_line = [99.0]
         self.strategy.atr = [10.0]
+        self.strategy.atr_htf = [10.0]
         self.strategy.rsi = [55.0] 
         self.strategy.adx = [25.0] 
         
@@ -95,6 +97,10 @@ class TestPriceActionExtended(unittest.TestCase):
         self.strategy.trade_map = {}
         self.strategy._long_choch_trigger_bar = 300
         self.strategy._short_choch_trigger_bar = 300
+        self.strategy._long_choch_trigger_price = 101.0
+        self.strategy._short_choch_trigger_price = 101.0
+        self.strategy._long_choch_trigger_zone_ref = 100.0
+        self.strategy._short_choch_trigger_zone_ref = 100.0
 
     def test_filter_rsi_momentum_long(self):
         """Test RSI Momentum Logic for Long entries"""
@@ -139,12 +145,44 @@ class TestPriceActionExtended(unittest.TestCase):
         self.strategy._long_choch_trigger_bar = 300
         self.assertTrue(self.strategy._check_filters_long(), "Should pass: recent CHoCH trigger is present")
 
+    def test_long_choch_invalid_when_zone_reference_changes(self):
+        self.strategy.ms_4h.structure = [1.0]
+        self.strategy.ms_4h.sl_level = [101.0]
+        self.strategy.rsi = [65.0]
+        self.assertFalse(self.strategy._check_filters_long(), "Should fail: CHoCH came from stale HTF zone")
+
+    def test_poi_zone_uses_htf_atr(self):
+        self.strategy.ms_4h.sl_level = [100.0]
+        self.strategy.atr = [1.0]
+        self.strategy.atr_htf = [10.0]
+        zone_low, zone_high = self.strategy._get_poi_zone_long()
+        self.assertAlmostEqual(zone_low, 98.0, places=6)
+        self.assertAlmostEqual(zone_high, 103.0, places=6)
+
     def test_structural_long_sl_uses_4h_level(self):
         """SL should be anchored to HTF structural level when available."""
+        self.strategy.atr = [1.0]
+        self.strategy.atr_htf = [10.0]
         sl_price, sl_distance, sl_expr = self.strategy._resolve_structural_sl_long(entry_price=101.0)
         self.assertAlmostEqual(sl_price, 99.0, places=6)
         self.assertAlmostEqual(sl_distance, 2.0, places=6)
         self.assertIn("SL_Level_4H", sl_expr)
+
+    def test_structure_filter_accepts_string_false(self):
+        self.strategy.params.use_structure_filter = "false"
+        self.strategy.params.use_rsi_filter = False
+        self.strategy.params.use_rsi_momentum = False
+        self.strategy.params.use_adx_filter = False
+        self.strategy.ms_4h.structure = [-1.0]
+        self.assertTrue(self.strategy._check_filters_long())
+
+    def test_pattern_flags_accept_string_false(self):
+        self.strategy.params.pattern_bearish_engulfing = "false"
+        self.strategy.cdl_engulfing = [-100]
+        self.strategy.atr = [1.0]
+        self.strategy.high_line = [110.0]
+        self.strategy.low_line = [100.0]
+        self.assertFalse(self.strategy._is_bearish_engulfing())
 
 if __name__ == '__main__':
     unittest.main()

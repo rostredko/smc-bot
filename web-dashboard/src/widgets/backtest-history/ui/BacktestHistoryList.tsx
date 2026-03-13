@@ -38,8 +38,26 @@ const STRATEGY_SECTIONS = [
     { title: "Exit Management", keys: ["trailing_stop_distance", "breakeven_trigger_r"] },
 ];
 
+const formatLiveDuration = (mins: number | null | undefined): string => {
+    if (mins == null) return 'N/A';
+    if (mins < 60) {
+        return `${Math.round(mins * 10) / 10} min`;
+    }
+    const totalMinutes = Math.round(mins);
+    const hours = Math.floor(totalMinutes / 60);
+    const remainingMins = totalMinutes % 60;
+
+    if (hours < 24) {
+        return remainingMins > 0 ? `${hours}h ${remainingMins}m` : `${hours}h`;
+    }
+
+    const days = Math.floor(hours / 24);
+    const remainingHours = hours % 24;
+    return remainingHours > 0 ? `${days}d ${remainingHours}h` : `${days}d`;
+};
+
 const BacktestHistoryList: React.FC = () => {
-    const { loadUserConfigs } = useConfigContext();
+    const { loadUserConfigs, isLiveRunning, isLiveStopping } = useConfigContext();
     const { backtestStatus } = useResultsContext();
     const [history, setHistory] = useState<BacktestSummary[]>([]);
     const [openRows, setOpenRows] = useState<Record<string, boolean>>({});
@@ -57,6 +75,7 @@ const BacktestHistoryList: React.FC = () => {
     const [tradeModalTrades, setTradeModalTrades] = useState<any[]>([]);
     const [expandedForChart, setExpandedForChart] = useState<Record<string, boolean>>({});
     const lastHistorySyncRunRef = useRef<string>('');
+    const prevLiveBusyRef = useRef<boolean>(false);
 
     const loadData = useCallback(async (currentPage: number = 1, field?: string, direction?: 'asc' | 'desc') => {
         setLoading(true);
@@ -99,6 +118,20 @@ const BacktestHistoryList: React.FC = () => {
         }
         loadData(1);
     }, [backtestStatus?.run_id, backtestStatus?.status, page, loadData]);
+
+    useEffect(() => {
+        const isLiveBusy = isLiveRunning || isLiveStopping;
+        const wasLiveBusy = prevLiveBusyRef.current;
+        prevLiveBusyRef.current = isLiveBusy;
+
+        if (!wasLiveBusy || isLiveBusy) return;
+
+        if (page !== 1) {
+            setPage(1);
+            return;
+        }
+        loadData(1);
+    }, [isLiveRunning, isLiveStopping, page, loadData]);
 
     useEffect(() => {
         if (history.length === 0) return;
@@ -419,7 +452,7 @@ const BacktestHistoryList: React.FC = () => {
                                                                                 )}
                                                                                 {item.session_duration_mins != null && (
                                                                                     <Typography variant="body2" sx={{ fontSize: '0.78rem', color: 'text.secondary' }}>
-                                                                                        Duration: {item.session_duration_mins} min
+                                                                                        Duration: {formatLiveDuration(item.session_duration_mins)}
                                                                                     </Typography>
                                                                                 )}
                                                                             </Box>

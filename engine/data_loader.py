@@ -3,6 +3,7 @@ DataLoader module for fetching historical market data via ccxt.
 Handles multi-timeframe data retrieval, caching, and preprocessing.
 """
 
+import logging
 import os
 import time
 from datetime import datetime, timedelta, timezone
@@ -11,7 +12,7 @@ from typing import Any, Dict, List, Tuple, Callable, Optional
 import ccxt
 import pandas as pd
 
-from engine.logger import get_logger
+from engine.logger import coerce_log_level, get_logger
 
 try:
     from db.connection import get_database, is_database_available
@@ -41,6 +42,7 @@ class DataLoader:
         cache_dir: str = "data_cache",
         max_cache_age_days: float = 7.0,
         enable_db_cache: bool = True,
+        log_level: int = logging.INFO,
     ):
         """
         Initialize the data loader.
@@ -51,11 +53,13 @@ class DataLoader:
             cache_dir: Directory to store CSV cached data relative to project root
             max_cache_age_days: Freshness window for recently cached bars
             enable_db_cache: If True, use MongoDB OHLCV cache when available
+            log_level: Operational log level for routine loader messages
         """
         self.exchange_name = exchange_name
         self.exchange_type = exchange_type
         self.max_cache_age_days = float(max_cache_age_days)
         self.enable_db_cache = bool(enable_db_cache)
+        self.log_level = coerce_log_level(log_level, default=logging.INFO)
 
         project_root = self._get_project_root()
         self.cache_dir = os.path.join(project_root, cache_dir)
@@ -78,9 +82,12 @@ class DataLoader:
         except Exception:
             return False
 
+    def _log_operational(self, message: str) -> None:
+        logger.log(self.log_level, message)
+
     def _initialize_exchange(self) -> ccxt.Exchange:
         """Initialize the ccxt exchange client."""
-        logger.info(f"Initializing {self.exchange_name} ({self.exchange_type}) exchange connection...")
+        self._log_operational(f"Initializing {self.exchange_name} ({self.exchange_type}) exchange connection...")
         try:
             if self.exchange_name == "binance" and self.exchange_type == "future":
                 exchange_class = getattr(ccxt, "binanceusdm")
@@ -97,10 +104,10 @@ class DataLoader:
                 }
             )
 
-            logger.info(f"Connected to {exchange.name}")
-            logger.info("Loading markets...")
+            self._log_operational(f"Connected to {exchange.name}")
+            self._log_operational("Loading markets...")
             markets = exchange.load_markets()
-            logger.info(f"Loaded {len(markets)} markets")
+            self._log_operational(f"Loaded {len(markets)} markets")
 
             return exchange
         except Exception as e:
@@ -277,7 +284,7 @@ class DataLoader:
 
         while current_ts <= range_end_ts:
             if self._is_cancel_requested():
-                logger.info(f"Data fetch cancelled for {symbol} {timeframe}")
+                self._log_operational(f"Data fetch cancelled for {symbol} {timeframe}")
                 break
             self._rate_limit()
             try:
@@ -304,7 +311,7 @@ class DataLoader:
                 retries = 0
             except Exception as e:
                 if self._is_cancel_requested():
-                    logger.info(f"Data fetch cancelled during retry for {symbol} {timeframe}")
+                    self._log_operational(f"Data fetch cancelled during retry for {symbol} {timeframe}")
                     break
                 logger.error(f"Error fetching data chunk for {symbol} {timeframe}: {e}")
                 retries += 1
@@ -366,9 +373,9 @@ class DataLoader:
         fetched_total = 0
         for gap_start, gap_end in missing_ranges:
             if self._is_cancel_requested():
-                logger.info(f"Stopping gap fetch due to cancellation: {symbol} {timeframe}")
+                self._log_operational(f"Stopping gap fetch due to cancellation: {symbol} {timeframe}")
                 break
-            logger.info(
+            self._log_operational(
                 f"Fetching {symbol} {timeframe} gap from "
                 f"{pd.to_datetime(gap_start, unit='ms').strftime('%Y-%m-%d %H:%M:%S')} to "
                 f"{pd.to_datetime(gap_end, unit='ms').strftime('%Y-%m-%d %H:%M:%S')}"
@@ -394,9 +401,9 @@ class DataLoader:
             raise RuntimeError(f"No data fetched for {symbol} {timeframe}")
 
         if fetched_total > 0:
-            logger.info(f"Loaded {len(df)} bars ({fetched_total} fetched, {len(df) - fetched_total} from DB cache)")
+            self._log_operational(f"Loaded {len(df)} bars ({fetched_total} fetched, {len(df) - fetched_total} from DB cache)")
         else:
-            logger.info(f"Loaded {len(df)} bars from DB cache")
+            self._log_operational(f"Loaded {len(df)} bars from DB cache")
 
         return df
 
@@ -406,7 +413,7 @@ class DataLoader:
         if os.path.exists(cache_file):
             file_age_days = (time.time() - os.path.getmtime(cache_file)) / (24 * 3600)
             if file_age_days > self.max_cache_age_days:
-                logger.info(
+                self._log_operational(
                     f"Cache file {cache_file} is {file_age_days:.1f} days old "
                     f"(older than {self.max_cache_age_days} limit). Removing it."
                 )
@@ -415,11 +422,11 @@ class DataLoader:
                 except OSError as e:
                     logger.warning(f"Failed to remove old cache file {cache_file}: {e}")
             else:
-                logger.info(f"Loading cached data from {cache_file} (Age: {file_age_days:.1f} days)")
+                self._log_operational(f"Loading cached data from {cache_file} (Age: {file_age_days:.1f} days)")
                 return pd.read_csv(cache_file, index_col=0, parse_dates=True)
 
         start_ts, end_ts, end_dt_inclusive = self._date_range_to_timestamps(start_date, end_date)
-        logger.info(f"Fetching {symbol} {timeframe} data from {start_date} to {end_date}")
+        self._log_operational(f"Fetching {symbol} {timeframe} data from {start_date} to {end_date}")
 
         all_data = self._fetch_ohlcv_range(symbol, timeframe, start_ts, end_ts)
         if not all_data:
@@ -432,7 +439,7 @@ class DataLoader:
         df = df[(df.index >= start_dt) & (df.index <= end_dt_inclusive)]
 
         df.to_csv(cache_file)
-        logger.info(f"Loaded {len(df)} bars, cached to {cache_file}")
+        self._log_operational(f"Loaded {len(df)} bars, cached to {cache_file}")
         return df
 
     def fetch_ohlcv(self, symbol: str, timeframe: str, start_date: str, end_date: str) -> pd.DataFrame:
@@ -466,7 +473,7 @@ class DataLoader:
         if self._is_cancel_requested():
             return []
         self._rate_limit()
-        logger.info(f"Fetching {limit} recent historical bars for {symbol} {timeframe}...")
+        self._log_operational(f"Fetching {limit} recent historical bars for {symbol} {timeframe}...")
         try:
             ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe, limit=limit + 1)
 
@@ -488,7 +495,7 @@ class DataLoader:
                     }
                 )
 
-            logger.info(f"Successfully loaded {len(result)} historical closed bars for {symbol} {timeframe}.")
+            self._log_operational(f"Successfully loaded {len(result)} historical closed bars for {symbol} {timeframe}.")
             return result
 
         except Exception as e:
@@ -509,7 +516,7 @@ class DataLoader:
         """Fetch data for multiple timeframes."""
         data: Dict[str, pd.DataFrame] = {}
         for tf in timeframes:
-            logger.info(f"Fetching {tf} data...")
+            self._log_operational(f"Fetching {tf} data...")
             data[tf] = self.get_data(symbol, tf, start_date, end_date)
         return data
 
@@ -562,7 +569,7 @@ class DataLoader:
                 }
             )
 
-        logger.info("Cache cleared")
+        self._log_operational("Cache cleared")
 
     def get_available_symbols(self) -> List[str]:
         """Get list of available trading symbols."""

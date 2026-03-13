@@ -39,6 +39,26 @@ class BaseEngine(ABC):
         commission = self.config.get("commission", 0.0004) # Default 0.04% for crypto
         leverage = self.config.get("leverage", 1.0)
         self.cerebro.broker.setcommission(commission=commission, leverage=leverage)
+
+        slip_perc = self.config.get("slippage_perc", 0.0)
+        if not slip_perc:
+            try:
+                slip_perc = float(self.config.get("slippage_bps", 0.0)) / 10000.0
+            except (TypeError, ValueError):
+                slip_perc = 0.0
+        try:
+            slip_perc = float(slip_perc)
+        except (TypeError, ValueError):
+            slip_perc = 0.0
+        if slip_perc > 0:
+            # Apply slippage to market/stop-style fills but not to passive take-profit limits.
+            self.cerebro.broker.set_slippage_perc(
+                slip_perc,
+                slip_open=True,
+                slip_limit=False,
+                slip_match=True,
+                slip_out=False,
+            )
         
         # Allow fractional sizing for crypto
         self.cerebro.broker.set_coo(True) 
@@ -46,6 +66,33 @@ class BaseEngine(ABC):
     def _setup_sizers(self):
         """Position sizing is handled dynamically inside the strategy itself."""
         pass
+
+    @staticmethod
+    def _timeframe_to_minutes(timeframe: str) -> int:
+        """Convert timeframe strings like 15m/1h/4h/1d to minutes for stable ordering."""
+        if not timeframe:
+            return 10**9
+        value_part = str(timeframe).strip().lower()[:-1]
+        unit = str(timeframe).strip().lower()[-1:]
+        try:
+            value = int(value_part)
+        except (TypeError, ValueError):
+            return 10**9
+        multipliers = {
+            "m": 1,
+            "h": 60,
+            "d": 1440,
+            "w": 10080,
+        }
+        return value * multipliers.get(unit, 10**9)
+
+    def _ordered_timeframes(self, timeframes):
+        """
+        Always add lower timeframe first so multi-timeframe strategies receive:
+        data0 = LTF, data1 = HTF, regardless of config array order.
+        """
+        items = list(timeframes or ["1h"])
+        return sorted(items, key=self._timeframe_to_minutes)
 
 
     @abstractmethod

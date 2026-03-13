@@ -12,16 +12,11 @@ WebSocket live-log delivery:
 
 import logging
 import queue
-from contextlib import contextmanager
-from typing import Optional
+from typing import Optional, Union
 
 # ── Root logger name for the whole project ──────────────────────────────────
 PROJECT_ROOT_LOGGER = "backtrade"
 WS_LOG_QUEUE_MAXSIZE = 10000
-WS_SUPPRESSED_SUBSTRINGS = (
-    "OHLCV fetched:",
-    "chart_data added to",
-)
 
 # ── A single shared queue used by the WebSocket broadcaster ─────────────────
 # The server imports and uses this queue directly.
@@ -58,8 +53,6 @@ class QueueHandler(logging.Handler):
     def emit(self, record: logging.LogRecord) -> None:
         try:
             msg = self.format(record)
-            if any(fragment in msg for fragment in WS_SUPPRESSED_SUBSTRINGS):
-                return
             try:
                 self._queue.put_nowait(msg)
             except queue.Full:
@@ -73,9 +66,38 @@ class QueueHandler(logging.Handler):
             self.handleError(record)
 
 
+class WsFormatter(logging.Formatter):
+    """Formatter for dashboard/live-output messages with optional per-record prefix overrides."""
+
+    def __init__(self, prefix: str = ""):
+        super().__init__("%(message)s")
+        self._prefix = prefix
+
+    def format(self, record: logging.LogRecord) -> str:
+        message = super().format(record)
+        prefix = getattr(record, "ws_prefix_override", self._prefix)
+        return f"{prefix}{message}" if prefix else message
+
+
+def coerce_log_level(level: Union[int, str, None], default: int = logging.INFO) -> int:
+    """Normalize string/int log levels to a valid logging module constant."""
+    if isinstance(level, int):
+        return level
+    if isinstance(level, str):
+        normalized = level.strip().upper()
+        if not normalized:
+            return default
+        resolved = logging.getLevelName(normalized)
+        if isinstance(resolved, int):
+            return resolved
+    return default
+
+
 def setup_logging(
     level: int = logging.INFO,
+    console_level: Optional[Union[int, str]] = None,
     run_id: Optional[str] = None,
+    ws_level: Optional[Union[int, str]] = None,
     enable_ws: bool = True,
 ) -> None:
     """
@@ -86,11 +108,17 @@ def setup_logging(
 
     Args:
         level: Logging level (logging.DEBUG / logging.INFO / …)
+        console_level: Optional console handler level override.
         run_id: Optional run identifier prepended to every WS message.
+        ws_level: Optional WebSocket handler level override.
         enable_ws: If True, attach the QueueHandler for WebSocket delivery.
     """
+    level = coerce_log_level(level, default=logging.INFO)
+    console_level = coerce_log_level(console_level, default=level)
+    ws_level = coerce_log_level(ws_level, default=level)
+    root_level = min(level, console_level, ws_level)
     root = logging.getLogger(PROJECT_ROOT_LOGGER)
-    root.setLevel(level)
+    root.setLevel(root_level)
     root.propagate = False  # Don't bubble up to the global root logger
 
     # Remove stale handlers to avoid duplicate messages on re-setup
@@ -98,7 +126,7 @@ def setup_logging(
 
     # ── Console / terminal handler ───────────────────────────────────────────
     console_handler = logging.StreamHandler()
-    console_handler.setLevel(level)
+    console_handler.setLevel(console_level)
     console_fmt = "%(asctime)s [%(name)s] %(levelname)s: %(message)s"
     console_handler.setFormatter(logging.Formatter(console_fmt, datefmt="%H:%M:%S"))
     root.addHandler(console_handler)
@@ -107,28 +135,10 @@ def setup_logging(
     if enable_ws:
         prefix = f"[{run_id}] " if run_id else ""
         ws_handler = QueueHandler(ws_log_queue)
-        ws_handler.setLevel(level)
+        ws_handler.setLevel(ws_level)
         # Format mirrors the current print() style so the UI looks the same
-        ws_handler.setFormatter(logging.Formatter(f"{prefix}%(message)s"))
+        ws_handler.setFormatter(WsFormatter(prefix=prefix))
         root.addHandler(ws_handler)
-
-
-@contextmanager
-def suppress_ws_logging():
-    """
-    Temporarily disable WebSocket log broadcasting.
-    Use when handling API requests (e.g. /api/ohlcv for chart fetch) so their
-    logs don't flood the Live Output while backtest/live is running.
-    """
-    root = logging.getLogger(PROJECT_ROOT_LOGGER)
-    ws_handlers = [h for h in root.handlers if isinstance(h, QueueHandler)]
-    for h in ws_handlers:
-        root.removeHandler(h)
-    try:
-        yield
-    finally:
-        for h in ws_handlers:
-            root.addHandler(h)
 
 
 def get_logger(name: str) -> logging.Logger:

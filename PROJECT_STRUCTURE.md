@@ -50,6 +50,7 @@ smc-bot/
 │   ├── data_loader.py
 │   ├── live_ws_client.py
 │   ├── live_data_feed.py
+│   ├── trade_metrics.py
 │   ├── trade_narrator.py
 │   └── logger.py
 ├── strategies/
@@ -112,6 +113,7 @@ Recent structure changes:
 
 - `base_engine.py`
   - shared Backtrader setup (`Cerebro`, broker, commission/leverage)
+  - stable timeframe ordering helper for MTF strategies (`data0=LTF`, `data1=HTF`)
   - applies OCO patch early (`bt_oco_patch.apply_oco_guard()`)
 
 - `bt_oco_patch.py`
@@ -122,12 +124,14 @@ Recent structure changes:
   - historical data loading via `DataLoader`
   - analyzer registration
   - normalized metrics output
+  - forced final close synthesis for open positions at the end of backtests
 
 - `bt_live_engine.py`
   - warm-up from REST (`fetch_recent_bars`)
   - live feed via WS client + queue + Backtrader live feed
   - analyzer output parity with backtest
   - graceful stop and thread join
+  - same lower-TF-first feed ordering as backtest
 
 - `data_loader.py`
   - ccxt exchange bootstrap (Binance futures/spot)
@@ -145,6 +149,11 @@ Recent structure changes:
 - `bt_analyzers.py`
   - `TradeListAnalyzer` (detailed trade metadata)
   - `EquityCurveAnalyzer`
+  - merges funding adjustments into realized trade PnL while keeping gross PnL fields
+
+- `trade_metrics.py`
+  - closed-trade-only metrics builder used by backtest/live engines
+  - keeps summary metrics aligned with persisted trade list
 
 - `trade_narrator.py`
   - strategy-agnostic trade narrative builder used from strategy base class
@@ -161,12 +170,16 @@ Recent structure changes:
   - SL/TP OCO handling
   - trailing/breakeven update flow
   - orphan cleanup and drawdown stop checks
+  - funding cashflow application for long/short positions
 
 - `bt_price_action.py` (primary strategy)
-  - TA-Lib indicators: EMA, RSI, ATR, ADX
-  - candlestick patterns: hammer/inverted hammer/shooting star/hanging man/engulfing
-  - trend/RSI/ADX filters
-  - bracket execution with dynamic SL/TP logic
+  - `4H` `MarketStructure` indicator with confirmed fractals and BOS-only structure state
+  - `1H` execution logic with TA-Lib patterns: hammer/inverted hammer/shooting star/hanging man/engulfing
+  - default structural flow: `4H structure -> POI -> optional 1H CHoCH -> 1H pattern entry`
+  - structural SL from `4H` level + `ATR_4H` buffer
+  - TP from RR and optional clamp to opposing `4H` structural level
+  - optional EMA/RSI/ADX filters for legacy/backward-compatible configs
+  - safe bool parsing for legacy configs that may store `"true"` / `"false"` strings
 
 - `fast_test_strategy.py`
   - deterministic high-frequency strategy for live pipeline verification
@@ -281,7 +294,7 @@ Build/runtime notes:
 ### 7.1 Backtest Flow
 1. UI posts `/backtest/start`.
 2. `server.py` builds engine config and starts background task.
-3. `BTBacktestEngine` loads historical data via `DataLoader`.
+3. `BTBacktestEngine` loads historical data via `DataLoader` and normalizes timeframe order low-to-high.
 4. Strategy executes in Backtrader; analyzers collect trades/equity/metrics.
 5. `result_mapper` shapes payload.
 6. Result is saved to Mongo (`backtests`) and exposed in history/results APIs.
@@ -290,7 +303,7 @@ Build/runtime notes:
 1. UI posts `/api/live/start` with config.
 2. `BTLiveEngine` warms up bars via REST and subscribes to Binance WS.
 3. Closed candles stream into queue-driven live data feed.
-4. Strategy runs on live feed; stop can be requested via `/api/live/stop`.
+4. Strategy runs on live feed with the same lower-TF-first ordering used by backtests; stop can be requested via `/api/live/stop`.
 5. After stop, trades/equity are mapped and saved as `is_live=true` history record.
 
 ### 7.3 Chart Data Enrichment
@@ -319,10 +332,11 @@ Build/runtime notes:
 
 Backend tests are under `tests/` and include:
 - engine behavior (`test_bt_backtest_engine.py`, `test_bt_live_engine.py`)
-- strategy and risk checks (`test_price_action_extended.py`, `test_risk_manager.py`)
+- strategy and risk checks (`test_price_action_extended.py`, `test_market_structure_indicator.py`, `test_risk_manager.py`)
 - critical regression tests (OCO/orphan/live controls/result backfill)
 - repository and API contract tests
 - service-layer mapper/runtime tests (`test_result_mapper_service.py`, `test_strategy_runtime_service.py`)
+- trade-metric/analyzer consistency checks (`test_trade_metrics.py`, `test_bt_analyzers.py`)
 
 Special test modes:
 - Live E2E (`test_live_e2e.py`) is opt-in and internet-dependent:
@@ -337,6 +351,7 @@ Frontend checks:
 ## 10. Docs Folder Map (`docs/`)
 
 Current docs include:
+- `BT_PRICE_ACTION_AUDIT_20260307.md`
 - `ENGINE_REVIEW.md`
 - `ENGINE_STRATEGY_REVIEW_2026.md`
 - `ENTRY_MECHANISMS_AND_GHOST_TRADE.md`

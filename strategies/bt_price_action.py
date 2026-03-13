@@ -62,14 +62,6 @@ class MarketStructure(bt.Indicator):
             self._structure = 1
         elif self._last_swing_low is not None and close_val < self._last_swing_low:
             self._structure = -1
-        elif self._structure == 0:
-            if self._last_swing_high is not None and self._last_swing_low is not None:
-                midpoint = (self._last_swing_high + self._last_swing_low) / 2.0
-                self._structure = 1 if close_val >= midpoint else -1
-            elif self._last_swing_high is not None:
-                self._structure = -1 if close_val < self._last_swing_high else 1
-            elif self._last_swing_low is not None:
-                self._structure = 1 if close_val > self._last_swing_low else -1
 
         self.lines.sh_level[0] = self._last_swing_high if self._last_swing_high is not None else float('nan')
         self.lines.sl_level[0] = self._last_swing_low if self._last_swing_low is not None else float('nan')
@@ -94,6 +86,7 @@ class PriceActionStrategy(BaseStrategy):
         ('use_ltf_choch_trigger', True),
         ('ltf_choch_entry_window_bars', 6),
         ('ltf_choch_arm_timeout_bars', 24),
+        ('ltf_choch_max_pullaway_atr_mult', 1.5),
         ('use_opposing_level_tp', False),
         ('use_rsi_filter', True),
         ('rsi_period', 14),
@@ -136,6 +129,7 @@ class PriceActionStrategy(BaseStrategy):
         self.ema_htf = bt.talib.EMA(self.data_htf.close, timeperiod=self.params.trend_ema_period)
         self.rsi = bt.talib.RSI(self.data_ltf.close, timeperiod=self.params.rsi_period)
         self.atr = bt.talib.ATR(self.data_ltf.high, self.data_ltf.low, self.data_ltf.close, timeperiod=self.params.atr_period)
+        self.atr_htf = bt.talib.ATR(self.data_htf.high, self.data_htf.low, self.data_htf.close, timeperiod=self.params.atr_period)
         self.adx = bt.talib.ADX(self.data_ltf.high, self.data_ltf.low, self.data_ltf.close, timeperiod=self.params.adx_period)
         self.cdl_engulfing = bt.talib.CDLENGULFING(self.data_ltf.open, self.data_ltf.high, self.data_ltf.low, self.data_ltf.close)
         self.cdl_hammer = bt.talib.CDLHAMMER(self.data_ltf.open, self.data_ltf.high, self.data_ltf.low, self.data_ltf.close)
@@ -153,6 +147,10 @@ class PriceActionStrategy(BaseStrategy):
         self._armed_short_bar = -1
         self._long_choch_trigger_bar = -1
         self._short_choch_trigger_bar = -1
+        self._long_choch_trigger_price = None
+        self._short_choch_trigger_price = None
+        self._long_choch_trigger_zone_ref = None
+        self._short_choch_trigger_zone_ref = None
 
     def get_execution_bar_indicators(self):
         ind = {}
@@ -282,7 +280,10 @@ class PriceActionStrategy(BaseStrategy):
                          self.stop_order = self.buy(price=new_sl, exectype=bt.Order.Stop, size=abs(self.position.size))
                          self.tp_order = self.buy(price=tp_price_val, exectype=bt.Order.Limit, size=abs(self.position.size), oco=self.stop_order)
                      else:
-                         self.stop_order = self.buy(price=new_sl, exectype=bt.Order.Stop, size=abs(self.position.size))
+                        self.stop_order = self.buy(price=new_sl, exectype=bt.Order.Stop, size=abs(self.position.size))
+
+        if self.position:
+            self._apply_funding_adjustment(self.data_ltf, self.close_line[0])
 
         self._update_ltf_choch_state()
 
@@ -336,8 +337,11 @@ class PriceActionStrategy(BaseStrategy):
         why_parts = [f"Pattern: {reason}"]
         indicators = {}
         indicators['ATR'] = round(self.atr[0], 4)
+        atr_htf_val = self._to_valid_float(self.atr_htf[0])
+        if atr_htf_val is not None:
+            indicators['ATR_4H'] = round(atr_htf_val, 4)
 
-        if self.params.use_structure_filter:
+        if self._bool_param('use_structure_filter', True):
             structure = self._get_structure_state()
             sh_level = self._to_valid_float(self.ms_4h.sh_level[0])
             sl_level = self._to_valid_float(self.ms_4h.sl_level[0])
@@ -360,6 +364,7 @@ class PriceActionStrategy(BaseStrategy):
                     trigger_age = len(self.data_ltf) - self._long_choch_trigger_bar if self._long_choch_trigger_bar > 0 else None
                     if trigger_age is not None:
                         indicators['LTF_CHOCH_Age_Bars'] = trigger_age
+                        indicators['LTF_CHOCH_Trigger_Price'] = round(self._long_choch_trigger_price, 2) if self._long_choch_trigger_price is not None else None
                         why_parts.append(f"1H CHoCH confirmed {trigger_age} bar(s) ago")
             else:
                 zone = self._get_poi_zone_short()
@@ -374,6 +379,7 @@ class PriceActionStrategy(BaseStrategy):
                     trigger_age = len(self.data_ltf) - self._short_choch_trigger_bar if self._short_choch_trigger_bar > 0 else None
                     if trigger_age is not None:
                         indicators['LTF_CHOCH_Age_Bars'] = trigger_age
+                        indicators['LTF_CHOCH_Trigger_Price'] = round(self._short_choch_trigger_price, 2) if self._short_choch_trigger_price is not None else None
                         why_parts.append(f"1H CHoCH confirmed {trigger_age} bar(s) ago")
 
         if self._is_ema_filter_enabled():
@@ -384,7 +390,7 @@ class PriceActionStrategy(BaseStrategy):
             else:
                 why_parts.append(f"EMA filter: HTF close below EMA{self.params.trend_ema_period} (${ema_val:,.2f})")
 
-        if self.params.use_rsi_filter:
+        if self._bool_param('use_rsi_filter', False):
             rsi_val = self.rsi[0]
             indicators['RSI'] = round(rsi_val, 1)
             if direction == 'long':
@@ -392,7 +398,7 @@ class PriceActionStrategy(BaseStrategy):
             else:
                 why_parts.append(f"RSI filter: {rsi_val:.1f} > oversold ({self.params.rsi_oversold})")
 
-        if self.params.use_rsi_momentum:
+        if self._bool_param('use_rsi_momentum', False):
             rsi_val = self.rsi[0]
             if 'RSI' not in indicators:
                 indicators['RSI'] = round(rsi_val, 1)
@@ -402,7 +408,7 @@ class PriceActionStrategy(BaseStrategy):
                 bearish_thresh = 100 - self.params.rsi_momentum_threshold
                 why_parts.append(f"RSI momentum: {rsi_val:.1f} ≤ {bearish_thresh}")
 
-        if self.params.use_adx_filter:
+        if self._bool_param('use_adx_filter', False):
             adx_val = self.adx[0]
             indicators['ADX'] = round(adx_val, 1)
             why_parts.append(f"ADX: {adx_val:.1f} ≥ {self.params.adx_threshold} (trend strength)")
@@ -427,7 +433,7 @@ class PriceActionStrategy(BaseStrategy):
         indicators = {}
         indicators['ATR'] = round(self.atr[0], 4)
 
-        if self.params.use_structure_filter:
+        if self._bool_param('use_structure_filter', True):
             structure = self._get_structure_state()
             indicators['Structure'] = structure
             sh_level = self._to_valid_float(self.ms_4h.sh_level[0])
@@ -443,11 +449,11 @@ class PriceActionStrategy(BaseStrategy):
             indicators[f'EMA_{self.params.trend_ema_period}'] = round(ema_val, 2)
             why_parts.append(f"EMA (HTF): EMA{self.params.trend_ema_period} at ${ema_val:,.2f}")
 
-        if self.params.use_rsi_filter or self.params.use_rsi_momentum:
+        if self._bool_param('use_rsi_filter', False) or self._bool_param('use_rsi_momentum', False):
             indicators['RSI'] = round(self.rsi[0], 1)
             why_parts.append(f"RSI at exit: {self.rsi[0]:.1f}")
 
-        if self.params.use_adx_filter:
+        if self._bool_param('use_adx_filter', False):
             indicators['ADX'] = round(self.adx[0], 1)
             why_parts.append(f"ADX at exit: {self.adx[0]:.1f}")
 
@@ -548,17 +554,25 @@ class PriceActionStrategy(BaseStrategy):
         self._armed_long_choch_level = None
         self._armed_long_bar = -1
         self._long_choch_trigger_bar = -1
+        self._long_choch_trigger_price = None
+        self._long_choch_trigger_zone_ref = None
 
     def _reset_short_choch_state(self):
         self._armed_short_choch_level = None
         self._armed_short_bar = -1
         self._short_choch_trigger_bar = -1
+        self._short_choch_trigger_price = None
+        self._short_choch_trigger_zone_ref = None
 
     def _consume_ltf_choch_trigger(self, direction: str):
         if direction == 'long':
             self._long_choch_trigger_bar = -1
+            self._long_choch_trigger_price = None
+            self._long_choch_trigger_zone_ref = None
         elif direction == 'short':
             self._short_choch_trigger_bar = -1
+            self._short_choch_trigger_price = None
+            self._short_choch_trigger_zone_ref = None
 
     def _has_valid_ltf_choch_trigger(self, direction: str) -> bool:
         if not self._bool_param('use_ltf_choch_trigger', True):
@@ -567,10 +581,30 @@ class PriceActionStrategy(BaseStrategy):
         bar_num = len(self.data_ltf)
         entry_window = self._int_param('ltf_choch_entry_window_bars', 6, min_value=1)
         trigger_bar = self._long_choch_trigger_bar if direction == 'long' else self._short_choch_trigger_bar
-        return trigger_bar > 0 and (bar_num - trigger_bar) <= entry_window
+        if trigger_bar <= 0 or (bar_num - trigger_bar) > entry_window:
+            return False
+
+        trigger_price = self._long_choch_trigger_price if direction == 'long' else self._short_choch_trigger_price
+        if trigger_price is None:
+            return False
+
+        current_zone_ref = self._to_valid_float(self.ms_4h.sl_level[0]) if direction == 'long' else self._to_valid_float(self.ms_4h.sh_level[0])
+        trigger_zone_ref = self._long_choch_trigger_zone_ref if direction == 'long' else self._short_choch_trigger_zone_ref
+        if trigger_zone_ref is None or current_zone_ref is None:
+            return False
+        if not math.isclose(current_zone_ref, trigger_zone_ref, rel_tol=1e-9, abs_tol=1e-6):
+            return False
+
+        max_pullaway_mult = self._to_valid_float(getattr(self.params, 'ltf_choch_max_pullaway_atr_mult', 0.0))
+        atr_val = self._to_valid_float(self.atr[0])
+        if max_pullaway_mult is not None and max_pullaway_mult > 0 and atr_val is not None and atr_val > 0:
+            if abs(self.close_line[0] - trigger_price) > (atr_val * max_pullaway_mult):
+                return False
+
+        return True
 
     def _update_ltf_choch_state(self):
-        if not self.params.use_structure_filter:
+        if not self._bool_param('use_structure_filter', True):
             self._reset_long_choch_state()
             self._reset_short_choch_state()
             return
@@ -605,7 +639,7 @@ class PriceActionStrategy(BaseStrategy):
         if structure != 1:
             self._reset_long_choch_state()
         else:
-            if self._is_price_inside_zone(self._get_poi_zone_long()) and new_ltf_swing_low and curr_ltf_sh is not None:
+            if self._bar_intersects_zone(self._get_poi_zone_long()) and new_ltf_swing_low and curr_ltf_sh is not None:
                 self._armed_long_choch_level = curr_ltf_sh
                 self._armed_long_bar = bar_num
 
@@ -615,13 +649,15 @@ class PriceActionStrategy(BaseStrategy):
                     self._armed_long_bar = -1
                 elif close_price > self._armed_long_choch_level and bar_num > self._armed_long_bar:
                     self._long_choch_trigger_bar = bar_num
+                    self._long_choch_trigger_price = close_price
+                    self._long_choch_trigger_zone_ref = self._to_valid_float(self.ms_4h.sl_level[0])
                     self._armed_long_choch_level = None
                     self._armed_long_bar = -1
 
         if structure != -1:
             self._reset_short_choch_state()
         else:
-            if self._is_price_inside_zone(self._get_poi_zone_short()) and new_ltf_swing_high and curr_ltf_sl is not None:
+            if self._bar_intersects_zone(self._get_poi_zone_short()) and new_ltf_swing_high and curr_ltf_sl is not None:
                 self._armed_short_choch_level = curr_ltf_sl
                 self._armed_short_bar = bar_num
 
@@ -631,17 +667,19 @@ class PriceActionStrategy(BaseStrategy):
                     self._armed_short_bar = -1
                 elif close_price < self._armed_short_choch_level and bar_num > self._armed_short_bar:
                     self._short_choch_trigger_bar = bar_num
+                    self._short_choch_trigger_price = close_price
+                    self._short_choch_trigger_zone_ref = self._to_valid_float(self.ms_4h.sh_level[0])
                     self._armed_short_choch_level = None
                     self._armed_short_bar = -1
 
         if self._long_choch_trigger_bar > 0 and (bar_num - self._long_choch_trigger_bar) > entry_window:
-            self._long_choch_trigger_bar = -1
+            self._reset_long_choch_state()
         if self._short_choch_trigger_bar > 0 and (bar_num - self._short_choch_trigger_bar) > entry_window:
-            self._short_choch_trigger_bar = -1
+            self._reset_short_choch_state()
 
     def _get_poi_zone_long(self):
         sl_level = self._to_valid_float(self.ms_4h.sl_level[0])
-        atr_val = self._to_valid_float(self.atr[0])
+        atr_val = self._to_valid_float(self.atr_htf[0])
         if sl_level is None or atr_val is None or atr_val <= 0:
             return None
         zone_high = sl_level + (atr_val * self.params.poi_zone_upper_atr_mult)
@@ -650,7 +688,7 @@ class PriceActionStrategy(BaseStrategy):
 
     def _get_poi_zone_short(self):
         sh_level = self._to_valid_float(self.ms_4h.sh_level[0])
-        atr_val = self._to_valid_float(self.atr[0])
+        atr_val = self._to_valid_float(self.atr_htf[0])
         if sh_level is None or atr_val is None or atr_val <= 0:
             return None
         zone_high = sh_level + (atr_val * self.params.poi_zone_upper_atr_mult)
@@ -664,8 +702,16 @@ class PriceActionStrategy(BaseStrategy):
         zone_low, zone_high = zone
         return zone_low <= close_price <= zone_high
 
+    def _bar_intersects_zone(self, zone) -> bool:
+        if zone is None:
+            return False
+        zone_low, zone_high = zone
+        bar_low = self.low_line[0]
+        bar_high = self.high_line[0]
+        return not (bar_high < zone_low or bar_low > zone_high)
+
     def _resolve_structural_sl_long(self, entry_price: float):
-        atr_val = self._to_valid_float(self.atr[0])
+        atr_val = self._to_valid_float(self.atr_htf[0])
         if atr_val is None or atr_val <= 0:
             return None, 0.0, "Invalid ATR"
 
@@ -674,7 +720,7 @@ class PriceActionStrategy(BaseStrategy):
             sl_price_ref = sl_level - (atr_val * self.params.structural_sl_buffer_atr)
             if sl_price_ref < entry_price:
                 sl_distance = entry_price - sl_price_ref
-                sl_calc_expr = f"SL_Level_4H ({sl_level:.2f}) - (ATR * {self.params.structural_sl_buffer_atr})"
+                sl_calc_expr = f"SL_Level_4H ({sl_level:.2f}) - (ATR_4H * {self.params.structural_sl_buffer_atr})"
                 return sl_price_ref, sl_distance, sl_calc_expr
 
         sl_buffer = atr_val * self.params.sl_buffer_atr
@@ -686,7 +732,7 @@ class PriceActionStrategy(BaseStrategy):
         return None, 0.0, "Unable to build valid long SL"
 
     def _resolve_structural_sl_short(self, entry_price: float):
-        atr_val = self._to_valid_float(self.atr[0])
+        atr_val = self._to_valid_float(self.atr_htf[0])
         if atr_val is None or atr_val <= 0:
             return None, 0.0, "Invalid ATR"
 
@@ -695,7 +741,7 @@ class PriceActionStrategy(BaseStrategy):
             sl_price_ref = sh_level + (atr_val * self.params.structural_sl_buffer_atr)
             if sl_price_ref > entry_price:
                 sl_distance = sl_price_ref - entry_price
-                sl_calc_expr = f"SH_Level_4H ({sh_level:.2f}) + (ATR * {self.params.structural_sl_buffer_atr})"
+                sl_calc_expr = f"SH_Level_4H ({sh_level:.2f}) + (ATR_4H * {self.params.structural_sl_buffer_atr})"
                 return sl_price_ref, sl_distance, sl_calc_expr
 
         sl_buffer = atr_val * self.params.sl_buffer_atr
@@ -739,13 +785,22 @@ class PriceActionStrategy(BaseStrategy):
             logger.warning(f"[{self._get_local_dt_str(self.data_ltf.datetime.datetime(0))}] {direction.upper()} size is 0, skipping. SL: {sl_price_ref:.2f}")
             return
         dt_str = self._get_local_dt_str(self.data_ltf.datetime.datetime(0))
+        entry_context = self._build_entry_context(reason, direction)
         logger.info(f"[{dt_str}] SIGNAL GENERATED: {direction.upper()} Entry={self.close_line[0]:.2f} SL={sl_price_ref:.2f} TP={tp_price_ref:.2f} Size={size:.4f} Reason={reason}")
+        self._log_signal_thesis(
+            dt_str,
+            entry_context=entry_context,
+            sl_price_ref=sl_price_ref,
+            tp_price_ref=tp_price_ref,
+            sl_calc_expr=sl_calc_expr,
+            tp_calc_expr=tp_calc_expr,
+        )
         sl_calc = f"Math: {sl_calc_expr}\nResult: {sl_price_ref:.2f}\n---\nATR Period: {self.params.atr_period}"
         tp_calc = f"Math: {tp_calc_expr}\nResult: {tp_price_ref:.2f}\n---\nAdjusted to actual fill price on execution"
         self.pending_metadata = {
             'reason': reason, 'stop_loss': sl_price_ref, 'take_profit': tp_price_ref,
             'sl_distance': sl_distance, 'tp_distance': tp_distance, 'direction': direction, 'size': size,
-            'sl_calculation': sl_calc, 'tp_calculation': tp_calc, 'entry_context': self._build_entry_context(reason, direction)
+            'sl_calculation': sl_calc, 'tp_calculation': tp_calc, 'entry_context': entry_context
         }
         self._consume_ltf_choch_trigger(direction)
         self.initial_sl = sl_price_ref
@@ -780,38 +835,38 @@ class PriceActionStrategy(BaseStrategy):
     def _is_bullish_pinbar(self):
         if not self._has_significant_range():
             return False
-        if self.params.pattern_hammer and self.cdl_hammer[0] == 100 and self._meets_pinbar_wick_body_ratio(check_lower_wick=True):
+        if self._bool_param('pattern_hammer', True) and self.cdl_hammer[0] == 100 and self._meets_pinbar_wick_body_ratio(check_lower_wick=True):
             return True
-        if self.params.pattern_inverted_hammer and self.cdl_invertedhammer[0] == 100 and self._meets_pinbar_wick_body_ratio(check_lower_wick=False):
+        if self._bool_param('pattern_inverted_hammer', True) and self.cdl_invertedhammer[0] == 100 and self._meets_pinbar_wick_body_ratio(check_lower_wick=False):
             return True
         return False
 
     def _is_bearish_pinbar(self):
         if not self._has_significant_range():
             return False
-        if self.params.pattern_shooting_star and self.cdl_shootingstar[0] == -100 and self._meets_pinbar_wick_body_ratio(check_lower_wick=False):
+        if self._bool_param('pattern_shooting_star', True) and self.cdl_shootingstar[0] == -100 and self._meets_pinbar_wick_body_ratio(check_lower_wick=False):
             return True
-        if self.params.pattern_hanging_man and self.cdl_hangingman[0] == -100 and self._meets_pinbar_wick_body_ratio(check_lower_wick=True):
+        if self._bool_param('pattern_hanging_man', True) and self.cdl_hangingman[0] == -100 and self._meets_pinbar_wick_body_ratio(check_lower_wick=True):
             return True
         return False
 
     def _is_bullish_engulfing(self):
-        return self.params.pattern_bullish_engulfing and self.cdl_engulfing[0] == 100 and self._has_significant_range()
+        return self._bool_param('pattern_bullish_engulfing', True) and self.cdl_engulfing[0] == 100 and self._has_significant_range()
 
     def _is_bearish_engulfing(self):
-        return self.params.pattern_bearish_engulfing and self.cdl_engulfing[0] == -100 and self._has_significant_range()
+        return self._bool_param('pattern_bearish_engulfing', True) and self.cdl_engulfing[0] == -100 and self._has_significant_range()
 
     def _check_filters_long(self):
         if self.position or self.order:
             return False
 
-        if self.params.use_structure_filter:
+        if self._bool_param('use_structure_filter', True):
             if self._get_structure_state() != 1:
                 return False
             if self._bool_param('use_ltf_choch_trigger', True):
                 if not self._has_valid_ltf_choch_trigger('long'):
                     return False
-            elif not self._is_price_inside_zone(self._get_poi_zone_long()):
+            elif not self._bar_intersects_zone(self._get_poi_zone_long()):
                 return False
 
         if self._is_ema_filter_enabled():
@@ -820,15 +875,15 @@ class PriceActionStrategy(BaseStrategy):
             if htf_close is None or ema_val is None or htf_close < ema_val:
                 return False
 
-        if self.params.use_rsi_filter:
+        if self._bool_param('use_rsi_filter', False):
             if self.rsi[0] > self.params.rsi_overbought:
                 return False
 
-        if self.params.use_rsi_momentum:
+        if self._bool_param('use_rsi_momentum', False):
             if self.rsi[0] < self.params.rsi_momentum_threshold:
                 return False
 
-        if self.params.use_adx_filter:
+        if self._bool_param('use_adx_filter', False):
             if self.adx[0] < self.params.adx_threshold:
                 return False
 
@@ -838,13 +893,13 @@ class PriceActionStrategy(BaseStrategy):
         if self.position or self.order:
             return False
 
-        if self.params.use_structure_filter:
+        if self._bool_param('use_structure_filter', True):
             if self._get_structure_state() != -1:
                 return False
             if self._bool_param('use_ltf_choch_trigger', True):
                 if not self._has_valid_ltf_choch_trigger('short'):
                     return False
-            elif not self._is_price_inside_zone(self._get_poi_zone_short()):
+            elif not self._bar_intersects_zone(self._get_poi_zone_short()):
                 return False
 
         if self._is_ema_filter_enabled():
@@ -853,16 +908,16 @@ class PriceActionStrategy(BaseStrategy):
             if htf_close is None or ema_val is None or htf_close > ema_val:
                 return False
 
-        if self.params.use_rsi_filter:
+        if self._bool_param('use_rsi_filter', False):
             if self.rsi[0] < self.params.rsi_oversold:
                 return False
 
-        if self.params.use_rsi_momentum:
+        if self._bool_param('use_rsi_momentum', False):
             bearish_threshold = 100 - self.params.rsi_momentum_threshold
             if self.rsi[0] > bearish_threshold:
                 return False
 
-        if self.params.use_adx_filter:
+        if self._bool_param('use_adx_filter', False):
             if self.adx[0] < self.params.adx_threshold:
                 return False
 

@@ -6,6 +6,7 @@ Backtrade Machine is a crypto trading platform with:
 - FastAPI backend for orchestration and API
 - React dashboard for config, runs, history, and trade analysis
 - MongoDB persistence for configs and results
+- Default primary strategy: `bt_price_action` (`4H` structure / `1H` execution)
 
 `README` is intentionally compact.
 Detailed architecture, module map, API breakdown, and data flow are in [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md).
@@ -103,6 +104,7 @@ Testing helper:
 ## Documentation
 
 - Full technical map: [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md)
+- Current `bt_price_action` audit: `docs/BT_PRICE_ACTION_AUDIT_20260307.md`
 - Deep-dive docs: `docs/`
   - `ENGINE_REVIEW.md`
   - `ENTRY_MECHANISMS_AND_GHOST_TRADE.md`

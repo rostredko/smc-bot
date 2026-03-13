@@ -51,6 +51,12 @@ class TestDataLoaderInitialization:
         assert loader.last_request_time == 0
         assert loader.min_request_interval == 0.1
 
+    def test_data_loader_accepts_string_log_level(self, mock_init_exchange):
+        from engine.data_loader import DataLoader
+        mock_init_exchange.return_value = MagicMock()
+        loader = DataLoader(log_level="debug")
+        assert loader.log_level == 10
+
     def test_get_project_root_returns_absolute_path(self, mock_init_exchange):
         from engine.data_loader import DataLoader
         mock_init_exchange.return_value = MagicMock()

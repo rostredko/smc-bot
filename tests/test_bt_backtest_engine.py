@@ -4,6 +4,7 @@ Covers SMCDataFeed, add_data, run_backtest, metrics, and edge cases.
 """
 import unittest
 from unittest.mock import MagicMock, patch
+import backtrader as bt
 import pandas as pd
 import sys
 import os
@@ -22,6 +23,23 @@ def _mock_ohlcv_df(rows=100):
         "close": [101.0] * rows,
         "volume": [1000] * rows,
     }, index=pd.date_range("2024-01-01", periods=rows, freq="h"))
+
+
+class _OpenAtEndStrategy(bt.Strategy):
+    """Opens once and intentionally leaves the position open into the last bar."""
+
+    def __init__(self):
+        self.order = None
+
+    def notify_order(self, order):
+        if order.status in (order.Completed, order.Canceled, order.Margin, order.Rejected):
+            self.order = None
+
+    def next(self):
+        if self.order or self.position:
+            return
+        if len(self) == 3:
+            self.order = self.buy(size=1)
 
 
 @patch("engine.bt_backtest_engine.DataLoader")
@@ -265,6 +283,36 @@ class TestRunBacktest(unittest.TestCase):
         self.assertEqual(metrics, {})
         self.assertEqual(engine.equity_curve, [])
 
+    def test_open_trade_is_force_closed_on_last_bar(self, mock_dataloader_cls):
+        mock_loader = MagicMock()
+        df = _mock_ohlcv_df(8).copy()
+        df["close"] = [100.0, 101.0, 102.0, 103.0, 104.0, 105.0, 106.0, 107.0]
+        df["open"] = df["close"]
+        df["high"] = df["close"] + 1.0
+        df["low"] = df["close"] - 1.0
+        mock_loader.get_data.return_value = df
+        mock_dataloader_cls.return_value = mock_loader
+
+        engine = BTBacktestEngine({
+            "symbol": "BTC/USDT",
+            "timeframes": ["1h"],
+            "start_date": "2024-01-01",
+            "end_date": "2024-01-31",
+            "commission": 0.0,
+            "slippage_bps": 0.0,
+        })
+        engine.add_strategy(_OpenAtEndStrategy)
+        metrics = engine.run_backtest()
+
+        self.assertEqual(metrics["forced_final_close_count"], 1)
+        self.assertEqual(metrics["total_trades"], 1)
+        self.assertEqual(engine.closed_trades[-1]["exit_reason"], "Forced Final Close")
+        self.assertAlmostEqual(
+            metrics["final_capital"] - metrics["initial_capital"],
+            engine.closed_trades[-1]["realized_pnl"],
+        )
+        self.assertGreater(engine.equity_curve[-1]["equity"], engine.equity_curve[0]["equity"])
+
 
 @patch("engine.bt_backtest_engine.DataLoader")
 class TestCalculateWinRate(unittest.TestCase):
@@ -322,7 +370,7 @@ class TestCalculateProfitFactor(unittest.TestCase):
 class TestAddDataTimeframeOrdering(unittest.TestCase):
     """Test dual-TF ordering (lower TF first)."""
 
-    def test_dual_tf_reversed_order(self, mock_dataloader_cls):
+    def test_dual_tf_is_sorted_low_to_high_even_if_config_is_reversed(self, mock_dataloader_cls):
         mock_loader = MagicMock()
         mock_loader.get_data.return_value = _mock_ohlcv_df()
         mock_dataloader_cls.return_value = mock_loader
@@ -338,6 +386,23 @@ class TestAddDataTimeframeOrdering(unittest.TestCase):
 
         calls = mock_loader.get_data.call_args_list
         self.assertEqual(calls[0][0][1], "15m")
+        self.assertEqual(calls[1][0][1], "4h")
+
+    def test_dual_tf_is_sorted_low_to_high_even_if_config_is_already_low_first(self, mock_dataloader_cls):
+        mock_loader = MagicMock()
+        mock_loader.get_data.return_value = _mock_ohlcv_df()
+        mock_dataloader_cls.return_value = mock_loader
+
+        engine = BTBacktestEngine({
+            "symbol": "BTC/USDT",
+            "timeframes": ["1h", "4h"],
+            "start_date": "2024-01-01",
+            "end_date": "2024-01-31",
+        })
+        engine.add_data()
+
+        calls = mock_loader.get_data.call_args_list
+        self.assertEqual(calls[0][0][1], "1h")
         self.assertEqual(calls[1][0][1], "4h")
 
     def test_single_tf_no_reverse(self, mock_dataloader_cls):

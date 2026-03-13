@@ -1,6 +1,7 @@
 import os
 import sys
 import asyncio
+import logging
 import threading
 import time
 import math
@@ -31,7 +32,9 @@ from server import (
     connection_lock,
     ws_log_queue,
     _build_chart_data_for_trades,
+    _emit_live_output_message,
 )
+from engine.logger import PROJECT_ROOT_LOGGER, clear_ws_log_queue, setup_logging
 from db.connection import get_database
 from db.repositories import UserConfigRepository
 
@@ -48,6 +51,10 @@ def _reset_live_state():
 
 def _reset_backtest_state(run_id: str):
     running_backtests.pop(run_id, None)
+
+
+def _clear_project_log_handlers():
+    logging.getLogger(PROJECT_ROOT_LOGGER).handlers.clear()
 
 
 def _mock_chart_df(rows: int = 300) -> pd.DataFrame:
@@ -92,6 +99,38 @@ def test_stop_live_accepts_request_before_engine_is_attached():
     assert live_trading_state["stop_requested"] is True
 
     _reset_live_state()
+
+
+def test_emit_live_output_message_uses_logger_when_ws_handler_is_active():
+    clear_ws_log_queue()
+    setup_logging(level="debug", ws_level="info", run_id="run_test", enable_ws=True)
+
+    try:
+        asyncio.run(_emit_live_output_message("hello", level=logging.INFO))
+        assert ws_log_queue.get_nowait() == "[run_test] hello"
+    finally:
+        clear_ws_log_queue()
+        _clear_project_log_handlers()
+
+
+def test_emit_live_output_message_preserves_prefix_override():
+    clear_ws_log_queue()
+    setup_logging(level="debug", ws_level="info", run_id="run_test", enable_ws=True)
+
+    try:
+        asyncio.run(_emit_live_output_message("[LIVE] Starting live trading engine...", level=logging.INFO, ws_prefix_override=""))
+        assert ws_log_queue.get_nowait() == "[LIVE] Starting live trading engine..."
+    finally:
+        clear_ws_log_queue()
+        _clear_project_log_handlers()
+
+
+def test_emit_live_output_message_falls_back_to_direct_broadcast_without_ws_handler():
+    _clear_project_log_handlers()
+
+    with patch("server.broadcast_message", new=AsyncMock()) as mock_broadcast:
+        asyncio.run(_emit_live_output_message("[LIVE] Starting live trading engine...", level=logging.INFO))
+        mock_broadcast.assert_awaited_once_with("[LIVE] Starting live trading engine...")
 
 
 def test_cancel_backtest_calls_engine_cancel():

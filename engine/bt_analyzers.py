@@ -39,7 +39,19 @@ class TradeListAnalyzer(bt.Analyzer):
 
             info = self.strategy.get_trade_info(trade.ref) if hasattr(self.strategy, 'get_trade_info') else {}
             if info:
+                canonical_direction = trade_record["direction"]
                 trade_record.update(info)
+                trade_record["direction"] = canonical_direction
+                if "direction" in info:
+                    trade_record["signal_direction"] = info["direction"]
+                funding_adjustment = info.get('funding_adjustment', 0.0)
+                try:
+                    funding_adjustment = float(funding_adjustment)
+                except (TypeError, ValueError):
+                    funding_adjustment = 0.0
+                trade_record['funding_adjustment'] = funding_adjustment
+                trade_record['gross_realized_pnl'] = pnlcomm
+                trade_record['realized_pnl'] = pnlcomm + funding_adjustment
                 if size == 0 and 'size' in info:
                     size = info['size']
                 if 'exit_reason' in info:

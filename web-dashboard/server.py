@@ -33,10 +33,11 @@ from engine.bt_backtest_engine import BTBacktestEngine
 from engine.bt_live_engine import BTLiveEngine
 from engine.data_loader import DataLoader
 from engine.logger import (
+    coerce_log_level,
     get_logger,
+    QueueHandler,
     setup_logging,
     ws_log_queue,
-    suppress_ws_logging,
     clear_ws_log_queue,
 )
 from services.strategy_runtime import resolve_strategy_class, build_runtime_strategy_config
@@ -71,6 +72,8 @@ WS_CLEAR_CONSOLE_SIGNAL = "__BTM_CLEAR_CONSOLE__"
 RUN_LOGS_DIR = BASE_DIR / "logs" / "runs"
 RUN_LOG_CAPTURE_MAX_LINES = 12000
 RUN_LOG_DB_TAIL_LINES = 400
+DEFAULT_APP_LOG_LEVEL = "INFO"
+DEFAULT_LIVE_OUTPUT_LOG_LEVEL = "INFO"
 
 os.makedirs(DATA_DIR, exist_ok=True)
 
@@ -133,6 +136,11 @@ class BacktestConfig(BaseModel):
     exchange_type: str = "future"
     loaded_template_name: Optional[str] = None
     position_cap_adverse: float = 0.5  # Worst-case gap for position cap (0.5=50%). Lower = larger positions.
+    slippage_bps: float = 0.0
+    funding_rate_per_8h: float = 0.0
+    funding_interval_hours: int = 8
+    log_level: str = DEFAULT_APP_LOG_LEVEL
+    live_output_log_level: str = DEFAULT_LIVE_OUTPUT_LOG_LEVEL
 
 
 class BacktestRequest(BaseModel):
@@ -203,20 +211,22 @@ class _RunLogCollector(logging.Handler):
         return lines[-max_lines:]
 
 
-def _attach_run_log_handlers(run_id: str) -> tuple[_RunLogCollector, logging.FileHandler, str]:
+def _attach_run_log_handlers(run_id: str, level: int = logging.INFO) -> tuple[_RunLogCollector, logging.FileHandler, str]:
     """Attach per-run file and in-memory log handlers to the project root logger."""
     RUN_LOGS_DIR.mkdir(parents=True, exist_ok=True)
     log_file_path = RUN_LOGS_DIR / f"{run_id}.log"
+    level = coerce_log_level(level, default=logging.INFO)
     fmt = logging.Formatter(
         "%(asctime)s [%(name)s] %(levelname)s: %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
     file_handler = logging.FileHandler(log_file_path, encoding="utf-8")
-    file_handler.setLevel(logging.INFO)
+    file_handler.setLevel(level)
     file_handler.setFormatter(fmt)
 
     collector = _RunLogCollector(max_lines=RUN_LOG_CAPTURE_MAX_LINES)
+    collector.setLevel(level)
     collector.setFormatter(fmt)
 
     root_logger = logging.getLogger("backtrade")
@@ -257,6 +267,35 @@ def _attach_run_log_metadata(
     payload["log_lines_total"] = collector.total_count
     if log_file_path:
         payload["log_file"] = log_file_path
+
+
+def _resolve_run_log_levels(config: Optional[Dict[str, Any]] = None) -> tuple[int, int]:
+    cfg = config or {}
+    app_level = coerce_log_level(cfg.get("log_level"), default=logging.INFO)
+    ws_level = coerce_log_level(cfg.get("live_output_log_level"), default=logging.INFO)
+    return app_level, ws_level
+
+
+async def _emit_live_output_message(
+    message: str,
+    *,
+    level: int = logging.INFO,
+    ws_prefix_override: Optional[str] = None,
+) -> None:
+    """Send a dashboard line through the logger when WS logging is active, otherwise fall back safely."""
+    text = message.rstrip("\n")
+    root_logger = logging.getLogger("backtrade")
+    ws_handlers = [handler for handler in root_logger.handlers if isinstance(handler, QueueHandler)]
+    if ws_handlers:
+        extra = {}
+        if ws_prefix_override is not None:
+            extra["ws_prefix_override"] = ws_prefix_override
+        logger.log(level, text, extra=extra)
+        return
+
+    fallback_threshold = logging.INFO
+    if level >= fallback_threshold:
+        await broadcast_message(text)
 
 
 async def _prepare_live_output_for_new_run() -> None:
@@ -473,6 +512,9 @@ def _config_to_flat(config: Dict[str, Any]) -> Dict[str, Any]:
         "breakeven_trigger_r": config.get("breakeven_trigger_r", 1.5),
         "dynamic_position_sizing": config.get("dynamic_position_sizing", True),
         "position_cap_adverse": config.get("position_cap_adverse", 0.5),
+        "slippage_bps": config.get("slippage_bps", 0.0),
+        "funding_rate_per_8h": config.get("funding_rate_per_8h", 0.0),
+        "funding_interval_hours": config.get("funding_interval_hours", 8),
     }
 
 
@@ -507,7 +549,7 @@ async def update_config(config: Dict[str, Any]):
         existing_config["strategy"]["name"] = config["strategy"]
     if "strategy_config" in config:
         existing_config["strategy"]["config"] = config["strategy_config"]
-    for key in ("trailing_stop_distance", "breakeven_trigger_r", "dynamic_position_sizing"):
+    for key in ("trailing_stop_distance", "breakeven_trigger_r", "dynamic_position_sizing", "slippage_bps", "funding_rate_per_8h", "funding_interval_hours"):
         if key in config:
             existing_config[key] = config[key]
     if "position_cap_adverse" in config:
@@ -798,7 +840,7 @@ async def start_live_trading(request: LiveStartRequest, background_tasks: Backgr
     live_trading_state["is_running"] = True
     live_trading_state["start_time"] = datetime.now().isoformat()
     live_trading_state["stop_requested"] = False
-    await broadcast_message("[LIVE] Starting live trading engine...\n")
+    await _emit_live_output_message("[LIVE] Starting live trading engine...", level=logging.INFO, ws_prefix_override="")
     
     background_tasks.add_task(run_live_trading_task, config)
     return {"message": "Live trading started"}
@@ -813,7 +855,7 @@ async def stop_live_trading():
     live_trading_state["stop_requested"] = True
 
     engine = live_trading_state["engine"]
-    await broadcast_message("[LIVE] Stopping live trading engine...\n")
+    await _emit_live_output_message("[LIVE] Stopping live trading engine...", level=logging.INFO, ws_prefix_override="")
     if engine:
         engine.stop()  # Signals the stop_event
     return {"message": "Live trading stop signal sent"}
@@ -891,8 +933,15 @@ async def run_live_trading_task(config: Dict[str, Any]):
 
     try:
         import logging as _logging
-        setup_logging(level=_logging.INFO, run_id=run_id, enable_ws=True)
-        run_log_collector, run_log_file_handler, run_log_path = _attach_run_log_handlers(run_id)
+        app_log_level, ws_log_level = _resolve_run_log_levels(config)
+        setup_logging(
+            level=app_log_level,
+            console_level=app_log_level,
+            run_id=run_id,
+            ws_level=ws_log_level,
+            enable_ws=True,
+        )
+        run_log_collector, run_log_file_handler, run_log_path = _attach_run_log_handlers(run_id, level=app_log_level)
 
         class _SignalCounter(_logging.Handler):
             def __init__(self):
@@ -916,17 +965,17 @@ async def run_live_trading_task(config: Dict[str, Any]):
         
         live_trading_state["engine"] = engine
         if live_trading_state.get("stop_requested"):
-            await broadcast_message(f"[{run_id}] Stop requested before engine start; stopping now.\n")
+            logger.info("Stop requested before engine start; stopping now.")
             engine.stop()
         
-        await broadcast_message(f"[{run_id}] Live engine loop starting...\n")
+        logger.info("Live engine loop starting...")
         
         loop = asyncio.get_event_loop()
         # run_live will block until engine.stop() is called
         metrics = await loop.run_in_executor(None, engine.run_live)
         session_end = datetime.now()
 
-        await broadcast_message(f"[{run_id}] Live trading stopped. Saving results...\n")
+        logger.info("Live trading stopped. Saving results...")
         
         safe_metrics = metrics if isinstance(metrics, dict) else {}
         if signal_counter is not None:
@@ -944,18 +993,17 @@ async def run_live_trading_task(config: Dict[str, Any]):
                 chart_limit = max(0, chart_limit)
                 trades_for_chart = trades_data[:chart_limit] if chart_limit > 0 else []
                 if trades_for_chart:
-                    # Keep Live Output clean: suppress WS logs for post-stop chart prebuild.
-                    with suppress_ws_logging():
-                        loader = DataLoader(
-                            exchange_name=config.get("exchange", "binance"),
-                            exchange_type=config.get("exchange_type", "future"),
-                        )
-                        _build_chart_data_for_trades(
-                            trades_for_chart,
-                            live_engine_config,
-                            data_loader=loader,
-                            context_bars=DEFAULT_CHART_CONTEXT_BARS,
-                        )
+                    loader = DataLoader(
+                        exchange_name=config.get("exchange", "binance"),
+                        exchange_type=config.get("exchange_type", "future"),
+                        log_level=_logging.DEBUG,
+                    )
+                    _build_chart_data_for_trades(
+                        trades_for_chart,
+                        live_engine_config,
+                        data_loader=loader,
+                        context_bars=DEFAULT_CHART_CONTEXT_BARS,
+                    )
                 if len(trades_data) > chart_limit > 0:
                     logger.debug(f"chart_data added to first {chart_limit} live trades (total {len(trades_data)} — MongoDB size limit)")
                 elif chart_limit > 0:
@@ -976,23 +1024,23 @@ async def run_live_trading_task(config: Dict[str, Any]):
         
         # Save into repository as live
         BacktestRepository().save(run_id, mapped_metrics, is_live=True)
-        await broadcast_message(f"[{run_id}] Live run saved to history.\n")
+        logger.info("Live run saved to history.")
             
     except Exception as e:
         logger.error(f"Error in live trading task: {e}")
-        await broadcast_message(f"[LIVE ERROR] {e}\n")
+        await _emit_live_output_message(f"ERROR: {e}", level=logging.ERROR)
     finally:
         if _root_logger is not None and signal_counter is not None:
             try:
                 _root_logger.removeHandler(signal_counter)
             except Exception:
                 pass
-        _detach_run_log_handlers(run_log_collector, run_log_file_handler)
         live_trading_state["is_running"] = False
         live_trading_state["engine"] = None
         live_trading_state["start_time"] = None
         live_trading_state["stop_requested"] = False
-        await broadcast_message(f"[{run_id}] Live engine fully stopped. All processes terminated.\n")
+        await _emit_live_output_message("Live engine fully stopped. All processes terminated.", level=logging.INFO)
+        _detach_run_log_handlers(run_log_collector, run_log_file_handler)
         setup_logging(enable_ws=False)
 
 
@@ -1008,7 +1056,6 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
     try:
         running_backtests[run_id].message = "Initializing engine..."
         running_backtests[run_id].progress = 10.0
-        await broadcast_message(f"[{run_id}] Initializing engine...\n")
         
         taker_fee_pct = config.get('taker_fee', 0.04)
         commission = taker_fee_pct / 100.0
@@ -1032,7 +1079,11 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
             'position_cap_adverse': config.get('position_cap_adverse', 0.5),
             'commission': commission,
             'taker_fee': taker_fee_pct,
-            'log_level': 'INFO',
+            'slippage_bps': config.get('slippage_bps', 0.0),
+            'funding_rate_per_8h': config.get('funding_rate_per_8h', 0.0),
+            'funding_interval_hours': config.get('funding_interval_hours', 8),
+            'log_level': config.get('log_level', DEFAULT_APP_LOG_LEVEL),
+            'live_output_log_level': config.get('live_output_log_level', DEFAULT_LIVE_OUTPUT_LOG_LEVEL),
             'detailed_signals': True,
             'detailed_trades': True,
             'market_analysis': True,
@@ -1041,29 +1092,38 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
         if config.get('loaded_template_name'):
             engine_config['loaded_template_name'] = config['loaded_template_name']
         
-        await broadcast_message(f"[{run_id}] ============================================================\n")
-        await broadcast_message(f"[{run_id}] BACKTEST CONFIGURATION\n")
-        await broadcast_message(f"[{run_id}] ============================================================\n")
-        await broadcast_message(f"[{run_id}] Strategy: {engine_config['strategy']}\n")
-        await broadcast_message(f"[{run_id}] Symbol: {engine_config['symbol']}\n")
-        await broadcast_message(f"[{run_id}] Commission (Taker): {engine_config['taker_fee']}% ({engine_config['commission']})\n")
-        await broadcast_message(f"[{run_id}] Timeframes: {', '.join(engine_config['timeframes'])}\n")
-        await broadcast_message(f"[{run_id}] Period: {engine_config['start_date']} to {engine_config['end_date']}\n")
-        await broadcast_message(f"[{run_id}] Initial Capital: ${engine_config['initial_capital']:,.2f}\n")
-        await broadcast_message(f"[{run_id}] Risk Per Trade: {engine_config['risk_per_trade']}%\n")
-        await broadcast_message(f"[{run_id}] Max Drawdown: {engine_config['max_drawdown']}%\n")
-        await broadcast_message(f"[{run_id}] Leverage: {engine_config['leverage']}x\n")
-        await broadcast_message(f"[{run_id}] Trailing Stop Distance: {engine_config['trailing_stop_distance']}\n")
-        await broadcast_message(f"[{run_id}] Breakeven Trigger (R): {engine_config['breakeven_trigger_r']}\n")
-        await broadcast_message(f"[{run_id}] Dynamic Position Sizing: {engine_config['dynamic_position_sizing']}\n")
-        await broadcast_message(f"[{run_id}] Position Cap Adverse: {engine_config.get('position_cap_adverse', 0.5)} (worst-case gap)\n")
-        if engine_config['strategy_config']:
-            await broadcast_message(f"[{run_id}] Strategy Config: {engine_config['strategy_config']}\n")
-        await broadcast_message(f"[{run_id}] ============================================================\n")
-        
         import logging as _logging
-        setup_logging(level=_logging.INFO, run_id=run_id, enable_ws=True)
-        run_log_collector, run_log_file_handler, run_log_path = _attach_run_log_handlers(run_id)
+        app_log_level, ws_log_level = _resolve_run_log_levels(engine_config)
+        setup_logging(
+            level=app_log_level,
+            console_level=app_log_level,
+            run_id=run_id,
+            ws_level=ws_log_level,
+            enable_ws=True,
+        )
+        run_log_collector, run_log_file_handler, run_log_path = _attach_run_log_handlers(run_id, level=app_log_level)
+        logger.info("Initializing engine...")
+        logger.info("============================================================")
+        logger.info("BACKTEST CONFIGURATION")
+        logger.info("============================================================")
+        logger.info(f"Strategy: {engine_config['strategy']}")
+        logger.info(f"Symbol: {engine_config['symbol']}")
+        logger.info(f"Commission (Taker): {engine_config['taker_fee']}% ({engine_config['commission']})")
+        logger.info(f"Slippage: {engine_config.get('slippage_bps', 0.0)} bps")
+        logger.info(f"Funding Rate / 8h: {engine_config.get('funding_rate_per_8h', 0.0)}")
+        logger.info(f"Timeframes: {', '.join(engine_config['timeframes'])}")
+        logger.info(f"Period: {engine_config['start_date']} to {engine_config['end_date']}")
+        logger.info(f"Initial Capital: ${engine_config['initial_capital']:,.2f}")
+        logger.info(f"Risk Per Trade: {engine_config['risk_per_trade']}%")
+        logger.info(f"Max Drawdown: {engine_config['max_drawdown']}%")
+        logger.info(f"Leverage: {engine_config['leverage']}x")
+        logger.info(f"Trailing Stop Distance: {engine_config['trailing_stop_distance']}")
+        logger.info(f"Breakeven Trigger (R): {engine_config['breakeven_trigger_r']}")
+        logger.info(f"Dynamic Position Sizing: {engine_config['dynamic_position_sizing']}")
+        logger.info(f"Position Cap Adverse: {engine_config.get('position_cap_adverse', 0.5)} (worst-case gap)")
+        if engine_config['strategy_config']:
+            logger.info(f"Strategy Config: {engine_config['strategy_config']}")
+        logger.info("============================================================")
 
         class _SignalCounter(_logging.Handler):
             def __init__(self):
@@ -1079,14 +1139,14 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
         _root_logger.addHandler(signal_counter)
 
         try:
-            await broadcast_message(f"[{run_id}] Creating engine instance...\n")
+            logger.info("Creating engine instance...")
             engine = BTBacktestEngine(engine_config)
             running_backtests[run_id].engine = engine
 
             if running_backtests[run_id].should_cancel:
                 engine.cancel()
                 running_backtests[run_id].message = "Cancellation acknowledged before run start. Finalizing partial results..."
-                await broadcast_message(f"[{run_id}] Cancellation requested before execution. Preparing partial results...\n")
+                logger.info("Cancellation requested before execution. Preparing partial results...")
             
             st_config = build_runtime_strategy_config(engine_config)
             strategy_name = engine_config.get('strategy', 'bt_price_action')
@@ -1096,12 +1156,12 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
             if running_backtests[run_id].should_cancel and not engine.should_cancel:
                 engine.cancel()
             
-            await broadcast_message(f"[{run_id}] ✅ Engine created\n")
+            logger.info("✅ Engine created")
             
             running_backtests[run_id].message = "Loading data..."
             running_backtests[run_id].progress = 30.0
 
-            await broadcast_message(f"[{run_id}] Starting engine.run_backtest()...\n")
+            logger.info("Starting engine.run_backtest()...")
             
             loop = asyncio.get_event_loop()
             metrics = await loop.run_in_executor(None, engine.run_backtest)
@@ -1116,9 +1176,9 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
             if cancel_requested:
                 running_backtests[run_id].message = "Cancellation acknowledged. Finalizing partial results..."
                 running_backtests[run_id].progress = 75.0
-                await broadcast_message(f"[{run_id}] Cancellation acknowledged. Finalizing partial results...\n")
+                logger.info("Cancellation acknowledged. Finalizing partial results...")
             
-            await broadcast_message(f"[{run_id}] ✅ engine.run_backtest() completed\n")
+            logger.info("✅ engine.run_backtest() completed")
             
             mapped_metrics = None
             
@@ -1138,7 +1198,7 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
                         context_bars=DEFAULT_CHART_CONTEXT_BARS,
                     )
                     if len(trades_data) > chart_limit:
-                        logger.info(f"chart_data added to first {chart_limit} trades only (total {len(trades_data)} — MongoDB size limit)")
+                        logger.debug(f"chart_data added to first {chart_limit} trades only (total {len(trades_data)} — MongoDB size limit)")
                 except Exception as chart_err:
                     logger.warning(f"chart_data build failed: {chart_err}")
                 
@@ -1164,25 +1224,25 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
                 import traceback
                 error_trace = traceback.format_exc()
                 logger.error(f"Error processing backtest data: {e}\n{error_trace}")
-                await broadcast_message(f"[{run_id}] ⚠️ Error processing backtest data: {str(e)}\n")
+                logger.warning(f"⚠️ Error processing backtest data: {str(e)}")
             
             running_backtests[run_id].message = "Generating report..."
-            await broadcast_message(f"[{run_id}] Generating report...\n")
+            logger.info("Generating report...")
             
             try:
                 BacktestRepository().save(run_id, metrics)
-                await broadcast_message(f"[{run_id}] ✅ Results saved to database\n")
+                logger.info("✅ Results saved to database")
                 await asyncio.sleep(0.5)
             except Exception as e:
                 import traceback
                 logger.error(f"Error saving results: {e}\n{traceback.format_exc()}")
-                await broadcast_message(f"[{run_id}] ⚠️ Error saving results: {str(e)}\n")
+                logger.warning(f"⚠️ Error saving results: {str(e)}")
 
             try:
                 if mapped_metrics is None:
-                    await broadcast_message(f"[{run_id}] ⚠️ Skipping report generation (metrics missing)\n")
+                    logger.warning("⚠️ Skipping report generation (metrics missing)")
                 else:
-                    await broadcast_message(f"[{run_id}] Generating detailed report...\n")
+                    logger.info("Generating detailed report...")
                     
                     init_cap = mapped_metrics.get('initial_capital', 1)
                     if init_cap == 0: init_cap = 1 # Avoid division by zero
@@ -1211,19 +1271,19 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
                         "============================================================"
                     ]
                     
-                    await broadcast_message(f"[{run_id}] Backtest Summary:\n")
+                    logger.info("Backtest Summary:")
                     await asyncio.sleep(0.1)
                     
                     for line in summary_lines:
-                         await broadcast_message(f"[{run_id}] {line}\n")
-                         await asyncio.sleep(0.2)
-                    await broadcast_message(f"[{run_id}] Report generated. Finalizing...\n")
+                        logger.info(line)
+                        await asyncio.sleep(0.2)
+                    logger.info("Report generated. Finalizing...")
                     await asyncio.sleep(1.0)
 
                 if cancel_requested:
                     running_backtests[run_id].status = "cancelled"
                     running_backtests[run_id].message = "Backtest cancelled. Partial results saved."
-                    await broadcast_message(f"[{run_id}] Backtest cancelled. Partial results saved to history.\n")
+                    logger.info("Backtest cancelled. Partial results saved to history.")
                 else:
                     running_backtests[run_id].status = "completed"
                     running_backtests[run_id].message = "Backtest completed successfully"
@@ -1232,7 +1292,7 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
                 import traceback
                 error_trace = traceback.format_exc()
                 logger.error(f"Error generating report summary: {e}\n{error_trace}")
-                await broadcast_message(f"[{run_id}] Error generating report summary: {str(e)}\n")
+                logger.error(f"Error generating report summary: {str(e)}")
                 
                 running_backtests[run_id].status = "failed"
                 running_backtests[run_id].message = f"Report generation failed: {str(e)}"
@@ -1247,7 +1307,7 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
         running_backtests[run_id].status = "failed"
         running_backtests[run_id].message = f"Backtest failed: {str(e)}"
         running_backtests[run_id].error = str(e)
-        await broadcast_message(f"[{run_id}] ERROR: {str(e)}\n")
+        await _emit_live_output_message(f"ERROR: {str(e)}", level=logging.ERROR)
 
 
 
@@ -1532,7 +1592,11 @@ def _build_chart_data_for_trades(
     if not start_date or not end_date:
         return
 
-    loader = data_loader if data_loader is not None else DataLoader(exchange_name="binance", exchange_type=exchange_type)
+    loader = data_loader if data_loader is not None else DataLoader(
+        exchange_name="binance",
+        exchange_type=exchange_type,
+        log_level=logging.DEBUG,
+    )
     df_full = loader.get_data(symbol, chart_tf, start_date, end_date)
     if df_full is None or df_full.empty:
         return
@@ -1690,7 +1754,7 @@ def _build_chart_data_for_trades(
 
         trade["chart_data"] = {"candles": out_candles, "indicators": indicators_out}
 
-    logger.info(f"chart_data added to {len(trades)} trades (single source: DataLoader)")
+    logger.debug(f"chart_data added to {len(trades)} trades (single source: DataLoader)")
 
 
 @app.post("/api/ohlcv/cache/clear")
@@ -1747,16 +1811,15 @@ async def get_ohlcv(
     Indicator params (pass 0 to skip): ema_period, rsi_period, adx_period, atr_period.
     Returns candles and indicators (ema, rsi, adx, atr, sh_level, sl_level, structure, fractal_high, fractal_low) with values per bar.
     """
-    with suppress_ws_logging():
-        return await _get_ohlcv_impl(
-            symbol=symbol, timeframe=timeframe, start=start, end=end,
-            context_bars=context_bars, exchange_type=exchange_type,
-            backtest_start=backtest_start, backtest_end=backtest_end,
-            ema_period=ema_period, ema_timeframe=ema_timeframe,
-            rsi_period=rsi_period, rsi_overbought=rsi_overbought, rsi_oversold=rsi_oversold,
-            adx_period=adx_period, adx_threshold=adx_threshold, atr_period=atr_period,
-            fractal_period=fractal_period,
-        )
+    return await _get_ohlcv_impl(
+        symbol=symbol, timeframe=timeframe, start=start, end=end,
+        context_bars=context_bars, exchange_type=exchange_type,
+        backtest_start=backtest_start, backtest_end=backtest_end,
+        ema_period=ema_period, ema_timeframe=ema_timeframe,
+        rsi_period=rsi_period, rsi_overbought=rsi_overbought, rsi_oversold=rsi_oversold,
+        adx_period=adx_period, adx_threshold=adx_threshold, atr_period=atr_period,
+        fractal_period=fractal_period,
+    )
 
 
 async def _get_ohlcv_impl(
@@ -1824,12 +1887,16 @@ async def _get_ohlcv_impl(
             use_loader = bool(backtest_start and backtest_end)
             if use_loader:
                 try:
-                    loader = DataLoader(exchange_name="binance", exchange_type=exchange_type)
+                    loader = DataLoader(
+                        exchange_name="binance",
+                        exchange_type=exchange_type,
+                        log_level=logging.DEBUG,
+                    )
                     df_full = loader.get_data(symbol, timeframe, backtest_start[:10], backtest_end[:10])
                     if df_full is None or df_full.empty:
                         use_loader = False
                     else:
-                        logger.info(f"OHLCV using DataLoader (backtest range {backtest_start[:10]}–{backtest_end[:10]}): {len(df_full)} bars")
+                        logger.debug(f"OHLCV using DataLoader (backtest range {backtest_start[:10]}–{backtest_end[:10]}): {len(df_full)} bars")
                         timestamps = [int(ts.timestamp() * 1000) for ts in df_full.index]
                         opens   = df_full["open"].values.astype(float)
                         highs   = df_full["high"].values.astype(float)

@@ -59,7 +59,12 @@ def _fake_strategy():
                     "lost": {"total": 1, "pnl": {"total": -50.0, "average": -50.0}},
                 }
             ),
-            tradelist=_DummyAnalyzer([{"id": 1, "realized_pnl": 25.0}]),
+            tradelist=_DummyAnalyzer(
+                [
+                    {"id": 1, "realized_pnl": 25.0},
+                    {"id": 2, "realized_pnl": -10.0},
+                ]
+            ),
             equity=_DummyAnalyzer([{"timestamp": "2026-03-01T00:00:00Z", "equity": 10025.0}]),
         )
     )
@@ -88,6 +93,23 @@ def test_add_data_adds_feeds_without_network(data_loader_cls, _ws_cls):
     assert len(engine.cerebro.datas) == 2
     assert len(engine.ws_clients) == 2
     assert all(ws.started for ws in engine.ws_clients)
+    assert engine.cerebro.datas[0]._name.endswith("_15m")
+    assert engine.cerebro.datas[1]._name.endswith("_4h")
+
+
+@patch("engine.bt_live_engine.BinanceWebsocketClient", side_effect=lambda **kw: _DummyWSClient(**kw))
+@patch("engine.bt_live_engine.DataLoader")
+def test_add_data_normalizes_order_when_config_is_low_first(data_loader_cls, _ws_cls):
+    data_loader = MagicMock()
+    data_loader.fetch_recent_bars.return_value = []
+    data_loader_cls.return_value = data_loader
+
+    engine = BTLiveEngine({"initial_capital": 10000, "symbol": "ETH/USDT", "timeframes": ["15m", "4h"]})
+    engine.add_data()
+
+    assert len(engine.cerebro.datas) == 2
+    assert engine.cerebro.datas[0]._name.endswith("_15m")
+    assert engine.cerebro.datas[1]._name.endswith("_4h")
 
 
 def test_stop_sets_event_and_joins_clients():
@@ -124,11 +146,12 @@ def test_run_live_returns_metrics(add_data_mock):
     metrics = engine.run_live()
 
     add_data_mock.assert_called_once_with(engine)
+    engine.cerebro.run.assert_called_once_with(live=True, oldsync=False)
     assert metrics["total_trades"] == 2
     assert metrics["win_count"] == 1
     assert metrics["loss_count"] == 1
     assert "total_pnl" in metrics
-    assert len(engine.closed_trades) == 1
+    assert len(engine.closed_trades) == 2
 
 
 @pytest.mark.asyncio

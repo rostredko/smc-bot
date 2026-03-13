@@ -3,6 +3,7 @@ import { Card, CardContent, Box, Button, FormControlLabel, Checkbox, Typography 
 import { Terminal, DeleteOutline, ContentCopy, ArrowDownward } from '@mui/icons-material';
 import { Virtuoso, VirtuosoHandle } from 'react-virtuoso';
 import { useConsoleContext } from '../../../app/providers/console/ConsoleProvider';
+import { getConsoleLinePresentation } from '../lib/getConsoleLinePresentation';
 
 const ConsoleOutput: React.FC = () => {
     const {
@@ -26,56 +27,11 @@ const ConsoleOutput: React.FC = () => {
     }, [consoleOutput, autoScroll]);
 
     const renderLogLine = (line: string, index: number) => {
-        const isError = line.includes('ERROR') || line.includes('CRITICAL');
-        const isWarning = line.includes('WARNING') || line.includes('STOP UPDATE');
-        const isWarmupComplete = line.includes('WARM-UP COMPLETE');
-        const isSignal = line.includes('SIGNAL GENERATED:');
-        const isExecuted = line.includes('EXECUTED');
-        const isExitTriggered = line.includes('EXIT TRIGGERED');
-        const isTradeClosed = line.includes('TRADE CLOSED');
-
-        let color = '#aaaaaa';
-        let fontWeight = 'normal';
-        let padding = '2px 0';
-        let margin = '0';
-        let borderBottom = 'none';
-
-        if (isWarmupComplete) {
-            color = '#00ffff';
-            fontWeight = 'bold';
-            padding = '12px 0';
-            borderBottom = '1px solid #333';
-        } else if (isError) {
-            color = '#ff4444';
-            fontWeight = 'bold';
-        } else if (isWarning) {
-            color = '#ffaa00';
-        } else if (isSignal) {
-            color = '#00bfff';
-            margin = '8px 0 0 0';
-        } else if (isExecuted) {
-            color = '#ffcc00';
-        } else if (isExitTriggered) {
-            color = '#ffaa00';
-        } else if (isTradeClosed) {
-            const pnlMatch = line.match(/PnL:\s*([-\d.]+)/);
-            if (pnlMatch && parseFloat(pnlMatch[1]) < 0) {
-                color = '#ff4444';
-            } else {
-                color = '#00ff00';
-            }
-            fontWeight = 'bold';
-            padding = '0 0 8px 0';
-            borderBottom = '1px dashed #333';
-        }
+        const lineStyle = getConsoleLinePresentation(line);
 
         return (
             <div key={index} style={{
-                color,
-                fontWeight,
-                padding,
-                margin,
-                borderBottom,
+                ...lineStyle,
                 whiteSpace: "pre-wrap",
                 wordBreak: "break-word",
                 lineHeight: 1.5,

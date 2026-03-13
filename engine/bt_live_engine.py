@@ -1,5 +1,6 @@
 import threading
 import queue
+import logging
 import backtrader as bt
 from typing import Dict, Any
 
@@ -9,6 +10,7 @@ from .live_ws_client import BinanceWebsocketClient
 from .live_data_feed import LiveWebSocketDataFeed
 from .bt_analyzers import TradeListAnalyzer, EquityCurveAnalyzer
 from .data_loader import DataLoader
+from .trade_metrics import build_closed_trade_metrics
 
 logger = get_logger(__name__)
 
@@ -55,11 +57,15 @@ class BTLiveEngine(BaseEngine):
         exchange_name = self.config.get("exchange", "binance")
         queue_maxsize = int(self.config.get("live_queue_maxsize", 3000))
         
-        # Consistent with backtest engine: lower timeframe first
-        ordered_timeframes = list(reversed(timeframes)) if len(timeframes) > 1 else timeframes
+        # Keep data0=LTF and data1=HTF regardless of config array order.
+        ordered_timeframes = self._ordered_timeframes(timeframes)
         
         # Initialize DataLoader for history warm-up
-        data_loader = DataLoader(exchange_name=exchange_name, exchange_type=exchange_type)
+        data_loader = DataLoader(
+            exchange_name=exchange_name,
+            exchange_type=exchange_type,
+            log_level=self.config.get("log_level", logging.INFO),
+        )
         
         for tf in ordered_timeframes:
             logger.info(f"Initializing Live WebSocket for {symbol} {tf}...")
@@ -119,9 +125,8 @@ class BTLiveEngine(BaseEngine):
 
         logger.info("Starting Backtrader Live (Paper) Trading engine...")
         try:
-            # exactsync=True is important for live feeds with multiple datanames
-            # It forces Cerebro to advance all feeds together if possible.
-            results = self.cerebro.run(exactcells=True)
+            # Use supported live-mode kwargs only; keep new multi-feed sync behavior.
+            results = self.cerebro.run(live=True, oldsync=False)
             
             if not results:
                 self.equity_curve = []
@@ -184,42 +189,25 @@ class BTLiveEngine(BaseEngine):
         drawdown_info = strat.analyzers.drawdown.get_analysis()
         max_dd = self._safe_max_drawdown(drawdown_info)
 
-        trade_analysis = strat.analyzers.trades.get_analysis()
-        won = trade_analysis.get('won', {})
-        lost = trade_analysis.get('lost', {})
-        
-        total_closed = trade_analysis.get('total', {}).get('closed', 0)
-
-        # Win rate logic
-        win_rate = 0.0
-        if total_closed > 0:
-            won_dict = trade_analysis.get('won', {})
-            won_count = won_dict if isinstance(won_dict, int) else won_dict.get('total', 0)
-            win_rate = (won_count / total_closed) * 100
-
-        # Profit factor logic (won/lost can be int when 0 in some Backtrader versions)
-        won_raw = trade_analysis.get('won', {})
-        lost_raw = trade_analysis.get('lost', {})
-        won_pnl = won_raw.get('pnl', {}).get('total', 0.0) if isinstance(won_raw, dict) else 0.0
-        lost_pnl = abs(lost_raw.get('pnl', {}).get('total', 0.0)) if isinstance(lost_raw, dict) else 0.0
-        if lost_pnl == 0:
-            profit_factor = 0.0 if won_pnl == 0 else 999.0
-        else:
-            profit_factor = won_pnl / lost_pnl
+        trade_metrics = build_closed_trade_metrics(
+            initial_capital=self.cerebro.broker.startingcash,
+            final_capital=self.cerebro.broker.getvalue(),
+            closed_trades=self.closed_trades,
+        )
 
         return {
-            "initial_capital": self.cerebro.broker.startingcash,
-            "final_capital": self.cerebro.broker.getvalue(),
-            "total_pnl": self.cerebro.broker.getvalue() - self.cerebro.broker.startingcash,
+            "initial_capital": trade_metrics["initial_capital"],
+            "final_capital": trade_metrics["final_capital"],
+            "total_pnl": trade_metrics["total_pnl"],
             "sharpe_ratio": sharpe,
             "max_drawdown": max_dd,
-            "total_trades": total_closed,
-            "win_rate": win_rate,
-            "profit_factor": profit_factor,
-            "win_count": won.get('total', 0) if isinstance(won, dict) else won,
-            "loss_count": lost.get('total', 0) if isinstance(lost, dict) else lost,
-            "avg_win": won.get('pnl', {}).get('average', 0.0) if isinstance(won, dict) else 0.0,
-            "avg_loss": lost.get('pnl', {}).get('average', 0.0) if isinstance(lost, dict) else 0.0,
+            "total_trades": trade_metrics["total_trades"],
+            "win_rate": trade_metrics["win_rate"],
+            "profit_factor": trade_metrics["profit_factor"],
+            "win_count": trade_metrics["win_count"],
+            "loss_count": trade_metrics["loss_count"],
+            "avg_win": trade_metrics["avg_win"],
+            "avg_loss": trade_metrics["avg_loss"],
         }
 
     def _safe_max_drawdown(self, drawdown_info):
