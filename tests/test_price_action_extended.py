@@ -63,6 +63,12 @@ class TestPriceActionExtended(unittest.TestCase):
         self.strategy.params.ltf_choch_entry_window_bars = 6
         self.strategy.params.ltf_choch_arm_timeout_bars = 24
         self.strategy.params.ltf_choch_max_pullaway_atr_mult = 1.5
+        self.strategy.params.use_premium_discount_filter = False
+        self.strategy.params.use_space_to_target_filter = False
+        self.strategy.params.space_to_target_min_rr = 2.0
+        self.strategy.params.use_choch_displacement_filter = False
+        self.strategy.params.choch_displacement_atr_mult = 1.5
+        self.strategy.params.require_choch_fvg = False
 
         # Mock indicators as simple lists/arrays that support [0]
         self.strategy.close_line = [101.0]
@@ -101,6 +107,10 @@ class TestPriceActionExtended(unittest.TestCase):
         self.strategy._short_choch_trigger_price = 101.0
         self.strategy._long_choch_trigger_zone_ref = 100.0
         self.strategy._short_choch_trigger_zone_ref = 100.0
+        self.strategy._long_choch_trigger_body_atr_ratio = 1.6
+        self.strategy._short_choch_trigger_body_atr_ratio = 1.6
+        self.strategy._long_choch_trigger_has_fvg = True
+        self.strategy._short_choch_trigger_has_fvg = True
 
     def test_filter_rsi_momentum_long(self):
         """Test RSI Momentum Logic for Long entries"""
@@ -183,6 +193,55 @@ class TestPriceActionExtended(unittest.TestCase):
         self.strategy.high_line = [110.0]
         self.strategy.low_line = [100.0]
         self.assertFalse(self.strategy._is_bearish_engulfing())
+
+    def test_premium_discount_blocks_long_above_equilibrium(self):
+        self.strategy.params.use_premium_discount_filter = True
+        self.strategy.rsi = [65.0]
+        self.strategy.close_line = [111.0]
+        self.assertFalse(self.strategy._check_filters_long(), "Should fail: long entry is above 4H equilibrium")
+
+    def test_premium_discount_blocks_short_below_equilibrium(self):
+        self.strategy.params.use_premium_discount_filter = True
+        self.strategy.ms_4h.structure = [-1.0]
+        self.strategy.ms_4h.sh_level = [120.0]
+        self.strategy.ms_4h.sl_level = [100.0]
+        self.strategy.close_line = [109.0]
+        self.strategy.rsi = [35.0]
+        self.strategy._short_choch_trigger_zone_ref = 120.0
+        self.assertFalse(self.strategy._check_filters_short(), "Should fail: short entry is below 4H equilibrium")
+
+    def test_space_to_target_blocks_long_when_ceiling_too_close(self):
+        self.strategy.params.use_space_to_target_filter = True
+        self.strategy.rsi = [65.0]
+        self.strategy.close_line = [109.0]
+        self.assertFalse(self.strategy._check_filters_long(), "Should fail: less than 2R available before 4H resistance")
+
+    def test_space_to_target_allows_long_when_room_is_sufficient(self):
+        self.strategy.params.use_space_to_target_filter = True
+        self.strategy.rsi = [65.0]
+        self.strategy.close_line = [105.0]
+        self.strategy._long_choch_trigger_price = 105.0
+        self.assertTrue(self.strategy._check_filters_long(), "Should pass: at least 2R available before 4H resistance")
+
+    def test_choch_displacement_requires_body_vs_atr(self):
+        self.strategy.params.use_choch_displacement_filter = True
+        self.strategy.rsi = [65.0]
+        self.strategy._long_choch_trigger_body_atr_ratio = 1.2
+        self.assertFalse(self.strategy._check_filters_long(), "Should fail: CHoCH displacement body is too small")
+
+        self.strategy._long_choch_trigger_body_atr_ratio = 1.6
+        self.assertTrue(self.strategy._check_filters_long(), "Should pass: CHoCH displacement body clears ATR threshold")
+
+    def test_choch_displacement_can_require_fvg(self):
+        self.strategy.params.use_choch_displacement_filter = True
+        self.strategy.params.require_choch_fvg = True
+        self.strategy.rsi = [65.0]
+        self.strategy._long_choch_trigger_body_atr_ratio = 1.7
+        self.strategy._long_choch_trigger_has_fvg = False
+        self.assertFalse(self.strategy._check_filters_long(), "Should fail: CHoCH displacement did not leave FVG")
+
+        self.strategy._long_choch_trigger_has_fvg = True
+        self.assertTrue(self.strategy._check_filters_long(), "Should pass: CHoCH displacement includes FVG")
 
 if __name__ == '__main__':
     unittest.main()

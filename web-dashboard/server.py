@@ -439,6 +439,12 @@ def get_strategy_config_schema(strategy_name: str):
 
             "risk_reward_ratio": {"type": "number", "default": 2.0},
             "sl_buffer_atr": {"type": "number", "default": 1.5},
+            "use_premium_discount_filter": {"type": "boolean", "default": False},
+            "use_space_to_target_filter": {"type": "boolean", "default": False},
+            "space_to_target_min_rr": {"type": "number", "default": 2.0},
+            "use_choch_displacement_filter": {"type": "boolean", "default": False},
+            "choch_displacement_atr_mult": {"type": "number", "default": 1.5},
+            "require_choch_fvg": {"type": "boolean", "default": False},
 
             "pattern_hammer": {"type": "boolean", "default": True},
             "pattern_inverted_hammer": {"type": "boolean", "default": True},

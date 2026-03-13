@@ -87,6 +87,12 @@ class PriceActionStrategy(BaseStrategy):
         ('ltf_choch_entry_window_bars', 6),
         ('ltf_choch_arm_timeout_bars', 24),
         ('ltf_choch_max_pullaway_atr_mult', 1.5),
+        ('use_premium_discount_filter', False),
+        ('use_space_to_target_filter', False),
+        ('space_to_target_min_rr', 2.0),
+        ('use_choch_displacement_filter', False),
+        ('choch_displacement_atr_mult', 1.5),
+        ('require_choch_fvg', False),
         ('use_opposing_level_tp', False),
         ('use_rsi_filter', True),
         ('rsi_period', 14),
@@ -151,6 +157,10 @@ class PriceActionStrategy(BaseStrategy):
         self._short_choch_trigger_price = None
         self._long_choch_trigger_zone_ref = None
         self._short_choch_trigger_zone_ref = None
+        self._long_choch_trigger_body_atr_ratio = None
+        self._short_choch_trigger_body_atr_ratio = None
+        self._long_choch_trigger_has_fvg = None
+        self._short_choch_trigger_has_fvg = None
 
     def get_execution_bar_indicators(self):
         ind = {}
@@ -345,11 +355,17 @@ class PriceActionStrategy(BaseStrategy):
             structure = self._get_structure_state()
             sh_level = self._to_valid_float(self.ms_4h.sh_level[0])
             sl_level = self._to_valid_float(self.ms_4h.sl_level[0])
+            equilibrium = self._get_htf_equilibrium()
+            space_metrics = self._get_space_to_target_metrics(direction, self.close_line[0])
             indicators['Structure'] = structure
             if sh_level is not None:
                 indicators['SH_Level_4H'] = round(sh_level, 2)
             if sl_level is not None:
                 indicators['SL_Level_4H'] = round(sl_level, 2)
+            if equilibrium is not None:
+                indicators['HTF_Equilibrium_0_5'] = round(equilibrium, 2)
+            if space_metrics is not None:
+                indicators['HTF_Space_R'] = round(space_metrics['available_rr'], 2)
 
             if direction == 'long':
                 zone = self._get_poi_zone_long()
@@ -363,9 +379,22 @@ class PriceActionStrategy(BaseStrategy):
                 if self._bool_param('use_ltf_choch_trigger', True):
                     trigger_age = len(self.data_ltf) - self._long_choch_trigger_bar if self._long_choch_trigger_bar > 0 else None
                     if trigger_age is not None:
+                        body_atr_ratio, has_fvg = self._get_choch_trigger_quality('long')
                         indicators['LTF_CHOCH_Age_Bars'] = trigger_age
                         indicators['LTF_CHOCH_Trigger_Price'] = round(self._long_choch_trigger_price, 2) if self._long_choch_trigger_price is not None else None
+                        if body_atr_ratio is not None:
+                            indicators['LTF_CHOCH_Body_ATR'] = round(body_atr_ratio, 2)
+                        if has_fvg is not None:
+                            indicators['LTF_CHOCH_FVG'] = has_fvg
                         why_parts.append(f"1H CHoCH confirmed {trigger_age} bar(s) ago")
+                        if body_atr_ratio is not None:
+                            why_parts.append(f"1H CHoCH displacement: body {body_atr_ratio:.2f}x ATR")
+                        if has_fvg is True:
+                            why_parts.append("1H CHoCH left a bullish FVG")
+                if self._bool_param('use_premium_discount_filter', False) and equilibrium is not None:
+                    why_parts.append(f"Premium/Discount: entry {self.close_line[0]:.2f} is below EQ {equilibrium:.2f} (discount)")
+                if self._bool_param('use_space_to_target_filter', False) and space_metrics is not None:
+                    why_parts.append(f"Space to target: {space_metrics['available_rr']:.2f}R available before SH_Level_4H")
             else:
                 zone = self._get_poi_zone_short()
                 if zone is not None:
@@ -378,9 +407,22 @@ class PriceActionStrategy(BaseStrategy):
                 if self._bool_param('use_ltf_choch_trigger', True):
                     trigger_age = len(self.data_ltf) - self._short_choch_trigger_bar if self._short_choch_trigger_bar > 0 else None
                     if trigger_age is not None:
+                        body_atr_ratio, has_fvg = self._get_choch_trigger_quality('short')
                         indicators['LTF_CHOCH_Age_Bars'] = trigger_age
                         indicators['LTF_CHOCH_Trigger_Price'] = round(self._short_choch_trigger_price, 2) if self._short_choch_trigger_price is not None else None
+                        if body_atr_ratio is not None:
+                            indicators['LTF_CHOCH_Body_ATR'] = round(body_atr_ratio, 2)
+                        if has_fvg is not None:
+                            indicators['LTF_CHOCH_FVG'] = has_fvg
                         why_parts.append(f"1H CHoCH confirmed {trigger_age} bar(s) ago")
+                        if body_atr_ratio is not None:
+                            why_parts.append(f"1H CHoCH displacement: body {body_atr_ratio:.2f}x ATR")
+                        if has_fvg is True:
+                            why_parts.append("1H CHoCH left a bearish FVG")
+                if self._bool_param('use_premium_discount_filter', False) and equilibrium is not None:
+                    why_parts.append(f"Premium/Discount: entry {self.close_line[0]:.2f} is above EQ {equilibrium:.2f} (premium)")
+                if self._bool_param('use_space_to_target_filter', False) and space_metrics is not None:
+                    why_parts.append(f"Space to target: {space_metrics['available_rr']:.2f}R available before SL_Level_4H")
 
         if self._is_ema_filter_enabled():
             ema_val = self.ema_htf[0]
@@ -550,12 +592,24 @@ class PriceActionStrategy(BaseStrategy):
             parsed = default
         return max(min_value, parsed)
 
+    def _float_param(self, name: str, default: float, min_value: float | None = None) -> float:
+        raw = getattr(self.params, name, default)
+        try:
+            parsed = float(raw)
+        except (TypeError, ValueError):
+            parsed = default
+        if min_value is not None:
+            return max(min_value, parsed)
+        return parsed
+
     def _reset_long_choch_state(self):
         self._armed_long_choch_level = None
         self._armed_long_bar = -1
         self._long_choch_trigger_bar = -1
         self._long_choch_trigger_price = None
         self._long_choch_trigger_zone_ref = None
+        self._long_choch_trigger_body_atr_ratio = None
+        self._long_choch_trigger_has_fvg = None
 
     def _reset_short_choch_state(self):
         self._armed_short_choch_level = None
@@ -563,16 +617,113 @@ class PriceActionStrategy(BaseStrategy):
         self._short_choch_trigger_bar = -1
         self._short_choch_trigger_price = None
         self._short_choch_trigger_zone_ref = None
+        self._short_choch_trigger_body_atr_ratio = None
+        self._short_choch_trigger_has_fvg = None
 
     def _consume_ltf_choch_trigger(self, direction: str):
         if direction == 'long':
             self._long_choch_trigger_bar = -1
             self._long_choch_trigger_price = None
             self._long_choch_trigger_zone_ref = None
+            self._long_choch_trigger_body_atr_ratio = None
+            self._long_choch_trigger_has_fvg = None
         elif direction == 'short':
             self._short_choch_trigger_bar = -1
             self._short_choch_trigger_price = None
             self._short_choch_trigger_zone_ref = None
+            self._short_choch_trigger_body_atr_ratio = None
+            self._short_choch_trigger_has_fvg = None
+
+    def _get_choch_trigger_quality(self, direction: str):
+        if direction == 'long':
+            return self._long_choch_trigger_body_atr_ratio, self._long_choch_trigger_has_fvg
+        return self._short_choch_trigger_body_atr_ratio, self._short_choch_trigger_has_fvg
+
+    def _capture_choch_trigger_quality(self, direction: str):
+        atr_val = self._to_valid_float(self.atr[0])
+        body_size = abs(self.close_line[0] - self.open_line[0])
+        body_atr_ratio = None
+        if atr_val is not None and atr_val > 0:
+            body_atr_ratio = body_size / atr_val
+        has_fvg = self._detect_ltf_fvg(direction)
+        if direction == 'long':
+            self._long_choch_trigger_body_atr_ratio = body_atr_ratio
+            self._long_choch_trigger_has_fvg = has_fvg
+        else:
+            self._short_choch_trigger_body_atr_ratio = body_atr_ratio
+            self._short_choch_trigger_has_fvg = has_fvg
+
+    def _detect_ltf_fvg(self, direction: str) -> bool:
+        if len(self.data_ltf) < 3:
+            return False
+
+        if direction == 'long':
+            prior_high = self._to_valid_float(self.high_line[-2])
+            current_low = self._to_valid_float(self.low_line[0])
+            if prior_high is None or current_low is None:
+                return False
+            return current_low > prior_high
+
+        prior_low = self._to_valid_float(self.low_line[-2])
+        current_high = self._to_valid_float(self.high_line[0])
+        if prior_low is None or current_high is None:
+            return False
+        return current_high < prior_low
+
+    def _get_htf_equilibrium(self):
+        sh_level = self._to_valid_float(self.ms_4h.sh_level[0])
+        sl_level = self._to_valid_float(self.ms_4h.sl_level[0])
+        if sh_level is None or sl_level is None or sh_level <= sl_level:
+            return None
+        return (sh_level + sl_level) / 2.0
+
+    def _passes_premium_discount_filter(self, direction: str) -> bool:
+        if not self._bool_param('use_structure_filter', True):
+            return True
+        if not self._bool_param('use_premium_discount_filter', False):
+            return True
+
+        equilibrium = self._get_htf_equilibrium()
+        if equilibrium is None:
+            return False
+
+        entry_price = self.close_line[0]
+        if direction == 'long':
+            return entry_price < equilibrium
+        return entry_price > equilibrium
+
+    def _get_space_to_target_metrics(self, direction: str, entry_price: float):
+        if direction == 'long':
+            opposing_level = self._to_valid_float(self.ms_4h.sh_level[0])
+            _, risk, _ = self._resolve_structural_sl_long(entry_price)
+            if opposing_level is None or opposing_level <= entry_price or risk <= 0:
+                return None
+            available_space = opposing_level - entry_price
+        else:
+            opposing_level = self._to_valid_float(self.ms_4h.sl_level[0])
+            _, risk, _ = self._resolve_structural_sl_short(entry_price)
+            if opposing_level is None or opposing_level >= entry_price or risk <= 0:
+                return None
+            available_space = entry_price - opposing_level
+
+        return {
+            'opposing_level': opposing_level,
+            'risk': risk,
+            'available_space': available_space,
+            'available_rr': available_space / risk if risk > 0 else 0.0,
+        }
+
+    def _passes_space_to_target_filter(self, direction: str) -> bool:
+        if not self._bool_param('use_structure_filter', True):
+            return True
+        if not self._bool_param('use_space_to_target_filter', False):
+            return True
+
+        min_rr = self._float_param('space_to_target_min_rr', 2.0, min_value=0.0)
+        metrics = self._get_space_to_target_metrics(direction, self.close_line[0])
+        if metrics is None:
+            return False
+        return metrics['available_rr'] >= min_rr
 
     def _has_valid_ltf_choch_trigger(self, direction: str) -> bool:
         if not self._bool_param('use_ltf_choch_trigger', True):
@@ -600,6 +751,15 @@ class PriceActionStrategy(BaseStrategy):
         if max_pullaway_mult is not None and max_pullaway_mult > 0 and atr_val is not None and atr_val > 0:
             if abs(self.close_line[0] - trigger_price) > (atr_val * max_pullaway_mult):
                 return False
+
+        body_atr_ratio, has_fvg = self._get_choch_trigger_quality(direction)
+        if self._bool_param('use_choch_displacement_filter', False):
+            min_body_mult = self._float_param('choch_displacement_atr_mult', 1.5, min_value=0.0)
+            if body_atr_ratio is None or body_atr_ratio < min_body_mult:
+                return False
+
+        if self._bool_param('require_choch_fvg', False) and has_fvg is not True:
+            return False
 
         return True
 
@@ -651,6 +811,7 @@ class PriceActionStrategy(BaseStrategy):
                     self._long_choch_trigger_bar = bar_num
                     self._long_choch_trigger_price = close_price
                     self._long_choch_trigger_zone_ref = self._to_valid_float(self.ms_4h.sl_level[0])
+                    self._capture_choch_trigger_quality('long')
                     self._armed_long_choch_level = None
                     self._armed_long_bar = -1
 
@@ -669,6 +830,7 @@ class PriceActionStrategy(BaseStrategy):
                     self._short_choch_trigger_bar = bar_num
                     self._short_choch_trigger_price = close_price
                     self._short_choch_trigger_zone_ref = self._to_valid_float(self.ms_4h.sh_level[0])
+                    self._capture_choch_trigger_quality('short')
                     self._armed_short_choch_level = None
                     self._armed_short_bar = -1
 
@@ -868,6 +1030,10 @@ class PriceActionStrategy(BaseStrategy):
                     return False
             elif not self._bar_intersects_zone(self._get_poi_zone_long()):
                 return False
+            if not self._passes_premium_discount_filter('long'):
+                return False
+            if not self._passes_space_to_target_filter('long'):
+                return False
 
         if self._is_ema_filter_enabled():
             htf_close = self._to_valid_float(self.data_htf.close[0])
@@ -900,6 +1066,10 @@ class PriceActionStrategy(BaseStrategy):
                 if not self._has_valid_ltf_choch_trigger('short'):
                     return False
             elif not self._bar_intersects_zone(self._get_poi_zone_short()):
+                return False
+            if not self._passes_premium_discount_filter('short'):
+                return False
+            if not self._passes_space_to_target_filter('short'):
                 return False
 
         if self._is_ema_filter_enabled():

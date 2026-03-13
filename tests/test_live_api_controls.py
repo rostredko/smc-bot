@@ -234,6 +234,12 @@ def test_bt_price_action_schema_defaults_match_runtime_defaults():
     assert schema["min_range_factor"]["default"] == 1.2
     assert schema["risk_reward_ratio"]["default"] == 2.0
     assert schema["sl_buffer_atr"]["default"] == 1.5
+    assert schema["use_premium_discount_filter"]["default"] is False
+    assert schema["use_space_to_target_filter"]["default"] is False
+    assert schema["space_to_target_min_rr"]["default"] == 2.0
+    assert schema["use_choch_displacement_filter"]["default"] is False
+    assert schema["choch_displacement_atr_mult"]["default"] == 1.5
+    assert schema["require_choch_fvg"]["default"] is False
 
 
 def test_clear_ohlcv_cache_endpoint_clears_mongo_cache():
