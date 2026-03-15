@@ -76,24 +76,43 @@ export const ConsoleProvider: React.FC<{ children: React.ReactNode }> = ({ child
             };
 
             ws.onmessage = (event) => {
-                if (event.data && event.data.trim()) {
-                    if (event.data.trim() === CLEAR_CONSOLE_SIGNAL) {
+                if (typeof event.data !== 'string' || !event.data.trim()) {
+                    return;
+                }
+
+                try {
+                    const payload = JSON.parse(event.data);
+                    if (payload?.type === 'console_snapshot' && Array.isArray(payload.lines)) {
                         logBuffer.current = [];
                         if (flushTimeout.current) {
                             clearTimeout(flushTimeout.current);
                             flushTimeout.current = null;
                         }
-                        setConsoleOutput([]);
+                        setConsoleOutput(payload.lines.map((line: unknown) => String(line)).slice(-5000));
+                        lastFlushTime.current = Date.now();
                         return;
                     }
-                    logBuffer.current.push(event.data);
-                    const now = Date.now();
-                    if (!flushTimeout.current) {
-                        if (now - lastFlushTime.current >= 100) {
-                            flushLogs();
-                        } else {
-                            flushTimeout.current = setTimeout(flushLogs, 100);
-                        }
+                } catch {
+                    // Plain-text log line or control signal.
+                }
+
+                if (event.data.trim() === CLEAR_CONSOLE_SIGNAL) {
+                    logBuffer.current = [];
+                    if (flushTimeout.current) {
+                        clearTimeout(flushTimeout.current);
+                        flushTimeout.current = null;
+                    }
+                    setConsoleOutput([]);
+                    return;
+                }
+
+                logBuffer.current.push(event.data);
+                const now = Date.now();
+                if (!flushTimeout.current) {
+                    if (now - lastFlushTime.current >= 100) {
+                        flushLogs();
+                    } else {
+                        flushTimeout.current = setTimeout(flushLogs, 100);
                     }
                 }
             };

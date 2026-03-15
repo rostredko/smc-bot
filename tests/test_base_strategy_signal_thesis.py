@@ -34,8 +34,8 @@ def test_log_signal_thesis_emits_trigger_filters_context_and_risk_plan():
             entry_context=entry_context,
             sl_price_ref=70125.45,
             tp_price_ref=66462.00,
-            sl_calc_expr="SH_Level_4H (69720.12) + (ATR_4H * 0.5)",
-            tp_calc_expr="max(Entry - (Risk * RR), SL_Level_4H 66462.00)",
+            sl_calc_expr="SH_Level_1D (69720.12) + (ATR_1D * 0.5)",
+            tp_calc_expr="max(Entry - (Risk * RR), SL_Level_1D 66462.00)",
         )
 
     logged_lines = [call.args[0] for call in info_mock.call_args_list]
@@ -44,4 +44,4 @@ def test_log_signal_thesis_emits_trigger_filters_context_and_risk_plan():
     assert "SIGNAL THESIS: Trigger: Bearish Engulfing" in logged_lines[0]
     assert "SIGNAL THESIS: Filters: Structure: Bearish" in logged_lines[1]
     assert "Structure=bearish" in logged_lines[2]
-    assert "SIGNAL THESIS: Risk plan: SL 70125.45 via SH_Level_4H" in logged_lines[3]
+    assert "SIGNAL THESIS: Risk plan: SL 70125.45 via SH_Level_1D" in logged_lines[3]

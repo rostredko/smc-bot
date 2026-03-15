@@ -5,6 +5,7 @@ Provides REST API endpoints for web dashboard integration.
 
 import os
 import asyncio
+import json
 import sys
 import threading
 import logging
@@ -32,6 +33,17 @@ from pydantic import BaseModel, ConfigDict
 from engine.bt_backtest_engine import BTBacktestEngine
 from engine.bt_live_engine import BTLiveEngine
 from engine.data_loader import DataLoader
+from engine.execution_settings import (
+    DEFAULT_EXECUTION_MODE,
+    SUPPORTED_EXECUTION_MODES,
+    apply_execution_settings,
+    normalize_execution_mode,
+)
+from engine.live_ws_client import (
+    SUPPORTED_LIVE_EXCHANGES,
+    normalize_live_exchange_name,
+    normalize_live_exchange_type,
+)
 from engine.logger import (
     coerce_log_level,
     get_logger,
@@ -40,13 +52,21 @@ from engine.logger import (
     ws_log_queue,
     clear_ws_log_queue,
 )
-from services.strategy_runtime import resolve_strategy_class, build_runtime_strategy_config
+from services.strategy_runtime import (
+    resolve_strategy_class,
+    build_runtime_strategy_config,
+    list_dashboard_strategies,
+)
 from services.result_mapper import (
     map_backtest_trades,
     map_live_trades,
     build_backtest_metrics_doc,
     build_live_metrics_doc,
     build_equity_series,
+)
+from strategies.market_structure import (
+    compute_fractal_markers as _shared_compute_fractal_markers,
+    compute_market_structure_levels as _shared_compute_market_structure_levels,
 )
 
 from db import get_database, is_database_available, init_db
@@ -74,6 +94,14 @@ RUN_LOG_CAPTURE_MAX_LINES = 12000
 RUN_LOG_DB_TAIL_LINES = 400
 DEFAULT_APP_LOG_LEVEL = "INFO"
 DEFAULT_LIVE_OUTPUT_LOG_LEVEL = "INFO"
+ACTIVE_CONSOLE_BUFFER_MAX_LINES = 5000
+SENSITIVE_LIVE_CONFIG_FIELDS = {
+    "apiKey",
+    "secret",
+    "api_key",
+    "api_secret",
+    "sandbox",
+}
 
 os.makedirs(DATA_DIR, exist_ok=True)
 
@@ -131,9 +159,13 @@ class BacktestConfig(BaseModel):
     trailing_stop_distance: float = 0.04
     breakeven_trigger_r: float = 1.5
     dynamic_position_sizing: bool = True
-    taker_fee: float = 0.04  # Default 0.04%
+    taker_fee: Optional[float] = None  # Legacy percent input; prefer *_fee_bps fields.
+    maker_fee_bps: Optional[float] = None
+    taker_fee_bps: Optional[float] = None
     exchange: str = "binance"
     exchange_type: str = "future"
+    execution_mode: str = DEFAULT_EXECUTION_MODE
+    fee_source: Optional[str] = None
     loaded_template_name: Optional[str] = None
     position_cap_adverse: float = 0.5  # Worst-case gap for position cap (0.5=50%). Lower = larger positions.
     slippage_bps: float = 0.0
@@ -157,6 +189,7 @@ class BacktestStatus(BaseModel):
     message: str = ""
     results: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
+    config: Optional[Dict[str, Any]] = None
     should_cancel: bool = False  # Flag to signal cancellation
     engine: Optional[Any] = None  # Reference to BacktestEngine for cancellation
 
@@ -168,9 +201,18 @@ connection_lock = threading.Lock()
 live_trading_state: Dict[str, Any] = {
     "is_running": False,
     "engine": None,
+    "run_id": None,
+    "config": None,
     "start_time": None,
     "stop_requested": False,
 }
+
+active_console_state: Dict[str, Any] = {
+    "run_id": None,
+    "run_type": None,
+    "lines": deque(maxlen=ACTIVE_CONSOLE_BUFFER_MAX_LINES),
+}
+active_console_lock = threading.Lock()
 
 strategy_schema_cache: Dict[str, Dict[str, Any]] = {}
 _broadcast_shutdown: asyncio.Event = asyncio.Event()
@@ -182,6 +224,10 @@ def _latest_running_backtest_run_id() -> Optional[str]:
         if status.status == "running":
             return rid
     return None
+
+
+def _has_active_runtime() -> bool:
+    return bool(live_trading_state.get("is_running")) or _latest_running_backtest_run_id() is not None
 
 
 class _RunLogCollector(logging.Handler):
@@ -209,6 +255,62 @@ class _RunLogCollector(logging.Handler):
                 return []
             lines = list(self._lines)
         return lines[-max_lines:]
+
+
+def _strip_sensitive_live_config_fields(config: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    sanitized = dict(config or {})
+    for key in SENSITIVE_LIVE_CONFIG_FIELDS:
+        sanitized.pop(key, None)
+
+    trading = sanitized.get("trading")
+    if isinstance(trading, dict):
+        sanitized_trading = dict(trading)
+        for key in SENSITIVE_LIVE_CONFIG_FIELDS:
+            sanitized_trading.pop(key, None)
+        sanitized["trading"] = sanitized_trading
+
+    return sanitized
+
+
+def _reset_active_console_session(run_type: Optional[str], run_id: Optional[str]) -> None:
+    with active_console_lock:
+        active_console_state["run_type"] = run_type
+        active_console_state["run_id"] = run_id
+        active_console_state["lines"] = deque(maxlen=ACTIVE_CONSOLE_BUFFER_MAX_LINES)
+
+
+def _append_active_console_line(message: str) -> None:
+    text = str(message or "").rstrip("\n")
+    if not text or text == WS_CLEAR_CONSOLE_SIGNAL:
+        return
+    with active_console_lock:
+        active_console_state["lines"].append(text)
+
+
+def _get_active_console_snapshot() -> Dict[str, Any]:
+    with active_console_lock:
+        return {
+            "run_id": active_console_state.get("run_id"),
+            "run_type": active_console_state.get("run_type"),
+            "lines": list(active_console_state.get("lines", [])),
+        }
+
+
+def _clear_active_console_session_if_inactive(
+    *,
+    run_id: Optional[str] = None,
+    run_type: Optional[str] = None,
+) -> None:
+    if _has_active_runtime():
+        return
+
+    with active_console_lock:
+        if run_id is not None and active_console_state.get("run_id") != run_id:
+            return
+        if run_type is not None and active_console_state.get("run_type") != run_type:
+            return
+
+    _reset_active_console_session(None, None)
 
 
 def _attach_run_log_handlers(run_id: str, level: int = logging.INFO) -> tuple[_RunLogCollector, logging.FileHandler, str]:
@@ -276,6 +378,67 @@ def _resolve_run_log_levels(config: Optional[Dict[str, Any]] = None) -> tuple[in
     return app_level, ws_level
 
 
+def _normalize_exchange_fields(config: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    normalized = _strip_sensitive_live_config_fields(config)
+    trading = normalized.get("trading", {}) if isinstance(normalized.get("trading"), dict) else {}
+    normalized["exchange"] = normalize_live_exchange_name(
+        normalized.get("exchange", trading.get("exchange", "binance")),
+        default="binance",
+    )
+    normalized["exchange_type"] = normalize_live_exchange_type(normalized.get("exchange_type", "future"))
+    normalized["execution_mode"] = normalize_execution_mode(
+        normalized.get("execution_mode", DEFAULT_EXECUTION_MODE),
+        default=DEFAULT_EXECUTION_MODE,
+    )
+    normalized = apply_execution_settings(normalized)
+    if isinstance(trading, dict):
+        normalized.setdefault("trading", dict(trading))
+        normalized["trading"]["exchange"] = normalized["exchange"]
+    return normalized
+
+
+def _validate_live_start_config(config: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    if not isinstance(config, dict) or not config:
+        raise HTTPException(status_code=400, detail="Live configuration not found")
+
+    exchange_raw = config.get("exchange")
+    if exchange_raw is None or not str(exchange_raw).strip():
+        raise HTTPException(status_code=400, detail="config.exchange is required")
+
+    normalized = _normalize_exchange_fields(config)
+    exchange = normalized["exchange"]
+    if exchange not in SUPPORTED_LIVE_EXCHANGES:
+        supported = ", ".join(sorted(SUPPORTED_LIVE_EXCHANGES))
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported live exchange '{exchange}'. Supported exchanges: {supported}",
+        )
+    execution_mode = normalized.get("execution_mode", DEFAULT_EXECUTION_MODE)
+    if execution_mode not in SUPPORTED_EXECUTION_MODES:
+        supported = ", ".join(sorted(SUPPORTED_EXECUTION_MODES))
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported execution mode '{execution_mode}'. Supported modes: {supported}",
+        )
+    if execution_mode != DEFAULT_EXECUTION_MODE:
+        raise HTTPException(
+            status_code=400,
+            detail="Only paper execution mode is enabled for live trading right now",
+        )
+    return normalized
+
+
+def _normalize_result_configuration(payload: Dict[str, Any]) -> Dict[str, Any]:
+    normalized = dict(payload or {})
+    config = normalized.get("configuration")
+    if isinstance(config, dict):
+        normalized_config = _normalize_exchange_fields(config)
+        normalized["configuration"] = normalized_config
+        if normalized.get("strategy") in (None, "", "Unknown"):
+            normalized["strategy"] = normalized_config.get("strategy", normalized.get("strategy"))
+    return normalized
+
+
 async def _emit_live_output_message(
     message: str,
     *,
@@ -308,6 +471,11 @@ async def _prepare_live_output_for_new_run() -> None:
     await broadcast_message(WS_CLEAR_CONSOLE_SIGNAL)
 
 
+async def _prepare_console_for_new_run(run_type: str, run_id: str) -> None:
+    _reset_active_console_session(run_type, run_id)
+    await _prepare_live_output_for_new_run()
+
+
 async def broadcast_from_queue():
     """Periodically drain ws_log_queue and broadcast messages to WebSocket clients."""
     while not _broadcast_shutdown.is_set():
@@ -321,6 +489,7 @@ async def broadcast_from_queue():
                     break
 
                 processed += 1
+                _append_active_console_line(message)
                 with connection_lock:
                     connections_copy = active_connections.copy()
 
@@ -347,23 +516,16 @@ async def broadcast_from_queue():
         await asyncio.sleep(0.02)
 
 
-_EXCLUDED_STRATEGY_FILES = frozenset({"__init__.py", "base_strategy.py"})
-
-
 def load_available_strategies():
-    """Load available strategies from strategies directory."""
-    strategies_dir = BASE_DIR / "strategies"
-    if not strategies_dir.exists():
-        return []
+    """Load strategies intended for the dashboard."""
     return [
         {
-            "name": f.stem,
-            "display_name": f.stem.replace("_", " ").title(),
-            "description": f"{f.stem} strategy",
-            "config_schema": get_strategy_config_schema(f.stem),
+            "name": strategy["name"],
+            "display_name": strategy["display_name"],
+            "description": f"{strategy['name']} strategy",
+            "config_schema": get_strategy_config_schema(strategy["name"]),
         }
-        for f in strategies_dir.glob("*.py")
-        if f.name not in _EXCLUDED_STRATEGY_FILES
+        for strategy in list_dashboard_strategies()
     ]
 
 
@@ -436,12 +598,24 @@ def get_strategy_config_schema(strategy_name: str):
             "min_range_factor": {"type": "number", "default": 1.2},
             "min_wick_to_range": {"type": "number", "default": 0.6},
             "max_body_to_range": {"type": "number", "default": 0.3},
+            "use_pinbar_quality_filter": {"type": "boolean", "default": False},
+            "pinbar_min_wick_to_body_ratio": {"type": "number", "default": 2.5},
+            "pinbar_max_opposite_wick_to_range": {"type": "number", "default": 0.2},
+            "pinbar_close_near_extreme_threshold": {"type": "number", "default": 0.65},
+            "use_engulfing_quality_filter": {"type": "boolean", "default": False},
+            "engulfing_min_body_to_range": {"type": "number", "default": 0.55},
+            "engulfing_min_body_to_atr": {"type": "number", "default": 0.35},
+            "engulfing_min_body_engulf_ratio": {"type": "number", "default": 1.0},
+            "engulfing_max_opposite_wick_to_range": {"type": "number", "default": 0.2},
+            "engulfing_require_close_through_prev_extreme": {"type": "boolean", "default": False},
 
             "risk_reward_ratio": {"type": "number", "default": 2.0},
             "sl_buffer_atr": {"type": "number", "default": 1.5},
+            "poi_zone_upper_atr_mult": {"type": "number", "default": 0.3},
+            "poi_zone_lower_atr_mult": {"type": "number", "default": 0.2},
             "use_premium_discount_filter": {"type": "boolean", "default": False},
             "use_space_to_target_filter": {"type": "boolean", "default": False},
-            "space_to_target_min_rr": {"type": "number", "default": 2.0},
+            "space_to_target_min_rr": {"type": "number", "default": 1.0},
             "use_choch_displacement_filter": {"type": "boolean", "default": False},
             "choch_displacement_atr_mult": {"type": "number", "default": 1.5},
             "require_choch_fvg": {"type": "boolean", "default": False},
@@ -503,13 +677,16 @@ def _config_to_flat(config: Dict[str, Any]) -> Dict[str, Any]:
     trading = config.get("trading", {})
     period = config.get("period", {})
     strategy_section = config.get("strategy", {})
-    return {
+    flat = {
         "initial_capital": account.get("initial_capital", 10000),
         "risk_per_trade": account.get("risk_per_trade", 2.0),
         "max_drawdown": account.get("max_drawdown", 15.0),
         "leverage": account.get("leverage", 10.0),
         "symbol": trading.get("symbol", "BTC/USDT"),
         "timeframes": trading.get("timeframes", ["4h", "15m"]),
+        "exchange": normalize_live_exchange_name(trading.get("exchange", config.get("exchange", "binance"))),
+        "exchange_type": config.get("exchange_type", "future"),
+        "execution_mode": config.get("execution_mode", DEFAULT_EXECUTION_MODE),
         "start_date": period.get("start_date", "2023-01-01"),
         "end_date": period.get("end_date", "2023-12-31"),
         "strategy": strategy_section.get("name", "smc_strategy"),
@@ -522,6 +699,15 @@ def _config_to_flat(config: Dict[str, Any]) -> Dict[str, Any]:
         "funding_rate_per_8h": config.get("funding_rate_per_8h", 0.0),
         "funding_interval_hours": config.get("funding_interval_hours", 8),
     }
+    if "maker_fee_bps" in config:
+        flat["maker_fee_bps"] = config.get("maker_fee_bps")
+    if "taker_fee_bps" in config:
+        flat["taker_fee_bps"] = config.get("taker_fee_bps")
+    if "fee_source" in config:
+        flat["fee_source"] = config.get("fee_source")
+    if "taker_fee" in config:
+        flat["taker_fee"] = config.get("taker_fee")
+    return _normalize_exchange_fields(flat)
 
 
 @app.get("/config")
@@ -545,7 +731,7 @@ async def update_config(config: Dict[str, Any]):
     for key in ("initial_capital", "risk_per_trade", "max_drawdown", "leverage"):
         if key in config:
             existing_config["account"][key] = config[key]
-    for key in ("symbol", "timeframes"):
+    for key in ("symbol", "timeframes", "exchange"):
         if key in config:
             existing_config["trading"][key] = config[key]
     for key in ("start_date", "end_date"):
@@ -555,7 +741,20 @@ async def update_config(config: Dict[str, Any]):
         existing_config["strategy"]["name"] = config["strategy"]
     if "strategy_config" in config:
         existing_config["strategy"]["config"] = config["strategy_config"]
-    for key in ("trailing_stop_distance", "breakeven_trigger_r", "dynamic_position_sizing", "slippage_bps", "funding_rate_per_8h", "funding_interval_hours"):
+    for key in (
+        "exchange_type",
+        "execution_mode",
+        "maker_fee_bps",
+        "taker_fee_bps",
+        "fee_source",
+        "taker_fee",
+        "trailing_stop_distance",
+        "breakeven_trigger_r",
+        "dynamic_position_sizing",
+        "slippage_bps",
+        "funding_rate_per_8h",
+        "funding_interval_hours",
+    ):
         if key in config:
             existing_config[key] = config[key]
     if "position_cap_adverse" in config:
@@ -568,34 +767,58 @@ async def update_config(config: Dict[str, Any]):
 @app.get("/config/live")
 async def get_live_config():
     """Get live trading configuration from DB."""
-    config = AppConfigRepository().get_live_config()
+    config = _strip_sensitive_live_config_fields(AppConfigRepository().get_live_config())
     if not config:
         return {}
-    masked = dict(config)
-    if masked.get("secret"):
-        masked["secret"] = "***"
-    if masked.get("apiKey"):
-        masked["apiKey"] = masked["apiKey"][:4] + "***" if len(masked["apiKey"]) > 4 else "***"
-    return masked
-
-
-def _is_masked(value: Any) -> bool:
-    return value in (None, "", "***") or (isinstance(value, str) and value.endswith("***") and len(value) <= 7)
+    return _normalize_exchange_fields(config)
 
 
 @app.post("/config/live")
 async def update_live_config(config: Dict[str, Any]):
     """Save live trading configuration to DB."""
-    existing = AppConfigRepository().get_live_config()
-    for key in ("exchange", "apiKey", "secret", "sandbox", "symbol", "timeframes",
-                "initial_capital", "risk_per_trade", "max_drawdown",
-                "leverage", "poll_interval", "strategy_config"):
-        if key in config and not (key in ("apiKey", "secret") and _is_masked(config[key])):
-            existing[key] = config[key]
-    if "account" in config:
-        existing.setdefault("account", {}).update(config["account"])
-    if "trading" in config:
-        existing.setdefault("trading", {}).update(config["trading"])
+    existing = _normalize_exchange_fields(
+        _strip_sensitive_live_config_fields(AppConfigRepository().get_live_config())
+    )
+    incoming = _strip_sensitive_live_config_fields(config)
+    for key in (
+        "exchange",
+        "exchange_type",
+        "execution_mode",
+        "symbol",
+        "timeframes",
+        "initial_capital",
+        "risk_per_trade",
+        "max_drawdown",
+        "leverage",
+        "maker_fee_bps",
+        "taker_fee_bps",
+        "fee_source",
+        "taker_fee",
+        "strategy_config",
+        "trailing_stop_distance",
+        "breakeven_trigger_r",
+        "dynamic_position_sizing",
+        "position_cap_adverse",
+        "slippage_bps",
+        "funding_rate_per_8h",
+        "funding_interval_hours",
+    ):
+        if key in incoming:
+            existing[key] = incoming[key]
+    if "account" in incoming:
+        existing.setdefault("account", {}).update(incoming["account"])
+    if "trading" in incoming:
+        existing.setdefault("trading", {}).update(_strip_sensitive_live_config_fields(incoming["trading"]))
+    if "strategy" in incoming:
+        existing.setdefault("strategy", {})["name"] = incoming["strategy"]
+    existing["exchange"] = normalize_live_exchange_name(existing.get("exchange"), default="binance")
+    existing["exchange_type"] = normalize_live_exchange_type(existing.get("exchange_type", "future"))
+    existing.setdefault("trading", {})
+    existing["trading"]["exchange"] = normalize_live_exchange_name(
+        existing["trading"].get("exchange", existing["exchange"]),
+        default="binance",
+    )
+    existing = _normalize_exchange_fields(existing)
     AppConfigRepository().save_live_config(existing)
     return {"message": "Live config updated"}
 
@@ -669,16 +892,18 @@ async def start_backtest(request: BacktestRequest, background_tasks: BackgroundT
         for k in list(running_backtests.keys())[:-20]:
             del running_backtests[k]
 
-    await _prepare_live_output_for_new_run()
+    normalized_config = _normalize_exchange_fields(request.config.model_dump())
+    await _prepare_console_for_new_run("backtest", run_id)
 
     running_backtests[run_id] = BacktestStatus(
         run_id=run_id,
         status="running",
         progress=0.0,
-        message="Starting backtest..."
+        message="Starting backtest...",
+        config=normalized_config,
     )
     
-    background_tasks.add_task(run_backtest_task, run_id, request.config.dict())
+    background_tasks.add_task(run_backtest_task, run_id, normalized_config)
     
     return {"run_id": run_id, "status": "started"}
 
@@ -723,11 +948,12 @@ async def get_results():
 
 def _default_configuration_for_legacy_backtest() -> Dict[str, Any]:
     """Default configuration for old backtests that lack configuration. Matches PriceActionStrategy defaults."""
-    return {
+    return _normalize_exchange_fields({
         "symbol": "BTC/USDT",
         "timeframes": ["1h"],
         "exchange": "binance",
         "exchange_type": "future",
+        "execution_mode": DEFAULT_EXECUTION_MODE,
         "strategy": "bt_price_action",
         "_legacy_default": True,  # Marks that real config was not saved; these are assumed defaults
         "strategy_config": {
@@ -744,7 +970,7 @@ def _default_configuration_for_legacy_backtest() -> Dict[str, Any]:
             "risk_reward_ratio": 2.0,
             "sl_buffer_atr": 1.5,
         },
-    }
+    })
 
 
 @app.get("/results/{filename}")
@@ -758,7 +984,11 @@ async def get_result_file(filename: str):
         data["configuration"] = _default_configuration_for_legacy_backtest()
         run_id = filename[:-5] if filename.endswith(".json") else filename
         repo.save(run_id, data)
-    return data
+    normalized = _normalize_result_configuration(data)
+    if normalized.get("configuration") != data.get("configuration"):
+        run_id = filename[:-5] if filename.endswith(".json") else filename
+        repo.save(run_id, normalized)
+    return normalized
 
 
 
@@ -776,6 +1006,7 @@ async def get_backtest_history(
         sort_field=sort_field,
         sort_direction=sort_direction
     )
+    history = [_normalize_result_configuration(item) for item in history]
     total_pages = (total_count + page_size - 1) // page_size if total_count > 0 else 0
     return {
         "history": history,
@@ -837,19 +1068,20 @@ async def start_live_trading(request: LiveStartRequest, background_tasks: Backgr
     if live_trading_state["is_running"]:
         raise HTTPException(status_code=400, detail="Live trading is already running")
     
-    config = request.config
-    if not config:
-        raise HTTPException(status_code=400, detail="Live configuration not found")
+    config = _validate_live_start_config(request.config)
+    run_id = f"live_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid4().hex[:8]}"
 
-    await _prepare_live_output_for_new_run()
+    await _prepare_console_for_new_run("live", run_id)
 
     live_trading_state["is_running"] = True
+    live_trading_state["run_id"] = run_id
+    live_trading_state["config"] = config
     live_trading_state["start_time"] = datetime.now().isoformat()
     live_trading_state["stop_requested"] = False
     await _emit_live_output_message("[LIVE] Starting live trading engine...", level=logging.INFO, ws_prefix_override="")
     
-    background_tasks.add_task(run_live_trading_task, config)
-    return {"message": "Live trading started"}
+    background_tasks.add_task(run_live_trading_task, run_id, config)
+    return {"message": "Live trading started", "run_id": run_id}
 
 
 @app.post("/api/live/stop")
@@ -873,6 +1105,7 @@ async def get_live_status():
     global live_trading_state
     status = {
         "is_running": live_trading_state["is_running"],
+        "run_id": live_trading_state.get("run_id"),
         "start_time": live_trading_state["start_time"],
         "stop_requested": live_trading_state.get("stop_requested", False),
         "current_equity": None,
@@ -885,16 +1118,64 @@ async def get_live_status():
         try:
             status["current_equity"] = engine.cerebro.broker.getvalue()
             status["initial_capital"] = engine.cerebro.broker.startingcash
+            if hasattr(engine, "strategy") and getattr(engine.strategy, "position", None):
+                if engine.strategy.position.size != 0:
+                    status["open_trades"] = 1
         except Exception:
             pass
             
     return status
 
 
+@app.get("/api/runtime/state")
+async def get_runtime_state():
+    active_backtest = None
+    run_id = _latest_running_backtest_run_id()
+    if run_id is not None and run_id in running_backtests:
+        status = running_backtests[run_id]
+        active_backtest = {
+            "run_id": status.run_id,
+            "status": status.status,
+            "progress": status.progress,
+            "message": status.message,
+            "error": status.error,
+            "config": _normalize_exchange_fields(status.config) if isinstance(status.config, dict) else None,
+        }
+
+    live_config = live_trading_state.get("config")
+    active_live = {
+        "is_running": bool(live_trading_state.get("is_running")),
+        "run_id": live_trading_state.get("run_id"),
+        "start_time": live_trading_state.get("start_time"),
+        "stop_requested": bool(live_trading_state.get("stop_requested")),
+        "config": _normalize_exchange_fields(live_config) if isinstance(live_config, dict) else None,
+    }
+
+    console_snapshot = _get_active_console_snapshot() if _has_active_runtime() else {
+        "run_id": None,
+        "run_type": None,
+        "lines": [],
+    }
+
+    return {
+        "backtest": active_backtest,
+        "live": active_live,
+        "console": console_snapshot,
+    }
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     """WebSocket endpoint for real-time console output."""
     await websocket.accept()
+    snapshot = _get_active_console_snapshot()
+    if snapshot["lines"] and _has_active_runtime():
+        await websocket.send_text(json.dumps({
+            "type": "console_snapshot",
+            "run_id": snapshot["run_id"],
+            "run_type": snapshot["run_type"],
+            "lines": snapshot["lines"],
+        }))
     
     with connection_lock:
         active_connections.append(websocket)
@@ -914,6 +1195,12 @@ async def websocket_endpoint(websocket: WebSocket):
 
 async def broadcast_message(message: str):
     """Broadcast message to all connected WebSocket clients."""
+    if message == WS_CLEAR_CONSOLE_SIGNAL:
+        with active_console_lock:
+            active_console_state["lines"] = deque(maxlen=ACTIVE_CONSOLE_BUFFER_MAX_LINES)
+    else:
+        _append_active_console_line(message)
+
     with connection_lock:
         connections_copy = active_connections.copy()
     
@@ -925,11 +1212,10 @@ async def broadcast_message(message: str):
                 if connection in active_connections:
                     active_connections.remove(connection)
 
-async def run_live_trading_task(config: Dict[str, Any]):
+async def run_live_trading_task(run_id: str, config: Dict[str, Any]):
     """Background task to run the live trading engine and save results upon stopping."""
     global live_trading_state
-    
-    run_id = f"live_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid4().hex[:8]}"
+    config = _normalize_exchange_fields(config)
     session_start = datetime.now()
     signal_counter = None
     _root_logger = None
@@ -962,6 +1248,16 @@ async def run_live_trading_task(config: Dict[str, Any]):
         import logging as _logging_root
         _root_logger = _logging_root.getLogger("backtrade")
         _root_logger.addHandler(signal_counter)
+        logger.info(
+            "LIVE CONFIG: exchange=%s type=%s mode=%s maker=%.2f bps taker=%.2f bps broker=%.2f bps source=%s",
+            config.get("exchange", "binance"),
+            config.get("exchange_type", "future"),
+            config.get("execution_mode", DEFAULT_EXECUTION_MODE),
+            float(config.get("maker_fee_bps", 0.0) or 0.0),
+            float(config.get("taker_fee_bps", 0.0) or 0.0),
+            float(config.get("broker_commission_bps", 0.0) or 0.0),
+            config.get("fee_source", "exchange_default"),
+        )
         
         engine = BTLiveEngine(config)
         st_config = build_runtime_strategy_config(config)
@@ -1043,11 +1339,14 @@ async def run_live_trading_task(config: Dict[str, Any]):
                 pass
         live_trading_state["is_running"] = False
         live_trading_state["engine"] = None
+        live_trading_state["run_id"] = None
+        live_trading_state["config"] = None
         live_trading_state["start_time"] = None
         live_trading_state["stop_requested"] = False
         await _emit_live_output_message("Live engine fully stopped. All processes terminated.", level=logging.INFO)
         _detach_run_log_handlers(run_log_collector, run_log_file_handler)
         setup_logging(enable_ws=False)
+        _clear_active_console_session_if_inactive(run_id=run_id, run_type="live")
 
 
 
@@ -1062,9 +1361,7 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
     try:
         running_backtests[run_id].message = "Initializing engine..."
         running_backtests[run_id].progress = 10.0
-        
-        taker_fee_pct = config.get('taker_fee', 0.04)
-        commission = taker_fee_pct / 100.0
+        config = _normalize_exchange_fields(config)
         
         engine_config = {
             'initial_capital': config.get('initial_capital', 10000),
@@ -1075,6 +1372,7 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
             'timeframes': config.get('timeframes', ['4h', '15m']),
             'exchange': config.get('exchange', 'binance'),
             'exchange_type': config.get('exchange_type', 'future'),
+            'execution_mode': config.get('execution_mode', DEFAULT_EXECUTION_MODE),
             'start_date': config.get('start_date', '2023-01-01'),
             'end_date': config.get('end_date', '2023-12-31'),
             'strategy': config.get('strategy', 'smc_strategy'),
@@ -1083,8 +1381,11 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
             'breakeven_trigger_r': config.get('breakeven_trigger_r', 1.5),
             'dynamic_position_sizing': config.get('dynamic_position_sizing', True),
             'position_cap_adverse': config.get('position_cap_adverse', 0.5),
-            'commission': commission,
-            'taker_fee': taker_fee_pct,
+            'commission': config.get('commission', 0.0),
+            'maker_fee_bps': config.get('maker_fee_bps', 0.0),
+            'taker_fee_bps': config.get('taker_fee_bps', 0.0),
+            'broker_commission_bps': config.get('broker_commission_bps', 0.0),
+            'fee_source': config.get('fee_source', 'exchange_default'),
             'slippage_bps': config.get('slippage_bps', 0.0),
             'funding_rate_per_8h': config.get('funding_rate_per_8h', 0.0),
             'funding_interval_hours': config.get('funding_interval_hours', 8),
@@ -1114,7 +1415,14 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
         logger.info("============================================================")
         logger.info(f"Strategy: {engine_config['strategy']}")
         logger.info(f"Symbol: {engine_config['symbol']}")
-        logger.info(f"Commission (Taker): {engine_config['taker_fee']}% ({engine_config['commission']})")
+        logger.info(f"Execution Mode: {engine_config['execution_mode']}")
+        logger.info(
+            "Fees: maker %.2f bps | taker %.2f bps | broker assumption %.2f bps | source=%s",
+            engine_config['maker_fee_bps'],
+            engine_config['taker_fee_bps'],
+            engine_config['broker_commission_bps'],
+            engine_config['fee_source'],
+        )
         logger.info(f"Slippage: {engine_config.get('slippage_bps', 0.0)} bps")
         logger.info(f"Funding Rate / 8h: {engine_config.get('funding_rate_per_8h', 0.0)}")
         logger.info(f"Timeframes: {', '.join(engine_config['timeframes'])}")
@@ -1308,6 +1616,7 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
                 _root_logger.removeHandler(signal_counter)
             _detach_run_log_handlers(run_log_collector, run_log_file_handler)
             setup_logging(enable_ws=False)
+            _clear_active_console_session_if_inactive(run_id=run_id, run_type="backtest")
         
     except Exception as e:
         running_backtests[run_id].status = "failed"
@@ -1457,59 +1766,8 @@ def _compute_market_structure_levels(
     closes: Any,
     pivot_span: int = 2,
 ) -> tuple[list[float], list[float], list[float]]:
-    """
-    Compute swing high/low + BOS structure (same idea as strategy MarketStructure).
-    Returns three arrays aligned with input bars: sh_level, sl_level, structure.
-    """
-    span = max(1, int(pivot_span))
-    count = min(len(highs), len(lows), len(closes))
-    nan = float("nan")
-
-    sh_out = [nan] * count
-    sl_out = [nan] * count
-    st_out = [0.0] * count
-
-    last_sh: Optional[float] = None
-    last_sl: Optional[float] = None
-    structure = 0.0
-
-    for i in range(count):
-        if i >= span * 2:
-            c_idx = i - span
-            cand_high = float(highs[c_idx])
-            cand_low = float(lows[c_idx])
-            is_pivot_high = True
-            is_pivot_low = True
-
-            for off in range(1, span + 1):
-                if cand_high <= float(highs[c_idx - off]) or cand_high <= float(highs[c_idx + off]):
-                    is_pivot_high = False
-                if cand_low >= float(lows[c_idx - off]) or cand_low >= float(lows[c_idx + off]):
-                    is_pivot_low = False
-
-            if is_pivot_high:
-                last_sh = cand_high
-            if is_pivot_low:
-                last_sl = cand_low
-
-        close_val = float(closes[i])
-        if last_sh is not None and close_val > last_sh:
-            structure = 1.0
-        elif last_sl is not None and close_val < last_sl:
-            structure = -1.0
-        elif structure == 0.0:
-            if last_sh is not None and last_sl is not None:
-                structure = 1.0 if close_val >= ((last_sh + last_sl) / 2.0) else -1.0
-            elif last_sh is not None:
-                structure = -1.0 if close_val < last_sh else 1.0
-            elif last_sl is not None:
-                structure = 1.0 if close_val > last_sl else -1.0
-
-        sh_out[i] = last_sh if last_sh is not None else nan
-        sl_out[i] = last_sl if last_sl is not None else nan
-        st_out[i] = structure
-
-    return sh_out, sl_out, st_out
+    """Thin wrapper over the shared BOS-only market-structure helper."""
+    return _shared_compute_market_structure_levels(highs, lows, closes, pivot_span=pivot_span)
 
 
 def _compute_fractal_markers(
@@ -1517,36 +1775,8 @@ def _compute_fractal_markers(
     lows: Any,
     pivot_span: int = 2,
 ) -> tuple[list[float], list[float]]:
-    """
-    Compute TradingView-like fractal markers (strict pivot high/low).
-    Returns arrays aligned to bars:
-      - fractal_high: value at pivot-high bar, NaN otherwise
-      - fractal_low: value at pivot-low bar, NaN otherwise
-    """
-    span = max(1, int(pivot_span))
-    count = min(len(highs), len(lows))
-    nan = float("nan")
-    fr_high = [nan] * count
-    fr_low = [nan] * count
-
-    for c_idx in range(span, count - span):
-        cand_high = float(highs[c_idx])
-        cand_low = float(lows[c_idx])
-        is_fr_high = True
-        is_fr_low = True
-
-        for off in range(1, span + 1):
-            if cand_high <= float(highs[c_idx - off]) or cand_high <= float(highs[c_idx + off]):
-                is_fr_high = False
-            if cand_low >= float(lows[c_idx - off]) or cand_low >= float(lows[c_idx + off]):
-                is_fr_low = False
-
-        if is_fr_high:
-            fr_high[c_idx] = cand_high
-        if is_fr_low:
-            fr_low[c_idx] = cand_low
-
-    return fr_high, fr_low
+    """Thin wrapper over the shared strict fractal helper."""
+    return _shared_compute_fractal_markers(highs, lows, pivot_span=pivot_span)
 
 
 def _build_chart_data_for_trades(

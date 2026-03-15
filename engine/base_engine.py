@@ -3,6 +3,7 @@ from typing import Dict, Any
 
 # Apply OCO guard before any Cerebro/broker creation (fixes ghost-trade same-bar double fill)
 from engine.bt_oco_patch import apply_oco_guard
+from engine.execution_settings import apply_execution_settings
 apply_oco_guard()
 
 import backtrader as bt
@@ -15,7 +16,7 @@ class BaseEngine(ABC):
     """
 
     def __init__(self, config: Dict[str, Any]):
-        self.config = config
+        self.config = apply_execution_settings(config)
         self.cerebro = bt.Cerebro()
         self.strategy = None
         self.should_cancel = False
@@ -36,7 +37,7 @@ class BaseEngine(ABC):
         initial_capital = self.config.get("initial_capital", 10000.0)
         self.cerebro.broker.setcash(initial_capital)
 
-        commission = self.config.get("commission", 0.0004) # Default 0.04% for crypto
+        commission = self.config.get("commission", 0.0004)
         leverage = self.config.get("leverage", 1.0)
         self.cerebro.broker.setcommission(commission=commission, leverage=leverage)
 

@@ -16,6 +16,15 @@ import TradeDetailsModal from '../../../features/trade-details/ui/TradeDetailsMo
 import { useConfigContext } from '../../../app/providers/config/ConfigProvider';
 import { useResultsContext } from '../../../app/providers/results/ResultsProvider';
 
+const shouldIgnoreTransientFetchError = (error: unknown) => {
+    if (typeof document !== 'undefined' && document.visibilityState !== 'visible') {
+        return true;
+    }
+
+    const message = error instanceof Error ? error.message.toLowerCase() : String(error ?? '').toLowerCase();
+    return message.includes('failed to fetch') || message.includes('load failed');
+};
+
 const GENERAL_SETTINGS = [
     { label: "Initial Capital", key: "initial_capital", format: (v: any) => `$${v}` },
     { label: "Risk Per Trade", key: "risk_per_trade", suffix: "%" },
@@ -88,7 +97,9 @@ const BacktestHistoryList: React.FC = () => {
                 setPage(data.pagination.page);
             }
         } catch (error) {
-            console.error(error);
+            if (!shouldIgnoreTransientFetchError(error)) {
+                console.error(error);
+            }
         } finally {
             setLoading(false);
         }
@@ -174,7 +185,9 @@ const BacktestHistoryList: React.FC = () => {
                 const data = await fetchDetailedResults(filename);
                 setDetailedResults(prev => ({ ...prev, [filename]: data }));
             } catch (error) {
-                console.error(error);
+                if (!shouldIgnoreTransientFetchError(error)) {
+                    console.error(error);
+                }
             }
         }
     };
@@ -453,6 +466,11 @@ const BacktestHistoryList: React.FC = () => {
                                                                                 {item.session_duration_mins != null && (
                                                                                     <Typography variant="body2" sx={{ fontSize: '0.78rem', color: 'text.secondary' }}>
                                                                                         Duration: {formatLiveDuration(item.session_duration_mins)}
+                                                                                    </Typography>
+                                                                                )}
+                                                                                {getConfigValue(item.configuration, 'exchange') && (
+                                                                                    <Typography variant="body2" sx={{ fontSize: '0.78rem', color: 'text.secondary' }}>
+                                                                                        Exchange: <span style={{ textTransform: 'capitalize' }}>{String(getConfigValue(item.configuration, 'exchange'))}</span>
                                                                                     </Typography>
                                                                                 )}
                                                                             </Box>

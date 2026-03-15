@@ -1,0 +1,61 @@
+services:
+  backend:
+    command:
+      [
+        "uvicorn",
+        "server:app",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8000",
+        "--reload",
+        "--reload-dir",
+        "/app/web-dashboard",
+        "--reload-dir",
+        "/app/engine",
+        "--reload-dir",
+        "/app/strategies",
+        "--reload-dir",
+        "/app/db",
+        "--timeout-graceful-shutdown",
+        "0",
+      ]
+    develop:
+      watch:
+        - action: sync
+          path: ./web-dashboard
+          target: /app/web-dashboard
+          ignore:
+            - node_modules/
+            - dist/
+        - action: sync
+          path: ./engine
+          target: /app/engine
+        - action: sync
+          path: ./strategies
+          target: /app/strategies
+        - action: sync
+          path: ./db
+          target: /app/db
+        - action: sync
+          path: ./main.py
+          target: /app/main.py
+        - action: rebuild
+          path: ./deps/requirements.txt
+
+  frontend:
+    develop:
+      watch:
+        - action: sync
+          path: ./web-dashboard
+          target: /app
+          ignore:
+            - node_modules/
+            - dist/
+        - action: sync
+          path: ./VERSION
+          target: /app/VERSION
+        - action: rebuild
+          path: ./web-dashboard/package.json
+        - action: rebuild
+          path: ./web-dashboard/package-lock.json

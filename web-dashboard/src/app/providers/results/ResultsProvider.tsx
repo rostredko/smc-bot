@@ -15,7 +15,12 @@ export interface UseResultsReturn {
     setSelectedTrade: React.Dispatch<React.SetStateAction<any | null>>;
     setIsTradeModalOpen: React.Dispatch<React.SetStateAction<boolean>>;
     handleBarClick: (trade: any) => void;
-    checkBacktestStatus: (runId: string, setIsRunning: (r: boolean) => void, setIsConfigDisabled: (c: boolean) => void) => Promise<void>;
+    checkBacktestStatus: (
+        runId: string,
+        setIsRunning: (r: boolean) => void,
+        setIsConfigDisabled: (c: boolean) => void,
+        signal?: AbortSignal
+    ) => Promise<void>;
 }
 
 export const ResultsContext = createContext<UseResultsReturn | null>(null);
@@ -39,17 +44,57 @@ export const ResultsProvider: React.FC<{ children: React.ReactNode }> = ({ child
         }
     }, []);
 
-    const checkBacktestStatus = useCallback(async (runId: string, setIsRunning: (r: boolean) => void, setIsConfigDisabled: (c: boolean) => void) => {
+    const isAbortLikeError = useCallback((error: unknown) => {
+        return Boolean(
+            error &&
+            typeof error === 'object' &&
+            'name' in error &&
+            (error as { name?: string }).name === 'AbortError'
+        );
+    }, []);
+
+    const isTransientPollingError = useCallback((error: unknown) => {
+        if (isAbortLikeError(error)) {
+            return true;
+        }
+
+        if (typeof document !== 'undefined' && document.visibilityState !== 'visible') {
+            return true;
+        }
+
+        const message = error instanceof Error ? error.message.toLowerCase() : String(error ?? '').toLowerCase();
+        return message.includes('failed to fetch') || message.includes('load failed');
+    }, [isAbortLikeError]);
+
+    const checkBacktestStatus = useCallback(async (
+        runId: string,
+        setIsRunning: (r: boolean) => void,
+        setIsConfigDisabled: (c: boolean) => void,
+        signal?: AbortSignal
+    ) => {
         try {
-            const response = await fetch(`${API_BASE}/backtest/status/${runId}`);
-            const status = await response.json();
-            setBacktestStatus(status);
+            const response = await fetch(`${API_BASE}/backtest/status/${runId}`, signal ? { signal } : undefined);
+            const status = await response.json().catch(() => null);
 
             if (!response.ok) {
-                setIsRunning(false);
-                setIsConfigDisabled(false);
+                if (response.status === 404) {
+                    setBacktestStatus(prev => (
+                        prev && prev.run_id === runId
+                            ? {
+                                ...prev,
+                                status: "failed",
+                                message: typeof status?.detail === 'string' ? status.detail : "Backtest session not found",
+                                error: typeof status?.detail === 'string' ? status.detail : "Backtest session not found",
+                            }
+                            : prev
+                    ));
+                    setIsRunning(false);
+                    setIsConfigDisabled(false);
+                }
                 return;
             }
+
+            setBacktestStatus(status);
             if (status?.status === "completed" || status?.status === "cancelled") {
                 setIsRunning(false);
                 setIsConfigDisabled(false);
@@ -59,11 +104,11 @@ export const ResultsProvider: React.FC<{ children: React.ReactNode }> = ({ child
                 setIsConfigDisabled(false);
             }
         } catch (error) {
-            console.error("Failed to check status:", error);
-            setIsRunning(false);
-            setIsConfigDisabled(false);
+            if (!isTransientPollingError(error)) {
+                console.error("Failed to check status:", error);
+            }
         }
-    }, []);
+    }, [isTransientPollingError]);
 
     const equityData = useMemo(() => {
         if (!results?.equity_curve || results.equity_curve.length === 0) {

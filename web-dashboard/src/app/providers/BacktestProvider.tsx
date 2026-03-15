@@ -1,6 +1,7 @@
 import React, { useEffect, useRef } from 'react';
 import { ConfigProvider, useConfigContext } from './config/ConfigProvider';
 import { ConsoleProvider } from './console/ConsoleProvider';
+import { useConsoleContext } from './console/ConsoleProvider';
 import { ResultsProvider, useResultsContext } from './results/ResultsProvider';
 import { API_BASE } from '../../shared/api/config';
 
@@ -15,20 +16,122 @@ import { API_BASE } from '../../shared/api/config';
 // use the sub-contexts directly in the components to prevent re-renders.
 export const AppOrchestrator: React.FC<{ children: React.ReactNode }> = ({ children }) => {
     const {
-        setIsRunning, setIsConfigDisabled, isLiveRunning, isRunning,
+        setIsRunning, setIsConfigDisabled, setIsLiveRunning, setIsLiveStopping,
+        isLiveRunning, isRunning, isInitialLoadComplete, restoreRuntimeConfig,
     } = useConfigContext();
 
-    const { backtestStatus, checkBacktestStatus, setResults } = useResultsContext();
+    const { backtestStatus, checkBacktestStatus, setBacktestStatus, setResults } = useResultsContext();
+    const { setConsoleOutput } = useConsoleContext();
+
+    useEffect(() => {
+        if (!isInitialLoadComplete) {
+            return;
+        }
+
+        let ignore = false;
+
+        const restoreRuntimeState = async () => {
+            try {
+                const response = await fetch(`${API_BASE}/api/runtime/state`);
+                if (!response.ok || ignore) {
+                    return;
+                }
+
+                const data = await response.json();
+                const activeBacktest = data?.backtest;
+                const activeLive = data?.live;
+                const consoleLines = Array.isArray(data?.console?.lines) ? data.console.lines : [];
+
+                const hasActiveBacktest = Boolean(activeBacktest?.run_id && activeBacktest?.status === "running");
+                const hasActiveLive = Boolean(activeLive?.is_running);
+
+                if ((hasActiveBacktest || hasActiveLive) && !ignore) {
+                    setConsoleOutput(consoleLines.map((line: unknown) => String(line)));
+                    setResults(null);
+                }
+
+                if (hasActiveBacktest && !ignore) {
+                    setIsRunning(true);
+                    setIsConfigDisabled(true);
+                    setBacktestStatus({
+                        run_id: activeBacktest.run_id,
+                        status: activeBacktest.status,
+                        progress: activeBacktest.progress,
+                        message: activeBacktest.message,
+                        error: activeBacktest.error,
+                        config: activeBacktest.config,
+                    });
+                    if (activeBacktest?.config) {
+                        restoreRuntimeConfig(activeBacktest.config);
+                    }
+                }
+
+                if (hasActiveLive && !ignore) {
+                    setIsLiveRunning(true);
+                    setIsLiveStopping(Boolean(activeLive?.stop_requested));
+                    setIsConfigDisabled(true);
+                    if (activeLive?.config) {
+                        restoreRuntimeConfig(activeLive.config);
+                    }
+                }
+
+                if (!hasActiveBacktest && !ignore) {
+                    setIsRunning(false);
+                }
+                if (!hasActiveLive && !ignore) {
+                    setIsLiveRunning(false);
+                    setIsLiveStopping(false);
+                }
+                if (!hasActiveBacktest && !hasActiveLive && !ignore) {
+                    setIsConfigDisabled(false);
+                }
+            } catch (error) {
+                if (!ignore) {
+                    console.error("Failed to restore runtime state:", error);
+                }
+            }
+        };
+
+        restoreRuntimeState();
+        return () => {
+            ignore = true;
+        };
+    }, [
+        isInitialLoadComplete,
+        restoreRuntimeConfig,
+        setConsoleOutput,
+        setIsConfigDisabled,
+        setIsLiveRunning,
+        setIsLiveStopping,
+        setIsRunning,
+        setBacktestStatus,
+        setResults,
+    ]);
 
     // Status Polling
     useEffect(() => {
-        let interval: ReturnType<typeof setInterval>;
+        let interval: ReturnType<typeof setInterval> | undefined;
+        let controller: AbortController | null = null;
+
+        const pollStatus = () => {
+            if (!backtestStatus?.run_id) {
+                return;
+            }
+            controller?.abort();
+            controller = new AbortController();
+            checkBacktestStatus(backtestStatus.run_id, setIsRunning, setIsConfigDisabled, controller.signal);
+        };
+
         if (backtestStatus?.status === "running" && backtestStatus.run_id) {
-            interval = setInterval(() => {
-                checkBacktestStatus(backtestStatus.run_id, setIsRunning, setIsConfigDisabled);
-            }, 1000);
+            pollStatus();
+            interval = setInterval(pollStatus, 1000);
         }
-        return () => clearInterval(interval);
+        return () => {
+            if (interval) {
+                clearInterval(interval);
+            }
+            controller?.abort();
+        };
     }, [backtestStatus?.status, backtestStatus?.run_id, checkBacktestStatus, setIsRunning, setIsConfigDisabled]);
 
     const prevLiveRunningRef = useRef<boolean>(isLiveRunning);

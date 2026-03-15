@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useState, useCallback, useEffect, useMemo } from 'react';
 import { BacktestConfig, Strategy, DEFAULT_CONFIG } from '../../../shared/model/types';
 import { API_BASE } from '../../../shared/api/config';
-import { validateBacktestConfig } from '../../../shared/lib/validation';
+import { validateBacktestConfig, validateLiveConfig } from '../../../shared/lib/validation';
 
 export interface UseConfigReturn {
     strategies: Strategy[];
@@ -17,6 +17,7 @@ export interface UseConfigReturn {
     savedConfigs: string[];
     topSymbols: string[];
     loadedTemplateName: string | null;
+    isInitialLoadComplete: boolean;
 
     setStrategies: React.Dispatch<React.SetStateAction<Strategy[]>>;
     setSelectedStrategy: React.Dispatch<React.SetStateAction<string>>;
@@ -51,6 +52,7 @@ export interface UseConfigReturn {
     handleConfigChange: (key: string, value: any) => void;
     handleStrategyConfigChange: (key: string, value: any) => void;
     resetStrategySettings: () => void;
+    restoreRuntimeConfig: (runtimeConfig: Record<string, any>) => void;
 }
 
 export const ConfigContext = createContext<UseConfigReturn | null>(null);
@@ -59,6 +61,15 @@ export const useConfigContext = () => {
     const context = useContext(ConfigContext);
     if (!context) throw new Error("useConfigContext must be used within ConfigProvider");
     return context;
+};
+
+const shouldIgnoreTransientFetchError = (error: unknown) => {
+    if (typeof document !== 'undefined' && document.visibilityState !== 'visible') {
+        return true;
+    }
+
+    const message = error instanceof Error ? error.message.toLowerCase() : String(error ?? '').toLowerCase();
+    return message.includes('failed to fetch') || message.includes('load failed');
 };
 
 export const ConfigProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -76,6 +87,7 @@ export const ConfigProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     const [topSymbols, setTopSymbols] = useState<string[]>([]);
     const [loadedTemplateName, setLoadedTemplateName] = useState<string | null>(null);
     const [activeBacktestRunId, setActiveBacktestRunId] = useState<string | null>(null);
+    const [isInitialLoadComplete, setIsInitialLoadComplete] = useState(false);
 
     const strategyMap = useMemo(() => new Map(strategies.map(s => [s.name, s])), [strategies]);
 
@@ -96,7 +108,11 @@ export const ConfigProvider: React.FC<{ children: React.ReactNode }> = ({ childr
                     const data = await response.json();
                     if (data.symbols) setTopSymbols(data.symbols);
                 }
-            } catch (error) { console.error(error); }
+            } catch (error) {
+                if (!shouldIgnoreTransientFetchError(error)) {
+                    console.error(error);
+                }
+            }
         };
         fetchTopSymbols();
     }, []);
@@ -108,7 +124,9 @@ export const ConfigProvider: React.FC<{ children: React.ReactNode }> = ({ childr
             setStrategies(data.strategies || []);
             return data.strategies || [];
         } catch (error) {
-            console.error(error);
+            if (!shouldIgnoreTransientFetchError(error)) {
+                console.error(error);
+            }
             return [];
         }
     };
@@ -125,13 +143,18 @@ export const ConfigProvider: React.FC<{ children: React.ReactNode }> = ({ childr
             } else {
                 setStrategyConfig({});
             }
-        } catch (error) { console.error(error); }
+        } catch (error) {
+            if (!shouldIgnoreTransientFetchError(error)) {
+                console.error(error);
+            }
+        }
     };
 
     useEffect(() => {
         const loadData = async () => {
             const loadedStrategies = await loadStrategies();
             await loadConfig(loadedStrategies);
+            setIsInitialLoadComplete(true);
         };
         loadData();
         // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -144,7 +167,11 @@ export const ConfigProvider: React.FC<{ children: React.ReactNode }> = ({ childr
                 const data = await response.json();
                 setSavedConfigs(data.configs || []);
             }
-        } catch (error) { console.error(error); }
+        } catch (error) {
+            if (!shouldIgnoreTransientFetchError(error)) {
+                console.error(error);
+            }
+        }
     };
 
     const handleReorderConfigs = async (newOrder: string[]) => {
@@ -258,6 +285,7 @@ export const ConfigProvider: React.FC<{ children: React.ReactNode }> = ({ childr
             const requestBody = {
                 config: {
                     ...config,
+                    exchange: String(config.exchange || 'binance').trim().toLowerCase() || 'binance',
                     timeframes: config.timeframes.filter(t => t.trim() !== ""),
                     strategy_config: strategyConfig,
                     ...(loadedTemplateName ? { loaded_template_name: loadedTemplateName } : {}),
@@ -303,7 +331,7 @@ export const ConfigProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     };
 
     const startLiveTrading = async () => {
-        const newErrors = validateBacktestConfig(config, topSymbols);
+        const newErrors = validateLiveConfig(config, topSymbols);
         if (Object.keys(newErrors).length > 0) {
             setErrors(newErrors);
             return;
@@ -315,6 +343,7 @@ export const ConfigProvider: React.FC<{ children: React.ReactNode }> = ({ childr
             const requestBody = {
                 config: {
                     ...config,
+                    exchange: String(config.exchange || 'binance').trim().toLowerCase() || 'binance',
                     timeframes: config.timeframes.filter((t: string) => t.trim() !== ""),
                     strategy_config: strategyConfig,
                     ...(loadedTemplateName ? { loaded_template_name: loadedTemplateName } : {}),
@@ -329,7 +358,10 @@ export const ConfigProvider: React.FC<{ children: React.ReactNode }> = ({ childr
             if (response.ok) {
                 setIsLiveRunning(true);
             } else {
-                const err = await response.json();
+                const err = await response.json().catch(() => ({}));
+                if (typeof err?.detail === 'string' && err.detail.toLowerCase().includes('exchange')) {
+                    setErrors(prev => ({ ...prev, exchange: err.detail }));
+                }
                 console.error("Failed to start live trading:", err);
             }
         } catch (error) {
@@ -418,18 +450,53 @@ export const ConfigProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     }, [errors]);
 
     const handleStrategyConfigChange = useCallback((key: string, value: any) => {
-        setStrategyConfig(prev => ({ ...prev, [key]: value }));
+        setStrategyConfig(prev => {
+            if (key === 'poi_zone_upper_atr_mult' || key === 'poi_zone_lower_atr_mult') {
+                return {
+                    ...prev,
+                    poi_zone_upper_atr_mult: value,
+                    poi_zone_lower_atr_mult: value,
+                };
+            }
+            return { ...prev, [key]: value };
+        });
     }, []);
+
+    const restoreRuntimeConfig = useCallback((runtimeConfig: Record<string, any>) => {
+        if (!runtimeConfig || typeof runtimeConfig !== 'object') {
+            return;
+        }
+
+        const strategyName = typeof runtimeConfig.strategy === 'string'
+            ? runtimeConfig.strategy
+            : '';
+        const restoredStrategyConfig = runtimeConfig.strategy_config && typeof runtimeConfig.strategy_config === 'object'
+            ? runtimeConfig.strategy_config
+            : {};
+
+        setConfig(prev => ({
+            ...prev,
+            ...runtimeConfig,
+            strategy: strategyName || prev.strategy,
+            strategy_config: restoredStrategyConfig,
+        }));
+
+        if (strategyName) {
+            setSelectedStrategy(strategyName);
+            const strategy = strategyMap.get(strategyName);
+            setStrategyConfig(getStrategyDefaults(strategy, restoredStrategyConfig));
+        }
+    }, [getStrategyDefaults, strategyMap]);
 
     const value = {
         strategies, selectedStrategy, config, strategyConfig, errors,
-        isRunning, isLiveRunning, isLiveStopping, isConfigDisabled, loadDialogOpen, savedConfigs, topSymbols, loadedTemplateName,
+        isRunning, isLiveRunning, isLiveStopping, isConfigDisabled, loadDialogOpen, savedConfigs, topSymbols, loadedTemplateName, isInitialLoadComplete,
         setStrategies, setSelectedStrategy, setConfig, setStrategyConfig, setErrors,
         setIsRunning, setIsLiveRunning, setIsLiveStopping, setIsConfigDisabled, setLoadDialogOpen, setSavedConfigs,
         loadStrategies, loadConfig, loadUserConfigs, handleOpenLoadDialog,
         handleLoadConfig, handleDeleteConfig, handleReorderConfigs, resetDashboard, startBacktest,
         stopBacktest, startLiveTrading, stopLiveTrading, checkLiveStatus, handleStrategyChange, handleConfigChange, handleStrategyConfigChange,
-        resetStrategySettings
+        resetStrategySettings, restoreRuntimeConfig
     };
 
     return <ConfigContext.Provider value={value}>{children}</ConfigContext.Provider>;

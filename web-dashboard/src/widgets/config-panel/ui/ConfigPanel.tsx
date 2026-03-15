@@ -94,6 +94,7 @@ const ConfigPanel: React.FC = () => {
     const { setConsoleOutput } = useConsoleContext();
 
     const configDisabled = isConfigDisabled || isRunning || isLiveRunning;
+    const liveExchangeValue = config.exchange || "binance";
 
     const strategySections: Array<{ title: string; keys: string[] }> = [
         {
@@ -146,6 +147,7 @@ const ConfigPanel: React.FC = () => {
 
     const renderedSchemaKeys = (() => {
         const keys = new Set<string>(generalStrategyKeys);
+        keys.add("poi_zone_lower_atr_mult");
         strategySections.forEach(section => section.keys.forEach(k => keys.add(k)));
         return keys;
     })();
@@ -327,6 +329,29 @@ const ConfigPanel: React.FC = () => {
                                             Live Data Feed (Paper Trading)
                                         </Typography>
                                     </Box>
+                                    <FormControl
+                                        fullWidth
+                                        required
+                                        size="small"
+                                        error={!!errors.exchange}
+                                        disabled={configDisabled}
+                                        sx={{ mt: 1.5 }}
+                                    >
+                                        <InputLabel id="live-exchange-label">Exchange</InputLabel>
+                                        <Select
+                                            labelId="live-exchange-label"
+                                            value={liveExchangeValue}
+                                            label="Exchange"
+                                            onChange={e => handleConfigChange("exchange", e.target.value)}
+                                        >
+                                            <MenuItem value="binance">Binance</MenuItem>
+                                        </Select>
+                                        {errors.exchange && (
+                                            <Typography variant="caption" color="error" sx={{ mt: 0.75, ml: 1.75 }}>
+                                                {errors.exchange}
+                                            </Typography>
+                                        )}
+                                    </FormControl>
                                     <Box display="flex" gap={1} mt={1}>
                                         <Button
                                             fullWidth
@@ -486,7 +511,9 @@ const ConfigPanel: React.FC = () => {
                                     return (
                                         <StrategyField
                                             key={key} fieldKey={key} schema={schema} value={strategyConfig[key]}
-                                            label={key.replace(/_/g, " ").replace(/\b\w/g, (l: string) => l.toUpperCase())}
+                                            label={key === "poi_zone_upper_atr_mult"
+                                                ? "POI ATR Multiplier"
+                                                : key.replace(/_/g, " ").replace(/\b\w/g, (l: string) => l.toUpperCase())}
                                             tooltip={TOOLTIP_HINTS[key] || "No description available"}
                                             isDisabled={configDisabled} onChange={handleStrategyConfigChange}
                                         />
@@ -565,7 +592,9 @@ const ConfigPanel: React.FC = () => {
                                                 fieldKey={key}
                                                 schema={schema}
                                                 value={strategyConfig[key]}
-                                                label={key.replace(/_/g, " ").replace(/\b\w/g, (l: string) => l.toUpperCase())}
+                                                label={key === "poi_zone_upper_atr_mult"
+                                                    ? "POI ATR Multiplier"
+                                                    : key.replace(/_/g, " ").replace(/\b\w/g, (l: string) => l.toUpperCase())}
                                                 tooltip={TOOLTIP_HINTS[key] || "No description available"}
                                                 isDisabled={configDisabled}
                                                 onChange={handleStrategyConfigChange}

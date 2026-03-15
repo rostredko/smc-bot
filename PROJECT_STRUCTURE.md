@@ -21,7 +21,8 @@ Primary local/dev runtime is Docker Compose:
 
 Files:
 - `docker-compose.yml`: base services and named volumes (`mongo_data`, `data_cache`)
-- `docker-compose.override.yml`: dev hot-reload mounts (`engine/`, `strategies/`, `db/`, `web-dashboard/`)
+- `docker-compose.override.yml`: intentionally no-op; keeps plain `docker compose up` stable and avoids broken Desktop bind-mount behavior
+- `docker-compose.dev.yml`: optional Docker watch/hot-reload overlay
 
 ## 3. Repository Map
 
@@ -43,11 +44,13 @@ smc-bot/
 │       └── user_config_repository.py
 ├── engine/
 │   ├── base_engine.py
+│   ├── binance_account_client.py
 │   ├── bt_oco_patch.py
 │   ├── bt_backtest_engine.py
 │   ├── bt_live_engine.py
 │   ├── bt_analyzers.py
 │   ├── data_loader.py
+│   ├── execution_settings.py
 │   ├── live_ws_client.py
 │   ├── live_data_feed.py
 │   ├── trade_metrics.py
@@ -57,6 +60,7 @@ smc-bot/
 │   ├── base_strategy.py
 │   ├── bt_price_action.py
 │   ├── fast_test_strategy.py
+│   ├── market_structure.py
 │   └── helpers/
 │       └── risk_manager.py
 ├── web-dashboard/
@@ -85,6 +89,7 @@ smc-bot/
 - configuration CRUD
 - backtest lifecycle
 - live paper lifecycle
+- runtime snapshot / dashboard reload recovery
 - OHLCV + indicators API
 - result/history retrieval and deletion
 - WebSocket log broadcasting
@@ -93,13 +98,14 @@ Recent structure changes:
 - runtime strategy resolution moved to `web-dashboard/services/strategy_runtime.py`
 - result/trade/equity mapping moved to `web-dashboard/services/result_mapper.py`
 - noisy OHLCV messages moved to debug and WS-suppressed for cleaner live output
+- dashboard market-structure math now reuses the shared `strategies/market_structure.py` BOS helper to stay aligned with the trading strategy
 
 ### 4.2 Application Services (`web-dashboard/services/`)
 
 - `strategy_runtime.py`
   - `resolve_strategy_class(strategy_name)`
   - `build_runtime_strategy_config(config)`
-  - centralizes strategy class mapping and runtime risk param injection
+  - centralizes runnable strategy discovery and runtime risk param injection
 
 - `result_mapper.py`
   - `map_backtest_trades(...)`
@@ -115,6 +121,7 @@ Recent structure changes:
   - shared Backtrader setup (`Cerebro`, broker, commission/leverage)
   - stable timeframe ordering helper for MTF strategies (`data0=LTF`, `data1=HTF`)
   - applies OCO patch early (`bt_oco_patch.apply_oco_guard()`)
+  - applies exchange-aware paper fee settings
 
 - `bt_oco_patch.py`
   - patches Backtrader broker internals to prevent same-bar OCO double execution
@@ -128,7 +135,7 @@ Recent structure changes:
 
 - `bt_live_engine.py`
   - warm-up from REST (`fetch_recent_bars`)
-  - live feed via WS client + queue + Backtrader live feed
+  - live feed via exchange-selected WS client + queue + Backtrader live feed
   - analyzer output parity with backtest
   - graceful stop and thread join
   - same lower-TF-first feed ordering as backtest
@@ -138,8 +145,16 @@ Recent structure changes:
   - CSV cache in `data_cache/` with staleness invalidation
   - OHLCV fetch and shaping
 
+- `execution_settings.py`
+  - shared execution-mode and fee normalization for backtest/live
+  - current Binance paper defaults for spot/futures
+
+- `binance_account_client.py`
+  - signed Binance commission lookup groundwork for future real trading
+
 - `live_ws_client.py`
-  - Binance kline WS thread
+  - live stream transport layer
+  - Binance public kline streaming via `python-binance`
   - pushes only closed candles into queue
   - reconnect/backoff and queue overflow handling
 
@@ -173,17 +188,23 @@ Recent structure changes:
   - funding cashflow application for long/short positions
 
 - `bt_price_action.py` (primary strategy)
-  - `4H` `MarketStructure` indicator with confirmed fractals and BOS-only structure state
-  - `1H` execution logic with TA-Lib patterns: hammer/inverted hammer/shooting star/hanging man/engulfing
-  - default structural flow: `4H structure -> POI -> optional 1H CHoCH -> 1H pattern entry`
-  - structural SL from `4H` level + `ATR_4H` buffer
-  - TP from RR and optional clamp to opposing `4H` structural level
+  - `HTF` `MarketStructure` indicator with confirmed fractals and BOS-only structure state
+  - `LTF` execution logic with TA-Lib patterns: hammer/inverted hammer/shooting star/hanging man/engulfing
+  - default structural flow: `HTF structure -> POI -> optional LTF CHoCH -> LTF pattern entry`
+  - structural SL from the active `HTF` level + `ATR_<HTF>` buffer
+  - TP from RR and optional clamp to the opposing `HTF` structural level
+  - dynamic narrative/formula labels derived from the real feed timeframe (`1D`, `4H`, `15M`, etc.)
   - optional EMA/RSI/ADX filters for legacy/backward-compatible configs
   - safe bool parsing for legacy configs that may store `"true"` / `"false"` strings
+
+- `market_structure.py`
+  - pure shared BOS/fractal helper used by both the Backtrader strategy and the dashboard backend
+  - keeps confirmed swing detection and BOS state transitions in one source of truth
 
 - `fast_test_strategy.py`
   - deterministic high-frequency strategy for live pipeline verification
   - time-based forced exits and optional auto-stop after N trades
+  - current `live_test_1m_frequent` smoke template uses this strategy on a single `1m` feed
 
 - `helpers/risk_manager.py`
   - position sizing with leverage cap and drawdown-aware cap
@@ -213,7 +234,8 @@ Recent structure changes:
 ### 5.1 System
 - `GET /` - dashboard index or API fallback payload
 - `GET /health` - health/timestamp
-- `GET /strategies` - discovered strategy files + schema
+- `GET /strategies` - runnable dashboard strategies + schema
+- `GET /api/runtime/state` - active backtest/live state + buffered console output
 - `WS /ws` - live console stream
 
 ### 5.2 Config
@@ -245,6 +267,7 @@ Recent structure changes:
 - `POST /api/live/start`
 - `POST /api/live/stop`
 - `GET /api/live/status`
+- `GET /api/runtime/state`
 
 ### 5.7 Market Data
 - `GET /api/symbols/top`
@@ -301,10 +324,12 @@ Build/runtime notes:
 
 ### 7.2 Live Paper Flow
 1. UI posts `/api/live/start` with config.
-2. `BTLiveEngine` warms up bars via REST and subscribes to Binance WS.
-3. Closed candles stream into queue-driven live data feed.
-4. Strategy runs on live feed with the same lower-TF-first ordering used by backtests; stop can be requested via `/api/live/stop`.
-5. After stop, trades/equity are mapped and saved as `is_live=true` history record.
+2. Backend validates live-only requirements: `exchange` is required, current allowlist is `binance`, and `execution_mode` must still be `paper`.
+3. `BTLiveEngine` warms up bars via REST and subscribes to Binance public sockets through `python-binance`.
+4. Closed candles stream into queue-driven live data feed.
+5. Strategy runs on live feed with the same lower-TF-first ordering used by backtests; stop can be requested via `/api/live/stop`.
+6. After stop, trades/equity are mapped and saved as `is_live=true` history record.
+7. If the page reloads during an active run, the dashboard restores state and prior logs from `/api/runtime/state`.
 
 ### 7.3 Chart Data Enrichment
 - Trade records are enriched with contextual candles/indicators for modal charts.

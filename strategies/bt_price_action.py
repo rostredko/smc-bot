@@ -1,10 +1,17 @@
 import datetime
 import math
+import re
 import backtrader as bt
 from .base_strategy import BaseStrategy
+from .market_structure import (
+    advance_structure_state,
+    is_confirmed_swing_high,
+    is_confirmed_swing_low,
+)
 from engine.logger import get_logger
 
 logger = get_logger(__name__)
+_TIMEFRAME_TOKEN_RE = re.compile(r"(\d+[mhdw])", re.IGNORECASE)
 
 
 def _iso_utc(dt: datetime.datetime) -> str:
@@ -31,22 +38,16 @@ class MarketStructure(bt.Indicator):
     @staticmethod
     def _is_pivot_high(data, span: int) -> bool:
         candidate = float(data.high[-span])
-        for offset in range(1, span + 1):
-            if candidate <= float(data.high[-span - offset]):
-                return False
-            if candidate <= float(data.high[-span + offset]):
-                return False
-        return True
+        left_highs = [float(data.high[-span - offset]) for offset in range(1, span + 1)]
+        right_highs = [float(data.high[-span + offset]) for offset in range(1, span + 1)]
+        return is_confirmed_swing_high(candidate, left_highs, right_highs)
 
     @staticmethod
     def _is_pivot_low(data, span: int) -> bool:
         candidate = float(data.low[-span])
-        for offset in range(1, span + 1):
-            if candidate >= float(data.low[-span - offset]):
-                return False
-            if candidate >= float(data.low[-span + offset]):
-                return False
-        return True
+        left_lows = [float(data.low[-span - offset]) for offset in range(1, span + 1)]
+        right_lows = [float(data.low[-span + offset]) for offset in range(1, span + 1)]
+        return is_confirmed_swing_low(candidate, left_lows, right_lows)
 
     def next(self):
         span = self.params.pivot_span
@@ -57,11 +58,12 @@ class MarketStructure(bt.Indicator):
         if self._is_pivot_low(self.data, span):
             self._last_swing_low = float(self.data.low[-span])
 
-        close_val = float(self.data.close[0])
-        if self._last_swing_high is not None and close_val > self._last_swing_high:
-            self._structure = 1
-        elif self._last_swing_low is not None and close_val < self._last_swing_low:
-            self._structure = -1
+        self._structure = advance_structure_state(
+            close_value=float(self.data.close[0]),
+            last_swing_high=self._last_swing_high,
+            last_swing_low=self._last_swing_low,
+            current_structure=self._structure,
+        )
 
         self.lines.sh_level[0] = self._last_swing_high if self._last_swing_high is not None else float('nan')
         self.lines.sl_level[0] = self._last_swing_low if self._last_swing_low is not None else float('nan')
@@ -72,6 +74,16 @@ class PriceActionStrategy(BaseStrategy):
         ('min_range_factor', 1.2),
         ('min_wick_to_range', 0.6),
         ('max_body_to_range', 0.3),
+        ('use_pinbar_quality_filter', False),
+        ('pinbar_min_wick_to_body_ratio', 2.5),
+        ('pinbar_max_opposite_wick_to_range', 0.2),
+        ('pinbar_close_near_extreme_threshold', 0.65),
+        ('use_engulfing_quality_filter', False),
+        ('engulfing_min_body_to_range', 0.55),
+        ('engulfing_min_body_to_atr', 0.35),
+        ('engulfing_min_body_engulf_ratio', 1.0),
+        ('engulfing_max_opposite_wick_to_range', 0.2),
+        ('engulfing_require_close_through_prev_extreme', False),
         ('risk_reward_ratio', 2.0),
         ('sl_buffer_atr', 1.5),
         ('structural_sl_buffer_atr', 0.1),
@@ -89,7 +101,7 @@ class PriceActionStrategy(BaseStrategy):
         ('ltf_choch_max_pullaway_atr_mult', 1.5),
         ('use_premium_discount_filter', False),
         ('use_space_to_target_filter', False),
-        ('space_to_target_min_rr', 2.0),
+        ('space_to_target_min_rr', 1.0),
         ('use_choch_displacement_filter', False),
         ('choch_displacement_atr_mult', 1.5),
         ('require_choch_fvg', False),
@@ -119,6 +131,63 @@ class PriceActionStrategy(BaseStrategy):
         ('force_signal_every_n_bars', 0),
     )
 
+    @staticmethod
+    def _extract_timeframe_token(value) -> str | None:
+        if not isinstance(value, str):
+            return None
+        matches = _TIMEFRAME_TOKEN_RE.findall(value)
+        if not matches:
+            return None
+        return matches[-1].lower()
+
+    @staticmethod
+    def _seconds_to_timeframe_token(seconds: float) -> str | None:
+        try:
+            total_seconds = int(round(float(seconds)))
+        except (TypeError, ValueError):
+            return None
+        if total_seconds <= 0:
+            return None
+        for unit, unit_seconds in (("w", 604800), ("d", 86400), ("h", 3600), ("m", 60)):
+            if total_seconds % unit_seconds == 0:
+                return f"{total_seconds // unit_seconds}{unit}"
+        return None
+
+    @classmethod
+    def _detect_data_timeframe(cls, data, fallback: str) -> str:
+        candidates = [
+            getattr(data, "_name", None),
+            getattr(getattr(data, "p", None), "name", None),
+        ]
+        dataname = getattr(getattr(data, "p", None), "dataname", None)
+        if isinstance(dataname, str):
+            candidates.append(dataname)
+
+        for candidate in candidates:
+            token = cls._extract_timeframe_token(candidate)
+            if token:
+                return token.upper()
+
+        index = getattr(dataname, "index", None)
+        if index is not None and len(index) >= 2:
+            prev_dt = index[0]
+            for curr_dt in index[1:]:
+                try:
+                    delta_seconds = (curr_dt - prev_dt).total_seconds()
+                except Exception:
+                    prev_dt = curr_dt
+                    continue
+                token = cls._seconds_to_timeframe_token(delta_seconds)
+                if token:
+                    return token.upper()
+                prev_dt = curr_dt
+
+        return fallback.upper()
+
+    def _scoped_indicator_key(self, base: str, scope: str = "htf") -> str:
+        label = self._htf_timeframe_label if scope == "htf" else self._ltf_timeframe_label
+        return f"{base}_{label}"
+
     def __init__(self):
         super().__init__()
         self.has_secondary = len(self.datas) > 1
@@ -130,8 +199,11 @@ class PriceActionStrategy(BaseStrategy):
             self.data_htf = self.datas[0]
             self.data_ltf = self.datas[0]
 
-        self.ms_4h = MarketStructure(self.data_htf, pivot_span=self.params.market_structure_pivot_span)
-        self.ms_1h = MarketStructure(self.data_ltf, pivot_span=self.params.market_structure_pivot_span)
+        self._htf_timeframe_label = self._detect_data_timeframe(self.data_htf, fallback="HTF")
+        self._ltf_timeframe_label = self._detect_data_timeframe(self.data_ltf, fallback="LTF")
+
+        self.ms_htf = MarketStructure(self.data_htf, pivot_span=self.params.market_structure_pivot_span)
+        self.ms_ltf = MarketStructure(self.data_ltf, pivot_span=self.params.market_structure_pivot_span)
         self.ema_htf = bt.talib.EMA(self.data_htf.close, timeperiod=self.params.trend_ema_period)
         self.rsi = bt.talib.RSI(self.data_ltf.close, timeperiod=self.params.rsi_period)
         self.atr = bt.talib.ATR(self.data_ltf.high, self.data_ltf.low, self.data_ltf.close, timeperiod=self.params.atr_period)
@@ -349,19 +421,19 @@ class PriceActionStrategy(BaseStrategy):
         indicators['ATR'] = round(self.atr[0], 4)
         atr_htf_val = self._to_valid_float(self.atr_htf[0])
         if atr_htf_val is not None:
-            indicators['ATR_4H'] = round(atr_htf_val, 4)
+            indicators[self._scoped_indicator_key('ATR', scope='htf')] = round(atr_htf_val, 4)
 
         if self._bool_param('use_structure_filter', True):
             structure = self._get_structure_state()
-            sh_level = self._to_valid_float(self.ms_4h.sh_level[0])
-            sl_level = self._to_valid_float(self.ms_4h.sl_level[0])
+            sh_level = self._to_valid_float(self.ms_htf.sh_level[0])
+            sl_level = self._to_valid_float(self.ms_htf.sl_level[0])
             equilibrium = self._get_htf_equilibrium()
             space_metrics = self._get_space_to_target_metrics(direction, self.close_line[0])
             indicators['Structure'] = structure
             if sh_level is not None:
-                indicators['SH_Level_4H'] = round(sh_level, 2)
+                indicators[self._scoped_indicator_key('SH_Level', scope='htf')] = round(sh_level, 2)
             if sl_level is not None:
-                indicators['SL_Level_4H'] = round(sl_level, 2)
+                indicators[self._scoped_indicator_key('SL_Level', scope='htf')] = round(sl_level, 2)
             if equilibrium is not None:
                 indicators['HTF_Equilibrium_0_5'] = round(equilibrium, 2)
             if space_metrics is not None:
@@ -386,15 +458,18 @@ class PriceActionStrategy(BaseStrategy):
                             indicators['LTF_CHOCH_Body_ATR'] = round(body_atr_ratio, 2)
                         if has_fvg is not None:
                             indicators['LTF_CHOCH_FVG'] = has_fvg
-                        why_parts.append(f"1H CHoCH confirmed {trigger_age} bar(s) ago")
+                        why_parts.append(f"{self._ltf_timeframe_label} CHoCH confirmed {trigger_age} bar(s) ago")
                         if body_atr_ratio is not None:
-                            why_parts.append(f"1H CHoCH displacement: body {body_atr_ratio:.2f}x ATR")
+                            why_parts.append(f"{self._ltf_timeframe_label} CHoCH displacement: body {body_atr_ratio:.2f}x ATR")
                         if has_fvg is True:
-                            why_parts.append("1H CHoCH left a bullish FVG")
+                            why_parts.append(f"{self._ltf_timeframe_label} CHoCH left a bullish FVG")
                 if self._bool_param('use_premium_discount_filter', False) and equilibrium is not None:
                     why_parts.append(f"Premium/Discount: entry {self.close_line[0]:.2f} is below EQ {equilibrium:.2f} (discount)")
                 if self._bool_param('use_space_to_target_filter', False) and space_metrics is not None:
-                    why_parts.append(f"Space to target: {space_metrics['available_rr']:.2f}R available before SH_Level_4H")
+                    why_parts.append(
+                        f"Space to target: {space_metrics['available_rr']:.2f}R available before "
+                        f"{self._scoped_indicator_key('SH_Level', scope='htf')}"
+                    )
             else:
                 zone = self._get_poi_zone_short()
                 if zone is not None:
@@ -414,15 +489,18 @@ class PriceActionStrategy(BaseStrategy):
                             indicators['LTF_CHOCH_Body_ATR'] = round(body_atr_ratio, 2)
                         if has_fvg is not None:
                             indicators['LTF_CHOCH_FVG'] = has_fvg
-                        why_parts.append(f"1H CHoCH confirmed {trigger_age} bar(s) ago")
+                        why_parts.append(f"{self._ltf_timeframe_label} CHoCH confirmed {trigger_age} bar(s) ago")
                         if body_atr_ratio is not None:
-                            why_parts.append(f"1H CHoCH displacement: body {body_atr_ratio:.2f}x ATR")
+                            why_parts.append(f"{self._ltf_timeframe_label} CHoCH displacement: body {body_atr_ratio:.2f}x ATR")
                         if has_fvg is True:
-                            why_parts.append("1H CHoCH left a bearish FVG")
+                            why_parts.append(f"{self._ltf_timeframe_label} CHoCH left a bearish FVG")
                 if self._bool_param('use_premium_discount_filter', False) and equilibrium is not None:
                     why_parts.append(f"Premium/Discount: entry {self.close_line[0]:.2f} is above EQ {equilibrium:.2f} (premium)")
                 if self._bool_param('use_space_to_target_filter', False) and space_metrics is not None:
-                    why_parts.append(f"Space to target: {space_metrics['available_rr']:.2f}R available before SL_Level_4H")
+                    why_parts.append(
+                        f"Space to target: {space_metrics['available_rr']:.2f}R available before "
+                        f"{self._scoped_indicator_key('SL_Level', scope='htf')}"
+                    )
 
         if self._is_ema_filter_enabled():
             ema_val = self.ema_htf[0]
@@ -478,12 +556,12 @@ class PriceActionStrategy(BaseStrategy):
         if self._bool_param('use_structure_filter', True):
             structure = self._get_structure_state()
             indicators['Structure'] = structure
-            sh_level = self._to_valid_float(self.ms_4h.sh_level[0])
-            sl_level = self._to_valid_float(self.ms_4h.sl_level[0])
+            sh_level = self._to_valid_float(self.ms_htf.sh_level[0])
+            sl_level = self._to_valid_float(self.ms_htf.sl_level[0])
             if sh_level is not None:
-                indicators['SH_Level_4H'] = round(sh_level, 2)
+                indicators[self._scoped_indicator_key('SH_Level', scope='htf')] = round(sh_level, 2)
             if sl_level is not None:
-                indicators['SL_Level_4H'] = round(sl_level, 2)
+                indicators[self._scoped_indicator_key('SL_Level', scope='htf')] = round(sl_level, 2)
             why_parts.append(f"Structure (HTF): state={structure}")
 
         if self._is_ema_filter_enabled():
@@ -557,7 +635,7 @@ class PriceActionStrategy(BaseStrategy):
         return val
 
     def _get_structure_state(self) -> int:
-        structure_val = self._to_valid_float(self.ms_4h.structure[0])
+        structure_val = self._to_valid_float(self.ms_htf.structure[0])
         if structure_val is None:
             return 0
         if structure_val > 0:
@@ -671,8 +749,8 @@ class PriceActionStrategy(BaseStrategy):
         return current_high < prior_low
 
     def _get_htf_equilibrium(self):
-        sh_level = self._to_valid_float(self.ms_4h.sh_level[0])
-        sl_level = self._to_valid_float(self.ms_4h.sl_level[0])
+        sh_level = self._to_valid_float(self.ms_htf.sh_level[0])
+        sl_level = self._to_valid_float(self.ms_htf.sl_level[0])
         if sh_level is None or sl_level is None or sh_level <= sl_level:
             return None
         return (sh_level + sl_level) / 2.0
@@ -694,13 +772,13 @@ class PriceActionStrategy(BaseStrategy):
 
     def _get_space_to_target_metrics(self, direction: str, entry_price: float):
         if direction == 'long':
-            opposing_level = self._to_valid_float(self.ms_4h.sh_level[0])
+            opposing_level = self._to_valid_float(self.ms_htf.sh_level[0])
             _, risk, _ = self._resolve_structural_sl_long(entry_price)
             if opposing_level is None or opposing_level <= entry_price or risk <= 0:
                 return None
             available_space = opposing_level - entry_price
         else:
-            opposing_level = self._to_valid_float(self.ms_4h.sl_level[0])
+            opposing_level = self._to_valid_float(self.ms_htf.sl_level[0])
             _, risk, _ = self._resolve_structural_sl_short(entry_price)
             if opposing_level is None or opposing_level >= entry_price or risk <= 0:
                 return None
@@ -719,7 +797,7 @@ class PriceActionStrategy(BaseStrategy):
         if not self._bool_param('use_space_to_target_filter', False):
             return True
 
-        min_rr = self._float_param('space_to_target_min_rr', 2.0, min_value=0.0)
+        min_rr = self._float_param('space_to_target_min_rr', 1.0, min_value=0.0)
         metrics = self._get_space_to_target_metrics(direction, self.close_line[0])
         if metrics is None:
             return False
@@ -739,7 +817,7 @@ class PriceActionStrategy(BaseStrategy):
         if trigger_price is None:
             return False
 
-        current_zone_ref = self._to_valid_float(self.ms_4h.sl_level[0]) if direction == 'long' else self._to_valid_float(self.ms_4h.sh_level[0])
+        current_zone_ref = self._to_valid_float(self.ms_htf.sl_level[0]) if direction == 'long' else self._to_valid_float(self.ms_htf.sh_level[0])
         trigger_zone_ref = self._long_choch_trigger_zone_ref if direction == 'long' else self._short_choch_trigger_zone_ref
         if trigger_zone_ref is None or current_zone_ref is None:
             return False
@@ -781,10 +859,10 @@ class PriceActionStrategy(BaseStrategy):
         entry_window = self._int_param('ltf_choch_entry_window_bars', 6, min_value=1)
         arm_timeout = self._int_param('ltf_choch_arm_timeout_bars', 24, min_value=entry_window)
 
-        curr_ltf_sh = self._to_valid_float(self.ms_1h.sh_level[0])
-        curr_ltf_sl = self._to_valid_float(self.ms_1h.sl_level[0])
-        prev_ltf_sh = self._to_valid_float(self.ms_1h.sh_level[-1])
-        prev_ltf_sl = self._to_valid_float(self.ms_1h.sl_level[-1])
+        curr_ltf_sh = self._to_valid_float(self.ms_ltf.sh_level[0])
+        curr_ltf_sl = self._to_valid_float(self.ms_ltf.sl_level[0])
+        prev_ltf_sh = self._to_valid_float(self.ms_ltf.sh_level[-1])
+        prev_ltf_sl = self._to_valid_float(self.ms_ltf.sl_level[-1])
 
         new_ltf_swing_high = (
             curr_ltf_sh is not None and (prev_ltf_sh is None or not math.isclose(curr_ltf_sh, prev_ltf_sh, abs_tol=1e-9))
@@ -810,7 +888,7 @@ class PriceActionStrategy(BaseStrategy):
                 elif close_price > self._armed_long_choch_level and bar_num > self._armed_long_bar:
                     self._long_choch_trigger_bar = bar_num
                     self._long_choch_trigger_price = close_price
-                    self._long_choch_trigger_zone_ref = self._to_valid_float(self.ms_4h.sl_level[0])
+                    self._long_choch_trigger_zone_ref = self._to_valid_float(self.ms_htf.sl_level[0])
                     self._capture_choch_trigger_quality('long')
                     self._armed_long_choch_level = None
                     self._armed_long_bar = -1
@@ -829,7 +907,7 @@ class PriceActionStrategy(BaseStrategy):
                 elif close_price < self._armed_short_choch_level and bar_num > self._armed_short_bar:
                     self._short_choch_trigger_bar = bar_num
                     self._short_choch_trigger_price = close_price
-                    self._short_choch_trigger_zone_ref = self._to_valid_float(self.ms_4h.sh_level[0])
+                    self._short_choch_trigger_zone_ref = self._to_valid_float(self.ms_htf.sh_level[0])
                     self._capture_choch_trigger_quality('short')
                     self._armed_short_choch_level = None
                     self._armed_short_bar = -1
@@ -840,7 +918,7 @@ class PriceActionStrategy(BaseStrategy):
             self._reset_short_choch_state()
 
     def _get_poi_zone_long(self):
-        sl_level = self._to_valid_float(self.ms_4h.sl_level[0])
+        sl_level = self._to_valid_float(self.ms_htf.sl_level[0])
         atr_val = self._to_valid_float(self.atr_htf[0])
         if sl_level is None or atr_val is None or atr_val <= 0:
             return None
@@ -849,7 +927,7 @@ class PriceActionStrategy(BaseStrategy):
         return zone_low, zone_high
 
     def _get_poi_zone_short(self):
-        sh_level = self._to_valid_float(self.ms_4h.sh_level[0])
+        sh_level = self._to_valid_float(self.ms_htf.sh_level[0])
         atr_val = self._to_valid_float(self.atr_htf[0])
         if sh_level is None or atr_val is None or atr_val <= 0:
             return None
@@ -877,12 +955,15 @@ class PriceActionStrategy(BaseStrategy):
         if atr_val is None or atr_val <= 0:
             return None, 0.0, "Invalid ATR"
 
-        sl_level = self._to_valid_float(self.ms_4h.sl_level[0])
+        sl_level = self._to_valid_float(self.ms_htf.sl_level[0])
         if sl_level is not None:
             sl_price_ref = sl_level - (atr_val * self.params.structural_sl_buffer_atr)
             if sl_price_ref < entry_price:
                 sl_distance = entry_price - sl_price_ref
-                sl_calc_expr = f"SL_Level_4H ({sl_level:.2f}) - (ATR_4H * {self.params.structural_sl_buffer_atr})"
+                sl_calc_expr = (
+                    f"{self._scoped_indicator_key('SL_Level', scope='htf')} ({sl_level:.2f}) - "
+                    f"({self._scoped_indicator_key('ATR', scope='htf')} * {self.params.structural_sl_buffer_atr})"
+                )
                 return sl_price_ref, sl_distance, sl_calc_expr
 
         sl_buffer = atr_val * self.params.sl_buffer_atr
@@ -898,12 +979,15 @@ class PriceActionStrategy(BaseStrategy):
         if atr_val is None or atr_val <= 0:
             return None, 0.0, "Invalid ATR"
 
-        sh_level = self._to_valid_float(self.ms_4h.sh_level[0])
+        sh_level = self._to_valid_float(self.ms_htf.sh_level[0])
         if sh_level is not None:
             sl_price_ref = sh_level + (atr_val * self.params.structural_sl_buffer_atr)
             if sl_price_ref > entry_price:
                 sl_distance = sl_price_ref - entry_price
-                sl_calc_expr = f"SH_Level_4H ({sh_level:.2f}) + (ATR_4H * {self.params.structural_sl_buffer_atr})"
+                sl_calc_expr = (
+                    f"{self._scoped_indicator_key('SH_Level', scope='htf')} ({sh_level:.2f}) + "
+                    f"({self._scoped_indicator_key('ATR', scope='htf')} * {self.params.structural_sl_buffer_atr})"
+                )
                 return sl_price_ref, sl_distance, sl_calc_expr
 
         sl_buffer = atr_val * self.params.sl_buffer_atr
@@ -921,20 +1005,26 @@ class PriceActionStrategy(BaseStrategy):
             tp_price_ref = tp_rr
             tp_calc_expr = "Entry + (Risk * RR)"
             if self.params.use_opposing_level_tp:
-                opposing_level = self._to_valid_float(self.ms_4h.sh_level[0])
+                opposing_level = self._to_valid_float(self.ms_htf.sh_level[0])
                 if opposing_level is not None and opposing_level > entry_price:
                     tp_price_ref = min(tp_rr, opposing_level)
-                    tp_calc_expr = f"min(Entry + (Risk * RR), SH_Level_4H {opposing_level:.2f})"
+                    tp_calc_expr = (
+                        f"min(Entry + (Risk * RR), "
+                        f"{self._scoped_indicator_key('SH_Level', scope='htf')} {opposing_level:.2f})"
+                    )
             tp_distance = tp_price_ref - entry_price
         else:
             tp_rr = entry_price - (sl_distance * rr_target)
             tp_price_ref = tp_rr
             tp_calc_expr = "Entry - (Risk * RR)"
             if self.params.use_opposing_level_tp:
-                opposing_level = self._to_valid_float(self.ms_4h.sl_level[0])
+                opposing_level = self._to_valid_float(self.ms_htf.sl_level[0])
                 if opposing_level is not None and opposing_level < entry_price:
                     tp_price_ref = max(tp_rr, opposing_level)
-                    tp_calc_expr = f"max(Entry - (Risk * RR), SL_Level_4H {opposing_level:.2f})"
+                    tp_calc_expr = (
+                        f"max(Entry - (Risk * RR), "
+                        f"{self._scoped_indicator_key('SL_Level', scope='htf')} {opposing_level:.2f})"
+                    )
             tp_distance = entry_price - tp_price_ref
         if tp_distance <= 0:
             return None, 0.0, "Invalid TP distance"
@@ -980,6 +1070,40 @@ class PriceActionStrategy(BaseStrategy):
         rng = self.high_line[0] - self.low_line[0]
         return rng >= (self.atr[0] * self.params.min_range_factor)
 
+    def _get_bar_shape_metrics(self, offset: int = 0):
+        open_val = self._to_valid_float(self.open_line[offset])
+        high_val = self._to_valid_float(self.high_line[offset])
+        low_val = self._to_valid_float(self.low_line[offset])
+        close_val = self._to_valid_float(self.close_line[offset])
+        atr_val = self._to_valid_float(self.atr[offset]) if len(self.atr) else None
+        if None in (open_val, high_val, low_val, close_val):
+            return None
+
+        rng = high_val - low_val
+        if rng <= 0:
+            return None
+
+        body = abs(close_val - open_val)
+        upper_wick = max(0.0, high_val - max(open_val, close_val))
+        lower_wick = max(0.0, min(open_val, close_val) - low_val)
+        close_location = (close_val - low_val) / rng
+
+        return {
+            'open': open_val,
+            'high': high_val,
+            'low': low_val,
+            'close': close_val,
+            'range': rng,
+            'body': body,
+            'upper_wick': upper_wick,
+            'lower_wick': lower_wick,
+            'upper_wick_to_range': upper_wick / rng,
+            'lower_wick_to_range': lower_wick / rng,
+            'body_to_range': body / rng,
+            'body_to_atr': (body / atr_val) if atr_val is not None and atr_val > 0 else None,
+            'close_location': close_location,
+        }
+
     def _meets_pinbar_wick_body_ratio(self, check_lower_wick: bool) -> bool:
         rng = self.high_line[0] - self.low_line[0]
         if rng <= 0:
@@ -994,29 +1118,98 @@ class PriceActionStrategy(BaseStrategy):
             upper_wick = self.high_line[0] - max(self.open_line[0], self.close_line[0])
             return upper_wick / rng >= self.params.min_wick_to_range
 
+    def _passes_pinbar_quality(self, check_lower_wick: bool) -> bool:
+        if not self._bool_param('use_pinbar_quality_filter', False):
+            return True
+
+        stats = self._get_bar_shape_metrics(0)
+        if stats is None:
+            return False
+
+        dominant_wick = stats['lower_wick'] if check_lower_wick else stats['upper_wick']
+        opposite_wick_to_range = stats['upper_wick_to_range'] if check_lower_wick else stats['lower_wick_to_range']
+        body_floor = max(stats['body'], stats['range'] * 0.01)
+        min_wick_to_body = self._float_param('pinbar_min_wick_to_body_ratio', 2.5, min_value=0.0)
+        max_opposite_wick = self._float_param('pinbar_max_opposite_wick_to_range', 0.2, min_value=0.0)
+        close_threshold = self._float_param('pinbar_close_near_extreme_threshold', 0.65, min_value=0.0)
+        close_threshold = min(close_threshold, 1.0)
+
+        if (dominant_wick / body_floor) < min_wick_to_body:
+            return False
+        if opposite_wick_to_range > max_opposite_wick:
+            return False
+        if check_lower_wick and stats['close_location'] < close_threshold:
+            return False
+        if not check_lower_wick and stats['close_location'] > (1.0 - close_threshold):
+            return False
+        return True
+
+    def _passes_engulfing_quality(self, direction: str) -> bool:
+        if not self._bool_param('use_engulfing_quality_filter', False):
+            return True
+
+        current = self._get_bar_shape_metrics(0)
+        previous = self._get_bar_shape_metrics(-1)
+        if current is None or previous is None:
+            return False
+
+        min_body_to_range = self._float_param('engulfing_min_body_to_range', 0.55, min_value=0.0)
+        min_body_to_atr = self._float_param('engulfing_min_body_to_atr', 0.35, min_value=0.0)
+        min_body_engulf_ratio = self._float_param('engulfing_min_body_engulf_ratio', 1.0, min_value=0.0)
+        max_opposite_wick = self._float_param('engulfing_max_opposite_wick_to_range', 0.2, min_value=0.0)
+        require_close_through_prev_extreme = self._bool_param('engulfing_require_close_through_prev_extreme', False)
+
+        if current['body_to_range'] < min_body_to_range:
+            return False
+        if current['body_to_atr'] is None or current['body_to_atr'] < min_body_to_atr:
+            return False
+        if previous['body'] <= 0 or current['body'] < (previous['body'] * min_body_engulf_ratio):
+            return False
+
+        if direction == 'long':
+            if not (current['close'] > current['open'] and previous['close'] < previous['open']):
+                return False
+            if current['open'] > previous['close'] or current['close'] < previous['open']:
+                return False
+            if current['upper_wick_to_range'] > max_opposite_wick:
+                return False
+            if require_close_through_prev_extreme and current['close'] <= previous['high']:
+                return False
+            return True
+
+        if not (current['close'] < current['open'] and previous['close'] > previous['open']):
+            return False
+        if current['open'] < previous['close'] or current['close'] > previous['open']:
+            return False
+        if current['lower_wick_to_range'] > max_opposite_wick:
+            return False
+        if require_close_through_prev_extreme and current['close'] >= previous['low']:
+            return False
+        return True
+
     def _is_bullish_pinbar(self):
         if not self._has_significant_range():
             return False
-        if self._bool_param('pattern_hammer', True) and self.cdl_hammer[0] == 100 and self._meets_pinbar_wick_body_ratio(check_lower_wick=True):
+        if self._bool_param('pattern_hammer', True) and self.cdl_hammer[0] == 100 and self._meets_pinbar_wick_body_ratio(check_lower_wick=True) and self._passes_pinbar_quality(check_lower_wick=True):
             return True
-        if self._bool_param('pattern_inverted_hammer', True) and self.cdl_invertedhammer[0] == 100 and self._meets_pinbar_wick_body_ratio(check_lower_wick=False):
+        if self._bool_param('pattern_inverted_hammer', True) and self.cdl_invertedhammer[0] == 100 and self._meets_pinbar_wick_body_ratio(check_lower_wick=False) and self._passes_pinbar_quality(check_lower_wick=False):
             return True
         return False
 
     def _is_bearish_pinbar(self):
         if not self._has_significant_range():
             return False
-        if self._bool_param('pattern_shooting_star', True) and self.cdl_shootingstar[0] == -100 and self._meets_pinbar_wick_body_ratio(check_lower_wick=False):
+        if self._bool_param('pattern_shooting_star', True) and self.cdl_shootingstar[0] == -100 and self._meets_pinbar_wick_body_ratio(check_lower_wick=False) and self._passes_pinbar_quality(check_lower_wick=False):
             return True
-        if self._bool_param('pattern_hanging_man', True) and self.cdl_hangingman[0] == -100 and self._meets_pinbar_wick_body_ratio(check_lower_wick=True):
+        if self._bool_param('pattern_hanging_man', True) and self.cdl_hangingman[0] == -100 and self._meets_pinbar_wick_body_ratio(check_lower_wick=True) and self._passes_pinbar_quality(check_lower_wick=True):
             return True
         return False
 
     def _is_bullish_engulfing(self):
-        return self._bool_param('pattern_bullish_engulfing', True) and self.cdl_engulfing[0] == 100 and self._has_significant_range()
+        return self._bool_param('pattern_bullish_engulfing', True) and self.cdl_engulfing[0] == 100 and self._has_significant_range() and self._passes_engulfing_quality('long')
 
     def _is_bearish_engulfing(self):
-        return self._bool_param('pattern_bearish_engulfing', True) and self.cdl_engulfing[0] == -100 and self._has_significant_range()
+        return self._bool_param('pattern_bearish_engulfing', True) and self.cdl_engulfing[0] == -100 and self._has_significant_range() and self._passes_engulfing_quality('short')
 
     def _check_filters_long(self):
         if self.position or self.order:

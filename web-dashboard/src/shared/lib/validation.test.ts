@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { validateBacktestConfig } from './validation';
+import { validateBacktestConfig, validateLiveConfig } from './validation';
 import { BacktestConfig } from '../model/types';
 
 describe('validateBacktestConfig', () => {
@@ -10,6 +10,9 @@ describe('validateBacktestConfig', () => {
         leverage: 10,
         symbol: "BTC/USDT",
         timeframes: ["4h", "15m"],
+        exchange: "binance",
+        exchange_type: "future",
+        execution_mode: "paper",
         start_date: "2025-01-01",
         end_date: "2025-12-31",
         strategy: "test_strategy",
@@ -46,6 +49,31 @@ describe('validateBacktestConfig', () => {
         expect(errors.timeframe_secondary).toBe("Primary TF must be >= Entry TF");
     });
 
+    it('allows live configs with a single timeframe and no dates', () => {
+        const config = getValidConfig();
+        config.timeframes = ["1m"];
+        config.start_date = "";
+        config.end_date = "";
+
+        const errors = validateLiveConfig(config, ["BTC/USDT"]);
+        expect(errors.timeframe_primary).toBeUndefined();
+        expect(errors.timeframe_secondary).toBeUndefined();
+        expect(errors.start_date).toBeUndefined();
+        expect(errors.end_date).toBeUndefined();
+    });
+
+    it('keeps requiring secondary timeframe and dates for backtests', () => {
+        const config = getValidConfig();
+        config.timeframes = ["1m"];
+        config.start_date = "";
+        config.end_date = "";
+
+        const errors = validateBacktestConfig(config, ["BTC/USDT"]);
+        expect(errors.timeframe_secondary).toBe("Required");
+        expect(errors.start_date).toBe("Invalid (YYYY-MM-DD)");
+        expect(errors.end_date).toBe("Invalid (YYYY-MM-DD)");
+    });
+
     it('fails with invalid numbers', () => {
         const config = getValidConfig();
         config.initial_capital = -100;
@@ -78,5 +106,35 @@ describe('validateBacktestConfig', () => {
         config.symbol = "INVALID/COIN";
         errors = validateBacktestConfig(config, ["BTC/USDT"]);
         expect(errors.symbol).toBe("Invalid symbol. Select from dropdown.");
+    });
+
+    it('validates exchange presence and allowlist', () => {
+        const config = getValidConfig();
+        config.exchange = "";
+
+        let errors = validateLiveConfig(config, ["BTC/USDT"]);
+        expect(errors.exchange).toBe("Required");
+
+        config.exchange = "bybit";
+        errors = validateLiveConfig(config, ["BTC/USDT"]);
+        expect(errors.exchange).toBe("Only Binance is supported for live paper testing");
+    });
+
+    it('validates execution mode is paper-only for now', () => {
+        const config = getValidConfig();
+        config.execution_mode = "real";
+
+        const errors = validateLiveConfig(config, ["BTC/USDT"]);
+        expect(errors.execution_mode).toBe("Only paper execution mode is enabled right now");
+    });
+
+    it('does not apply live-only exchange restrictions to backtests', () => {
+        const config = getValidConfig();
+        config.exchange = "bybit";
+        config.execution_mode = "real";
+
+        const errors = validateBacktestConfig(config, ["BTC/USDT"]);
+        expect(errors.exchange).toBeUndefined();
+        expect(errors.execution_mode).toBeUndefined();
     });
 });

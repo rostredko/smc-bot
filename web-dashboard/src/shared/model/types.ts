@@ -12,6 +12,9 @@ export interface BacktestConfig {
     leverage: number;
     symbol: string;
     timeframes: string[];
+    exchange: string;
+    exchange_type: string;
+    execution_mode: string;
     start_date: string;
     end_date: string;
     strategy: string;
@@ -20,6 +23,9 @@ export interface BacktestConfig {
     breakeven_trigger_r: number;
     dynamic_position_sizing: boolean;
     position_cap_adverse: number;
+    maker_fee_bps?: number;
+    taker_fee_bps?: number;
+    fee_source?: string;
 }
 
 export interface BacktestStatus {
@@ -29,6 +35,7 @@ export interface BacktestStatus {
     message: string;
     results?: any;
     error?: string;
+    config?: Record<string, any>;
 }
 
 export interface BacktestResults {
@@ -69,6 +76,9 @@ export const DEFAULT_CONFIG: BacktestConfig = {
     leverage: 10.0,
     symbol: "BTC/USDT",
     timeframes: ["4h", "1h"],
+    exchange: "binance",
+    exchange_type: "future",
+    execution_mode: "paper",
     start_date: "2025-01-01",
     end_date: "2025-12-31",
     strategy: "",

@@ -19,6 +19,7 @@ python-dotenv>=1.0
 fastapi>=0.95.0
 uvicorn>=0.20.0
 websockets>=11.0.0
+python-binance>=1.0.35
 
 # Development and testing
 pytest>=7.0.0

@@ -82,6 +82,19 @@ class TestBaseEngineBrokerSetup(unittest.TestCase):
         engine = BTBacktestEngine(config)
         self.assertAlmostEqual(engine.cerebro.broker.p.slip_perc, 0.00025)
 
+    def test_spot_exchange_defaults_to_spot_fee_schedule(self, mock_dataloader_cls):
+        mock_dataloader_cls.return_value.get_data.return_value = _mock_df()
+        config = {
+            "symbol": "BTC/USDT",
+            "timeframes": ["1h"],
+            "exchange": "binance",
+            "exchange_type": "spot",
+        }
+        engine = BTBacktestEngine(config)
+        self.assertAlmostEqual(engine.config["maker_fee_bps"], 10.0)
+        self.assertAlmostEqual(engine.config["taker_fee_bps"], 10.0)
+        self.assertAlmostEqual(engine.config["commission"], 0.001)
+
 
 @patch("engine.bt_backtest_engine.DataLoader")
 class TestBaseEngineInitialState(unittest.TestCase):

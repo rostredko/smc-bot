@@ -1,6 +1,7 @@
 import os
 import sys
 import asyncio
+import json
 import logging
 import threading
 import time
@@ -32,11 +33,15 @@ from server import (
     connection_lock,
     ws_log_queue,
     _build_chart_data_for_trades,
+    _compute_market_structure_levels,
     _emit_live_output_message,
+    active_console_state,
+    active_console_lock,
 )
 from engine.logger import PROJECT_ROOT_LOGGER, clear_ws_log_queue, setup_logging
 from db.connection import get_database
 from db.repositories import UserConfigRepository
+from strategies.market_structure import compute_market_structure_levels as compute_shared_market_structure_levels
 
 
 client = TestClient(app)
@@ -45,8 +50,17 @@ client = TestClient(app)
 def _reset_live_state():
     live_trading_state["is_running"] = False
     live_trading_state["engine"] = None
+    live_trading_state["run_id"] = None
+    live_trading_state["config"] = None
     live_trading_state["start_time"] = None
     live_trading_state["stop_requested"] = False
+
+
+def _reset_console_state():
+    with active_console_lock:
+        active_console_state["run_id"] = None
+        active_console_state["run_type"] = None
+        active_console_state["lines"].clear()
 
 
 def _reset_backtest_state(run_id: str):
@@ -92,6 +106,7 @@ def _mock_chart_df_wave(rows: int = 300) -> pd.DataFrame:
 
 def test_stop_live_accepts_request_before_engine_is_attached():
     _reset_live_state()
+    _reset_console_state()
     live_trading_state["is_running"] = True
 
     resp = client.post("/api/live/stop")
@@ -102,6 +117,7 @@ def test_stop_live_accepts_request_before_engine_is_attached():
 
 
 def test_emit_live_output_message_uses_logger_when_ws_handler_is_active():
+    _reset_console_state()
     clear_ws_log_queue()
     setup_logging(level="debug", ws_level="info", run_id="run_test", enable_ws=True)
 
@@ -114,6 +130,7 @@ def test_emit_live_output_message_uses_logger_when_ws_handler_is_active():
 
 
 def test_emit_live_output_message_preserves_prefix_override():
+    _reset_console_state()
     clear_ws_log_queue()
     setup_logging(level="debug", ws_level="info", run_id="run_test", enable_ws=True)
 
@@ -126,6 +143,7 @@ def test_emit_live_output_message_preserves_prefix_override():
 
 
 def test_emit_live_output_message_falls_back_to_direct_broadcast_without_ws_handler():
+    _reset_console_state()
     _clear_project_log_handlers()
 
     with patch("server.broadcast_message", new=AsyncMock()) as mock_broadcast:
@@ -134,6 +152,7 @@ def test_emit_live_output_message_falls_back_to_direct_broadcast_without_ws_hand
 
 
 def test_cancel_backtest_calls_engine_cancel():
+    _reset_console_state()
     run_id = f"bt_cancel_{uuid4().hex[:8]}"
     status = BacktestStatus(run_id=run_id, status="running", progress=0.0, message="")
     status.engine = MagicMock()
@@ -149,6 +168,7 @@ def test_cancel_backtest_calls_engine_cancel():
 
 
 def test_cancel_active_backtest_uses_latest_running_run_id():
+    _reset_console_state()
     old_run = f"bt_old_{uuid4().hex[:6]}"
     new_run = f"bt_new_{uuid4().hex[:6]}"
     old_status = BacktestStatus(run_id=old_run, status="running", progress=10.0, message="")
@@ -170,6 +190,7 @@ def test_cancel_active_backtest_uses_latest_running_run_id():
 
 
 def test_nested_user_config_flatten_includes_position_cap_adverse():
+    _reset_console_state()
     repo = UserConfigRepository()
     name = f"tmp_cfg_{uuid4().hex[:8]}"
     nested = {
@@ -193,11 +214,13 @@ def test_nested_user_config_flatten_includes_position_cap_adverse():
         assert data["position_cap_adverse"] == 0.7
         assert data["symbol"] == "ETH/USDT"
         assert data["strategy"] == "bt_price_action"
+        assert data["exchange"] == "binance"
     finally:
         repo.delete(name)
 
 
 def test_ohlcv_indicator_key_includes_ema_timeframe():
+    _reset_console_state()
     key_1h = _build_ohlcv_indicator_key(
         timeframe="1h",
         ema_period=200,
@@ -226,17 +249,99 @@ def test_ohlcv_indicator_key_includes_ema_timeframe():
     assert "@4h" in key_4h
 
 
+def test_runtime_state_returns_active_backtest_and_console_snapshot():
+    _reset_live_state()
+    _reset_console_state()
+    run_id = f"bt_runtime_{uuid4().hex[:8]}"
+    running_backtests[run_id] = BacktestStatus(
+        run_id=run_id,
+        status="running",
+        progress=42.0,
+        message="Running",
+        config={"strategy": "bt_price_action", "symbol": "BTC/USDT", "exchange": "binance"},
+    )
+    with active_console_lock:
+        active_console_state["run_id"] = run_id
+        active_console_state["run_type"] = "backtest"
+        active_console_state["lines"].append("[run] first line")
+
+    try:
+        resp = client.get("/api/runtime/state")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["backtest"]["run_id"] == run_id
+        assert data["backtest"]["config"]["exchange"] == "binance"
+        assert data["console"]["run_id"] == run_id
+        assert data["console"]["lines"] == ["[run] first line"]
+    finally:
+        _reset_backtest_state(run_id)
+        _reset_console_state()
+
+
+def test_runtime_state_hides_stale_console_when_no_runtime_is_active():
+    _reset_live_state()
+    _reset_console_state()
+    with active_console_lock:
+        active_console_state["run_id"] = "stale_run"
+        active_console_state["run_type"] = "backtest"
+        active_console_state["lines"].append("[stale] line 1")
+
+    try:
+        resp = client.get("/api/runtime/state")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["backtest"] is None
+        assert data["live"]["is_running"] is False
+        assert data["console"] == {"run_id": None, "run_type": None, "lines": []}
+    finally:
+        _reset_console_state()
+
+
+def test_websocket_replays_console_snapshot_for_new_connection():
+    _reset_live_state()
+    _reset_console_state()
+    live_trading_state["is_running"] = True
+    live_trading_state["run_id"] = "live_test"
+    with active_console_lock:
+        active_console_state["run_id"] = "live_test"
+        active_console_state["run_type"] = "live"
+        active_console_state["lines"].append("[live] line 1")
+        active_console_state["lines"].append("[live] line 2")
+
+    try:
+        with client.websocket_connect("/ws") as websocket:
+            message = websocket.receive_text()
+            payload = json.loads(message)
+            assert payload["type"] == "console_snapshot"
+            assert payload["run_type"] == "live"
+            assert payload["lines"] == ["[live] line 1", "[live] line 2"]
+    finally:
+        _reset_console_state()
+
+
 def test_bt_price_action_schema_defaults_match_runtime_defaults():
     schema = get_strategy_config_schema("bt_price_action")
     assert schema["use_rsi_filter"]["default"] is True
     assert schema["use_adx_filter"]["default"] is True
     assert schema["adx_threshold"]["default"] == 30
     assert schema["min_range_factor"]["default"] == 1.2
+    assert schema["use_pinbar_quality_filter"]["default"] is False
+    assert schema["pinbar_min_wick_to_body_ratio"]["default"] == 2.5
+    assert schema["pinbar_max_opposite_wick_to_range"]["default"] == 0.2
+    assert schema["pinbar_close_near_extreme_threshold"]["default"] == 0.65
+    assert schema["use_engulfing_quality_filter"]["default"] is False
+    assert schema["engulfing_min_body_to_range"]["default"] == 0.55
+    assert schema["engulfing_min_body_to_atr"]["default"] == 0.35
+    assert schema["engulfing_min_body_engulf_ratio"]["default"] == 1.0
+    assert schema["engulfing_max_opposite_wick_to_range"]["default"] == 0.2
+    assert schema["engulfing_require_close_through_prev_extreme"]["default"] is False
     assert schema["risk_reward_ratio"]["default"] == 2.0
     assert schema["sl_buffer_atr"]["default"] == 1.5
+    assert schema["poi_zone_upper_atr_mult"]["default"] == 0.3
+    assert schema["poi_zone_lower_atr_mult"]["default"] == 0.2
     assert schema["use_premium_discount_filter"]["default"] is False
     assert schema["use_space_to_target_filter"]["default"] is False
-    assert schema["space_to_target_min_rr"]["default"] == 2.0
+    assert schema["space_to_target_min_rr"]["default"] == 1.0
     assert schema["use_choch_displacement_filter"]["default"] is False
     assert schema["choch_displacement_atr_mult"]["default"] == 1.5
     assert schema["require_choch_fvg"]["default"] is False
@@ -374,6 +479,26 @@ def test_chart_data_builder_includes_structure_levels():
     assert len(indicators["sl_level"]["values"]) > 0
 
 
+def test_dashboard_market_structure_helper_matches_shared_bos_only_logic():
+    highs = [10, 11, 15, 12, 11, 12, 13, 12, 11, 10, 9]
+    lows = [9, 8, 7, 8, 9, 8, 6, 8, 9, 8, 7]
+    closes = [9.5, 10, 11, 10, 10, 10, 7.5, 9, 10, 9, 8]
+
+    server_sh, server_sl, server_st = _compute_market_structure_levels(highs, lows, closes, pivot_span=2)
+    shared_sh, shared_sl, shared_st = compute_shared_market_structure_levels(highs, lows, closes, pivot_span=2)
+
+    assert server_st == shared_st
+    assert shared_st[-1] == 0.0
+    assert all(
+        (math.isnan(sv) and math.isnan(cv)) or sv == cv
+        for sv, cv in zip(server_sh, shared_sh)
+    )
+    assert all(
+        (math.isnan(sv) and math.isnan(cv)) or sv == cv
+        for sv, cv in zip(server_sl, shared_sl)
+    )
+
+
 def test_chart_data_builder_includes_fractal_markers():
     rows = 240
     idx = pd.date_range("2025-01-01", periods=rows, freq="h")
@@ -465,7 +590,7 @@ def test_start_live_clears_live_output_before_launch():
          patch("server.broadcast_message", new=AsyncMock()) as broadcast:
         resp = client.post(
             "/api/live/start",
-            json={"config": {"strategy": "fast_test_strategy", "symbol": "BTC/USDT", "timeframes": ["1m"]}},
+            json={"config": {"strategy": "fast_test_strategy", "symbol": "BTC/USDT", "timeframes": ["1m"], "exchange": "binance"}},
         )
 
     assert resp.status_code == 200
@@ -475,6 +600,50 @@ def test_start_live_clears_live_output_before_launch():
         for call in broadcast.await_args_list
     )
     _reset_live_state()
+
+
+def test_start_live_requires_exchange():
+    _reset_live_state()
+    with patch("server.run_live_trading_task", new=AsyncMock()):
+        resp = client.post(
+            "/api/live/start",
+            json={"config": {"strategy": "fast_test_strategy", "symbol": "BTC/USDT", "timeframes": ["1m"]}},
+        )
+
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == "config.exchange is required"
+
+
+def test_start_live_rejects_unsupported_exchange():
+    _reset_live_state()
+    with patch("server.run_live_trading_task", new=AsyncMock()):
+        resp = client.post(
+            "/api/live/start",
+            json={"config": {"strategy": "fast_test_strategy", "symbol": "BTC/USDT", "timeframes": ["1m"], "exchange": "bybit"}},
+        )
+
+    assert resp.status_code == 400
+    assert "Unsupported live exchange 'bybit'" in resp.json()["detail"]
+
+
+def test_start_live_rejects_real_execution_mode_until_exchange_trading_is_implemented():
+    _reset_live_state()
+    with patch("server.run_live_trading_task", new=AsyncMock()):
+        resp = client.post(
+            "/api/live/start",
+            json={
+                "config": {
+                    "strategy": "fast_test_strategy",
+                    "symbol": "BTC/USDT",
+                    "timeframes": ["1m"],
+                    "exchange": "binance",
+                    "execution_mode": "real",
+                }
+            },
+        )
+
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == "Only paper execution mode is enabled for live trading right now"
 
 
 @pytest.mark.asyncio
@@ -501,11 +670,13 @@ async def test_live_task_saves_history_even_with_empty_metrics(
 
     with patch("server.broadcast_message", new=AsyncMock()):
         await run_live_trading_task(
+            "live_test_run",
             {
                 "symbol": "BTC/USDT",
                 "timeframes": ["1m"],
                 "strategy": "fast_test_strategy",
                 "initial_capital": 10000,
+                "exchange": "binance",
             }
         )
 
@@ -518,6 +689,7 @@ async def test_live_task_saves_history_even_with_empty_metrics(
     assert saved_doc.get("log_file", "").endswith(".log")
     assert isinstance(saved_doc.get("logs"), list)
     assert isinstance(saved_doc.get("log_lines_total"), int)
+    assert saved_doc.get("configuration", {}).get("exchange") == "binance"
     if saved_doc.get("log_file"):
         try:
             os.remove(saved_doc["log_file"])

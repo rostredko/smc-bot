@@ -3,7 +3,7 @@ Comprehensive tests for engine/bt_backtest_engine.py.
 Covers SMCDataFeed, add_data, run_backtest, metrics, and edge cases.
 """
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 import backtrader as bt
 import pandas as pd
 import sys
@@ -76,6 +76,7 @@ class TestBTBacktestEngineInit(unittest.TestCase):
         mock_dataloader_cls.assert_called_once_with(
             exchange_name="bybit",
             exchange_type="spot",
+            log_level=ANY,
         )
 
 

@@ -1,10 +1,16 @@
 import os
 import sys
+from pathlib import Path
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(PROJECT_ROOT, "web-dashboard"))
 
-from services.strategy_runtime import build_runtime_strategy_config, resolve_strategy_class
+from services.strategy_runtime import (
+    build_runtime_strategy_config,
+    discover_strategy_definitions,
+    list_dashboard_strategies,
+    resolve_strategy_class,
+)
 
 
 def test_resolve_strategy_class_aliases():
@@ -41,3 +47,52 @@ def test_build_runtime_strategy_config_overrides_runtime_controls():
     assert st["funding_rate_per_8h"] == 0.0001
     assert st["funding_interval_hours"] == 8
     assert st["custom_param"] == 42
+
+
+def test_list_dashboard_strategies_returns_only_public_runtime_strategies():
+    strategies = list_dashboard_strategies()
+    names = [strategy["name"] for strategy in strategies]
+
+    assert names == ["bt_price_action", "fast_test_strategy"]
+    assert "price_action_strategy" not in names
+    assert "market_structure" not in names
+
+
+def test_discover_strategy_definitions_picks_new_strategy_classes_from_modules():
+    strategies_dir = Path(PROJECT_ROOT) / "strategies"
+    module_path = strategies_dir / "temporary_breakout.py"
+    module_name = "strategies.temporary_breakout"
+
+    module_path.write_text(
+        "\n".join(
+            [
+                "from strategies.base_strategy import BaseStrategy",
+                "",
+                "class TemporaryBreakoutStrategy(BaseStrategy):",
+                "    params = ()",
+                "",
+                "    def next(self):",
+                "        return None",
+                "",
+                "class HelperThing:",
+                "    pass",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    try:
+        sys.modules.pop(module_name, None)
+        definitions = discover_strategy_definitions()
+        names = [definition["name"] for definition in definitions]
+
+        assert "temporary_breakout_strategy" in names
+
+        breakout_definition = next(
+            definition for definition in definitions if definition["name"] == "temporary_breakout_strategy"
+        )
+        assert breakout_definition["class_name"] == "TemporaryBreakoutStrategy"
+        assert "temporary_breakout" in breakout_definition["aliases"]
+    finally:
+        module_path.unlink(missing_ok=True)
+        sys.modules.pop(module_name, None)

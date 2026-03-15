@@ -1,12 +1,22 @@
 import { renderHook, act } from '@testing-library/react';
 import { useResultsContext, ResultsProvider } from './ResultsProvider';
 import { ReactNode } from 'react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const wrapper = ({ children }: { children: ReactNode }) => (
     <ResultsProvider>{children}</ResultsProvider>
 );
 
 describe('ResultsProvider hook', () => {
+    beforeEach(() => {
+        vi.stubGlobal('fetch', vi.fn());
+    });
+
+    afterEach(() => {
+        vi.unstubAllGlobals();
+        vi.restoreAllMocks();
+    });
+
     it('returns empty lists for charts initially', () => {
         const { result } = renderHook(() => useResultsContext(), { wrapper });
         expect(result.current.pieData).toEqual([]);
@@ -56,5 +66,43 @@ describe('ResultsProvider hook', () => {
 
         expect(result.current.equityData[0].equity).toBe(10200);
         expect(result.current.equityData[1].equity).toBe(10500);
+    });
+
+    it('does not reset running UI state on transient polling failure', async () => {
+        const fetchMock = vi.fn().mockRejectedValue(new TypeError('Failed to fetch'));
+        vi.stubGlobal('fetch', fetchMock);
+        const setIsRunning = vi.fn();
+        const setIsConfigDisabled = vi.fn();
+        const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+        const { result } = renderHook(() => useResultsContext(), { wrapper });
+
+        await act(async () => {
+            await result.current.checkBacktestStatus('bt_1', setIsRunning, setIsConfigDisabled);
+        });
+
+        expect(setIsRunning).not.toHaveBeenCalled();
+        expect(setIsConfigDisabled).not.toHaveBeenCalled();
+        expect(consoleSpy).not.toHaveBeenCalled();
+    });
+
+    it('unlocks the UI when the polled run no longer exists', async () => {
+        const fetchMock = vi.fn().mockResolvedValue({
+            ok: false,
+            status: 404,
+            json: async () => ({ detail: 'Backtest not found' }),
+        });
+        vi.stubGlobal('fetch', fetchMock);
+        const setIsRunning = vi.fn();
+        const setIsConfigDisabled = vi.fn();
+
+        const { result } = renderHook(() => useResultsContext(), { wrapper });
+
+        await act(async () => {
+            await result.current.checkBacktestStatus('bt_missing', setIsRunning, setIsConfigDisabled);
+        });
+
+        expect(setIsRunning).toHaveBeenCalledWith(false);
+        expect(setIsConfigDisabled).toHaveBeenCalledWith(false);
     });
 });

@@ -77,3 +77,32 @@ def test_run_backtest_from_config_injects_runtime_controls(engine_cls):
     assert kwargs["max_drawdown"] == 25.0
     assert kwargs["position_cap_adverse"] == 0.7
     assert kwargs["funding_rate_per_8h"] == 0.0001
+
+
+def test_normalize_live_config_strips_legacy_auth_fields_and_keeps_runtime_fields():
+    config = main._normalize_live_config(
+        {
+            "account": {"initial_capital": 5000},
+            "trading": {"symbol": "ETH/USDT", "exchange": "binance"},
+            "strategy": {"name": "fast_test_strategy", "config": {"force_signal_every_n_bars": 1}},
+            "apiKey": "legacy-key",
+            "secret": "legacy-secret",
+            "sandbox": True,
+            "poll_interval": 30,
+            "dynamic_position_sizing": False,
+            "position_cap_adverse": 0.8,
+        }
+    )
+
+    assert config["exchange"] == "binance"
+    assert config["symbol"] == "ETH/USDT"
+    assert config["strategy"] == "fast_test_strategy"
+    assert config["dynamic_position_sizing"] is False
+    assert config["position_cap_adverse"] == 0.8
+    assert config["execution_mode"] == "paper"
+    assert config["maker_fee_bps"] == 2.0
+    assert config["taker_fee_bps"] == 4.0
+    assert "apiKey" not in config
+    assert "secret" not in config
+    assert "sandbox" not in config
+    assert "poll_interval" not in config

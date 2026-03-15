@@ -36,6 +36,7 @@ TIMEOUT_SECS = 300      # 5 minutes max
 ENGINE_CONFIG = {
     "symbol": "BTC/USDT",
     "timeframes": ["1m", "1m"],
+    "exchange": "binance",
     "exchange_type": "future",
     "initial_capital": 10000,
     "risk_per_trade": 1.0,

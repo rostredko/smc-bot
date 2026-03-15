@@ -19,6 +19,7 @@ sys.path.insert(0, str(project_root))
 from engine.logger import get_logger, setup_logging
 from engine.bt_backtest_engine import BTBacktestEngine
 from engine.bt_live_engine import BTLiveEngine
+from engine.execution_settings import DEFAULT_EXECUTION_MODE, apply_execution_settings
 from strategies.bt_price_action import PriceActionStrategy
 from strategies.fast_test_strategy import FastTestStrategy
 
@@ -51,6 +52,8 @@ def create_default_config() -> Dict[str, Any]:
         "symbol": "BTC/USDT",
         "timeframes": ["4h"],
         "exchange": "binance",
+        "exchange_type": "future",
+        "execution_mode": DEFAULT_EXECUTION_MODE,
         # Backtest period
         "start_date": "2023-01-01",
         "end_date": "2023-12-31",
@@ -81,12 +84,18 @@ def _normalize_json_config(json_config: Dict[str, Any]) -> Dict[str, Any]:
     trading = json_config.get("trading", {})
     period = json_config.get("period", {})
 
-    return {
+    normalized = {
         "initial_capital": account.get("initial_capital", json_config.get("initial_capital", 10000)),
-        "commission": trading.get("commission", json_config.get("commission", 0.0004)),
+        "commission": trading.get("commission", json_config.get("commission")),
         "symbol": trading.get("symbol", json_config.get("symbol", "BTC/USDT")),
         "timeframes": trading.get("timeframes", json_config.get("timeframes", ["4h", "15m"])),
         "exchange": trading.get("exchange", json_config.get("exchange", "binance")),
+        "exchange_type": json_config.get("exchange_type", "future"),
+        "execution_mode": json_config.get("execution_mode", DEFAULT_EXECUTION_MODE),
+        "maker_fee_bps": json_config.get("maker_fee_bps"),
+        "taker_fee_bps": json_config.get("taker_fee_bps"),
+        "fee_source": json_config.get("fee_source"),
+        "taker_fee": json_config.get("taker_fee"),
         "leverage": json_config.get("leverage", account.get("leverage", 10.0)),
         "start_date": period.get("start_date", json_config.get("start_date", "2023-01-01")),
         "end_date": period.get("end_date", json_config.get("end_date", "2023-12-31")),
@@ -96,6 +105,7 @@ def _normalize_json_config(json_config: Dict[str, Any]) -> Dict[str, Any]:
             json_config.get("strategy_config", {})
         ),
     }
+    return apply_execution_settings(normalized)
 
 
 def load_config_from_db(config_type: str = "backtest") -> Dict[str, Any] | None:
@@ -122,14 +132,16 @@ def load_config_from_db(config_type: str = "backtest") -> Dict[str, Any] | None:
 
 def _normalize_live_config(raw: Dict[str, Any]) -> Dict[str, Any]:
     """Normalize live config from DB (nested or flat) to engine format."""
-    account = raw.get("account", {})
-    trading = raw.get("trading", {})
     base = _normalize_json_config(raw)
-    base["sandbox"] = raw.get("sandbox", trading.get("sandbox", True))
-    base["apiKey"] = raw.get("apiKey", trading.get("apiKey", ""))
-    base["secret"] = raw.get("secret", trading.get("secret", ""))
-    base["poll_interval"] = raw.get("poll_interval", 60)
-    return base
+    base["exchange_type"] = raw.get("exchange_type", "future")
+    base["execution_mode"] = raw.get("execution_mode", DEFAULT_EXECUTION_MODE)
+    base["trailing_stop_distance"] = raw.get("trailing_stop_distance", 0.0)
+    base["breakeven_trigger_r"] = raw.get("breakeven_trigger_r", 0.0)
+    base["dynamic_position_sizing"] = raw.get("dynamic_position_sizing", True)
+    base["position_cap_adverse"] = raw.get("position_cap_adverse", 0.5)
+    base["funding_rate_per_8h"] = raw.get("funding_rate_per_8h", 0.0)
+    base["funding_interval_hours"] = raw.get("funding_interval_hours", 8)
+    return apply_execution_settings(base)
 
 
 def _build_cli_runtime_strategy_config(config: Dict[str, Any]) -> Dict[str, Any]:
@@ -237,11 +249,16 @@ def _build_full_metrics(
         "timeframes": config.get("timeframes", ["4h", "15m"]),
         "exchange": config.get("exchange", "binance"),
         "exchange_type": config.get("exchange_type", "future"),
+        "execution_mode": config.get("execution_mode", DEFAULT_EXECUTION_MODE),
+        "maker_fee_bps": config.get("maker_fee_bps"),
+        "taker_fee_bps": config.get("taker_fee_bps"),
+        "fee_source": config.get("fee_source"),
         "start_date": config.get("start_date", "2023-01-01"),
         "end_date": config.get("end_date", "2023-12-31"),
         "strategy": config.get("strategy", "bt_price_action"),
         "strategy_config": config.get("strategy_config", {}),
     }
+    engine_config = apply_execution_settings(engine_config)
     return {
         **metrics,
         "equity_curve": equity_data,
@@ -309,7 +326,7 @@ def run_live_trading():
         if config is None:
             config = _normalize_live_config({
                 "account": {"initial_capital": 1000.0, "risk_per_trade": 2.0},
-                "trading": {"symbol": "BTC/USDT", "exchange": "binance", "sandbox": True},
+                "trading": {"symbol": "BTC/USDT", "exchange": "binance"},
             })
             logger.warning("⚠️  Config not found, using default.")
 

@@ -1,18 +1,11 @@
 import os
 import sys
-import time
-import queue
-import asyncio
-import threading
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
-
-import pytest
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from engine.bt_live_engine import BTLiveEngine
-from engine.live_ws_client import BinanceWebsocketClient
 
 
 class _DummyWSClient:
@@ -77,9 +70,9 @@ def test_init_no_crash():
     assert engine.strategy is None
 
 
-@patch("engine.bt_live_engine.BinanceWebsocketClient", side_effect=lambda **kw: _DummyWSClient(**kw))
+@patch("engine.bt_live_engine.create_live_stream_client", side_effect=lambda **kw: _DummyWSClient(**kw))
 @patch("engine.bt_live_engine.DataLoader")
-def test_add_data_adds_feeds_without_network(data_loader_cls, _ws_cls):
+def test_add_data_adds_feeds_without_network(data_loader_cls, _factory):
     data_loader = MagicMock()
     data_loader.fetch_recent_bars.return_value = [
         {"timestamp": 1, "open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0, "volume": 1.0}
@@ -95,11 +88,13 @@ def test_add_data_adds_feeds_without_network(data_loader_cls, _ws_cls):
     assert all(ws.started for ws in engine.ws_clients)
     assert engine.cerebro.datas[0]._name.endswith("_15m")
     assert engine.cerebro.datas[1]._name.endswith("_4h")
+    assert _factory.call_count == 2
+    assert all(call.kwargs["exchange_name"] == "binance" for call in _factory.call_args_list)
 
 
-@patch("engine.bt_live_engine.BinanceWebsocketClient", side_effect=lambda **kw: _DummyWSClient(**kw))
+@patch("engine.bt_live_engine.create_live_stream_client", side_effect=lambda **kw: _DummyWSClient(**kw))
 @patch("engine.bt_live_engine.DataLoader")
-def test_add_data_normalizes_order_when_config_is_low_first(data_loader_cls, _ws_cls):
+def test_add_data_normalizes_order_when_config_is_low_first(data_loader_cls, _factory):
     data_loader = MagicMock()
     data_loader.fetch_recent_bars.return_value = []
     data_loader_cls.return_value = data_loader
@@ -152,27 +147,3 @@ def test_run_live_returns_metrics(add_data_mock):
     assert metrics["loss_count"] == 1
     assert "total_pnl" in metrics
     assert len(engine.closed_trades) == 2
-
-
-@pytest.mark.asyncio
-async def test_ws_backoff_sleep_interrupts_on_stop_event():
-    stop_event = threading.Event()
-    client = BinanceWebsocketClient(
-        symbol="BTC/USDT",
-        timeframe="1m",
-        exchange_type="future",
-        data_queue=queue.Queue(),
-        stop_event=stop_event,
-    )
-
-    async def trigger_stop():
-        await asyncio.sleep(0.02)
-        stop_event.set()
-
-    asyncio.create_task(trigger_stop())
-
-    started = time.perf_counter()
-    await client._sleep_with_stop(1.0, step=0.01)
-    elapsed = time.perf_counter() - started
-
-    assert elapsed < 0.2

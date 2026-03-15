@@ -6,7 +6,11 @@ from typing import Dict, Any
 
 from .base_engine import BaseEngine
 from .logger import get_logger
-from .live_ws_client import BinanceWebsocketClient
+from .live_ws_client import (
+    create_live_stream_client,
+    normalize_live_exchange_name,
+    normalize_live_exchange_type,
+)
 from .live_data_feed import LiveWebSocketDataFeed
 from .bt_analyzers import TradeListAnalyzer, EquityCurveAnalyzer
 from .data_loader import DataLoader
@@ -53,8 +57,8 @@ class BTLiveEngine(BaseEngine):
         """
         symbol = self.config.get("symbol", "BTC/USDT")
         timeframes = self.config.get("timeframes", ["1h"])
-        exchange_type = self.config.get("exchange_type", "future")
-        exchange_name = self.config.get("exchange", "binance")
+        exchange_type = normalize_live_exchange_type(self.config.get("exchange_type", "future"))
+        exchange_name = normalize_live_exchange_name(self.config.get("exchange", "binance"))
         queue_maxsize = int(self.config.get("live_queue_maxsize", 3000))
         
         # Keep data0=LTF and data1=HTF regardless of config array order.
@@ -68,7 +72,7 @@ class BTLiveEngine(BaseEngine):
         )
         
         for tf in ordered_timeframes:
-            logger.info(f"Initializing Live WebSocket for {symbol} {tf}...")
+            logger.info("Initializing %s live market stream for %s %s...", exchange_name, symbol, tf)
             
             data_queue = queue.Queue(maxsize=max(100, queue_maxsize))
             
@@ -77,13 +81,13 @@ class BTLiveEngine(BaseEngine):
             for bar in recent_bars:
                 data_queue.put(bar)
                 
-            # Start WS Client Thread
-            ws_client = BinanceWebsocketClient(
+            ws_client = create_live_stream_client(
+                exchange_name=exchange_name,
                 symbol=symbol,
                 timeframe=tf,
                 exchange_type=exchange_type,
                 data_queue=data_queue,
-                stop_event=self.stop_event
+                stop_event=self.stop_event,
             )
             ws_client.start()
             self.ws_clients.append(ws_client)
