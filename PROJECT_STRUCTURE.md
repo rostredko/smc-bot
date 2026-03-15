@@ -311,6 +311,8 @@ Frontend follows a layered folder split close to Feature-Sliced style.
 Build/runtime notes:
 - `vite.config.ts` injects `__APP_VERSION__` and `__BUILD_NUMBER__` from `VERSION`/env
 - production static base is `/static/`
+- `config-panel` keeps high-signal strategy controls visible first; for `bt_price_action` this includes a dedicated `Structure & POI` accordion, while low-frequency tuning fields fall under `Advanced Strategy Parameters`
+- `backtest-history` avoids repeating top-level exit controls in multiple detail sections; `trailing_stop_distance` and `breakeven_trigger_r` are shown once
 
 ## 7. Data Flow
 

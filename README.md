@@ -7,6 +7,7 @@ Backtrade Machine is a crypto trading platform with:
 - React dashboard for config, runs, history, and trade analysis
 - MongoDB persistence for configs and results
 - Default primary strategy: `bt_price_action` (`HTF` structure / `LTF` execution with dynamic timeframe labels)
+- Dashboard strategy UI groups core structure controls into `Structure & POI`, while less common confirmation/quality knobs stay under `Advanced Strategy Parameters`
 
 Current live paper behavior:
 - live start requires `exchange`, and the dashboard defaults it to `binance`

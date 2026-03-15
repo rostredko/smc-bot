@@ -116,6 +116,12 @@ const ConfigPanel: React.FC = () => {
         },
     ];
 
+    const structurePoiKeys = [
+        "poi_zone_upper_atr_mult",
+        "poi_zone_lower_atr_mult",
+        "use_premium_discount_filter",
+    ];
+
     const PATTERN_LABELS: Record<string, string> = {
         pattern_hammer: "Hammer (Bullish Pinbar)",
         pattern_inverted_hammer: "Inverted Hammer (Bullish Pinbar)",
@@ -137,8 +143,13 @@ const ConfigPanel: React.FC = () => {
     const generalStrategyKeys = [
         "risk_reward_ratio", "sl_buffer_atr", "atr_period",
         "min_range_factor", "min_wick_to_range", "max_body_to_range",
-        "trailing_stop_distance", "breakeven_trigger_r",
     ];
+
+    const formatStrategyLabel = (key: string) => {
+        if (key === "poi_zone_upper_atr_mult") return "POI Upper ATR Multiplier";
+        if (key === "poi_zone_lower_atr_mult") return "POI Lower ATR Multiplier";
+        return key.replace(/_/g, " ").replace(/\b\w/g, (l: string) => l.toUpperCase());
+    };
 
     const selectedStrategyDef = useMemo(
         () => strategies.find(s => s.name === selectedStrategy),
@@ -147,12 +158,12 @@ const ConfigPanel: React.FC = () => {
 
     const renderedSchemaKeys = (() => {
         const keys = new Set<string>(generalStrategyKeys);
-        keys.add("poi_zone_lower_atr_mult");
+        structurePoiKeys.forEach((key) => keys.add(key));
         strategySections.forEach(section => section.keys.forEach(k => keys.add(k)));
         return keys;
     })();
 
-    const extraStrategyKeys = (() => {
+    const advancedStrategyKeys = (() => {
         const schema = selectedStrategyDef?.config_schema ?? {};
         return Object.keys(schema).filter((k) => !renderedSchemaKeys.has(k));
     })();
@@ -511,9 +522,7 @@ const ConfigPanel: React.FC = () => {
                                     return (
                                         <StrategyField
                                             key={key} fieldKey={key} schema={schema} value={strategyConfig[key]}
-                                            label={key === "poi_zone_upper_atr_mult"
-                                                ? "POI ATR Multiplier"
-                                                : key.replace(/_/g, " ").replace(/\b\w/g, (l: string) => l.toUpperCase())}
+                                            label={formatStrategyLabel(key)}
                                             tooltip={TOOLTIP_HINTS[key] || "No description available"}
                                             isDisabled={configDisabled} onChange={handleStrategyConfigChange}
                                         />
@@ -522,6 +531,34 @@ const ConfigPanel: React.FC = () => {
                             </Grid>
                         </AccordionDetails>
                     </Accordion>
+
+                    {structurePoiKeys.some((key) => selectedStrategyDef?.config_schema?.[key]) && (
+                        <Accordion>
+                            <AccordionSummary expandIcon={<ExpandMore />}>
+                                <Typography variant="h6">Structure & POI</Typography>
+                            </AccordionSummary>
+                            <AccordionDetails>
+                                <Grid container spacing={2}>
+                                    {structurePoiKeys.map((key) => {
+                                        const schema = selectedStrategyDef?.config_schema?.[key];
+                                        if (!schema) return null;
+                                        return (
+                                            <StrategyField
+                                                key={key}
+                                                fieldKey={key}
+                                                schema={schema}
+                                                value={strategyConfig[key]}
+                                                label={formatStrategyLabel(key)}
+                                                tooltip={TOOLTIP_HINTS[key] || "No description available"}
+                                                isDisabled={configDisabled}
+                                                onChange={handleStrategyConfigChange}
+                                            />
+                                        );
+                                    })}
+                                </Grid>
+                            </AccordionDetails>
+                        </Accordion>
+                    )}
 
                     {strategySections.map((section) => {
                         if (!selectedStrategyDef) return null;
@@ -576,14 +613,17 @@ const ConfigPanel: React.FC = () => {
                         );
                     })}
 
-                    {extraStrategyKeys.length > 0 && (
+                    {advancedStrategyKeys.length > 0 && (
                         <Accordion>
                             <AccordionSummary expandIcon={<ExpandMore />}>
-                                <Typography variant="h6">Strategy Parameters</Typography>
+                                <Typography variant="h6">Advanced Strategy Parameters</Typography>
                             </AccordionSummary>
                             <AccordionDetails>
+                                <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+                                    Optional confirmation and candle-quality controls. Leave these at defaults unless you are intentionally tuning advanced behavior.
+                                </Typography>
                                 <Grid container spacing={2}>
-                                    {extraStrategyKeys.map((key) => {
+                                    {advancedStrategyKeys.map((key) => {
                                         const schema = selectedStrategyDef?.config_schema?.[key];
                                         if (!schema) return null;
                                         return (
@@ -592,9 +632,7 @@ const ConfigPanel: React.FC = () => {
                                                 fieldKey={key}
                                                 schema={schema}
                                                 value={strategyConfig[key]}
-                                                label={key === "poi_zone_upper_atr_mult"
-                                                    ? "POI ATR Multiplier"
-                                                    : key.replace(/_/g, " ").replace(/\b\w/g, (l: string) => l.toUpperCase())}
+                                                label={formatStrategyLabel(key)}
                                                 tooltip={TOOLTIP_HINTS[key] || "No description available"}
                                                 isDisabled={configDisabled}
                                                 onChange={handleStrategyConfigChange}

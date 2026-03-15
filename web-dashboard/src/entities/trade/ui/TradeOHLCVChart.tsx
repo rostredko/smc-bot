@@ -105,16 +105,20 @@ const TradeOHLCVChart: React.FC<TradeOHLCVChartProps> = ({
             indParams.fractalPeriod,
         ].join('|');
     }, [
-        trade?.id,
-        trade?.entry_time,
-        trade?.exit_time,
+        trade,
         symbol,
         timeframe,
         emaTimeframe,
         exchangeType,
         backtestStart,
         backtestEnd,
-        indParams,
+        indParams.emaPeriod,
+        indParams.rsiPeriod,
+        indParams.rsiOb,
+        indParams.rsiOs,
+        indParams.adxPeriod,
+        indParams.adxThreshold,
+        indParams.fractalPeriod,
     ]);
 
     useEffect(() => {
@@ -187,7 +191,25 @@ const TradeOHLCVChart: React.FC<TradeOHLCVChartProps> = ({
             cancelled = true;
             controller.abort();
         };
-    }, [requestKey, trade?.chart_data]);
+    }, [
+        requestKey,
+        trade,
+        trade?.chart_data,
+        data,
+        symbol,
+        timeframe,
+        exchangeType,
+        emaTimeframe,
+        backtestStart,
+        backtestEnd,
+        indParams.emaPeriod,
+        indParams.rsiPeriod,
+        indParams.rsiOb,
+        indParams.rsiOs,
+        indParams.adxPeriod,
+        indParams.adxThreshold,
+        indParams.fractalPeriod,
+    ]);
 
     const figure = useMemo(() => {
         try {
