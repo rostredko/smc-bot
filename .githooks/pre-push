@@ -26,7 +26,13 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     continue
   fi
 
-  notes_rel_path="release-notes/master-${local_sha:0:12}.md"
+  # For release-notes commits, the file is named after the parent (the content commit)
+  if git log -1 --format=%s "${local_sha}" 2>/dev/null | grep -qE "docs\(release\)|release notes"; then
+    parent_sha="$(git rev-parse "${local_sha}^" 2>/dev/null)"
+    notes_rel_path="release-notes/master-${parent_sha:0:12}.md"
+  else
+    notes_rel_path="release-notes/master-${local_sha:0:12}.md"
+  fi
 
   if git cat-file -e "${local_sha}:${notes_rel_path}" 2>/dev/null; then
     echo "[pre-push] Release notes found in commit tree: ${notes_rel_path}" >&2
