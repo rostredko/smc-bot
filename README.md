@@ -133,12 +133,6 @@ Testing helper:
 ## Documentation
 
 - Full technical map: [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md)
-- Deep-dive docs (local `docs/`, gitignored):
-  - `BT_PRICE_ACTION_AUDIT_20260307.md` — strategy reference
-  - `BACKEND_ENGINE_AND_DASHBOARD_REFERENCE_V1_0_0.md` — backend architecture
-  - `ENTRY_MECHANISMS_AND_GHOST_TRADE.md` — entry logic (referenced by risk_manager)
-  - `ENGINE_REVIEW.md`, `ENGINE_STRATEGY_REVIEW_2026.md` — engine analysis
-  - `REAL_LIVE_BINANCE_INTEGRATION_PLAN.md`, `BINANCE_REAL_TRADING_IMPLEMENTATION_PLAN_20260315.md` — Binance plans
 
 ## Disclaimer
 
