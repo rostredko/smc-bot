@@ -7,6 +7,7 @@ from typing import Dict, Any
 from .base_engine import BaseEngine
 from .data_loader import DataLoader
 from .logger import get_logger
+from .utils import safe_float
 
 from .bt_analyzers import TradeListAnalyzer, EquityCurveAnalyzer
 from .trade_metrics import build_closed_trade_metrics
@@ -199,7 +200,7 @@ class BTBacktestEngine(BaseEngine):
 
     def _compute_realized_final_capital(self) -> float:
         return self.cerebro.broker.startingcash + sum(
-            self._safe_float(trade.get("realized_pnl", 0.0))
+            safe_float(trade.get("realized_pnl", 0.0))
             for trade in (self.closed_trades or [])
         )
 
@@ -260,12 +261,12 @@ class BTBacktestEngine(BaseEngine):
             exit_price = last_close * (1.0 + slippage)
             gross_pnl = (entry_price - exit_price) * size
 
-        commission_rate = self._safe_float(self.config.get("commission", 0.0004))
+        commission_rate = safe_float(self.config.get("commission", 0.0004))
         close_commission = size * exit_price * commission_rate
-        open_commission = max(0.0, self._safe_float(getattr(trade, "pnl", 0.0)) - self._safe_float(getattr(trade, "pnlcomm", 0.0)))
+        open_commission = max(0.0, safe_float(getattr(trade, "pnl", 0.0)) - safe_float(getattr(trade, "pnlcomm", 0.0)))
         gross_realized_pnl = gross_pnl - open_commission - close_commission
 
-        funding_adjustment = self._safe_float(getattr(strat, "_open_trade_funding_adjustment", 0.0))
+        funding_adjustment = safe_float(getattr(strat, "_open_trade_funding_adjustment", 0.0))
         realized_pnl = gross_realized_pnl + funding_adjustment
 
         entry_dt = bt.num2date(trade.dtopen)
@@ -317,17 +318,10 @@ class BTBacktestEngine(BaseEngine):
         return record
 
     def _resolve_slippage_perc(self) -> float:
-        slip_perc = self._safe_float(self.config.get("slippage_perc", 0.0))
+        slip_perc = safe_float(self.config.get("slippage_perc", 0.0))
         if slip_perc > 0:
             return slip_perc
-        return self._safe_float(self.config.get("slippage_bps", 0.0)) / 10000.0
-
-    @staticmethod
-    def _safe_float(value):
-        try:
-            return float(value)
-        except (TypeError, ValueError):
-            return 0.0
+        return safe_float(self.config.get("slippage_bps", 0.0)) / 10000.0
 
     def _calculate_win_rate(self, trade_analysis):
         total = trade_analysis.get('total', {}).get('closed', 0)

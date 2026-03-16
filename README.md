@@ -15,8 +15,11 @@ Current live paper behavior:
 - page reload does not kill an active backtest/live run; runtime state and console history are restored from the backend
 - the saved smoke template `live_test_1m_frequent` is a `fast_test_strategy` 1m live-paper template intended for quick dashboard run checks
 
+## Architecture
+
+The platform has an engine layer (`engine/`) for backtest and live execution, a strategy layer (`strategies/`) for trading logic, and a web-dashboard with `api/` modules (models, state, logging handlers) and services for orchestration. See [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md) for the full module map, API breakdown, and data flow.
+
 `README` is intentionally compact.
-Detailed architecture, module map, API breakdown, and data flow are in [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md).
 
 ## Quick Start (Docker, recommended)
 
@@ -27,7 +30,7 @@ docker compose up -d --build
 ```
 
 Services:
-- Dashboard (Vite): `http://localhost:5173`
+- Dashboard (Vite): `http://localhost:5174` (5174 to avoid conflict with other Vite apps on 5173)
 - API (FastAPI): `http://localhost:8000`
 - MongoDB: `mongodb://localhost:27017`
 
@@ -130,12 +133,12 @@ Testing helper:
 ## Documentation
 
 - Full technical map: [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md)
-- Current `bt_price_action` audit: `docs/BT_PRICE_ACTION_AUDIT_20260307.md`
-- Deep-dive docs: `docs/`
-  - `ENGINE_REVIEW.md`
-  - `ENTRY_MECHANISMS_AND_GHOST_TRADE.md`
-  - `REAL_LIVE_BINANCE_INTEGRATION_PLAN.md`
-  - and other analysis/planning docs
+- Deep-dive docs (local `docs/`, gitignored):
+  - `BT_PRICE_ACTION_AUDIT_20260307.md` — strategy reference
+  - `BACKEND_ENGINE_AND_DASHBOARD_REFERENCE_V1_0_0.md` — backend architecture
+  - `ENTRY_MECHANISMS_AND_GHOST_TRADE.md` — entry logic (referenced by risk_manager)
+  - `ENGINE_REVIEW.md`, `ENGINE_STRATEGY_REVIEW_2026.md` — engine analysis
+  - `REAL_LIVE_BINANCE_INTEGRATION_PLAN.md`, `BINANCE_REAL_TRADING_IMPLEMENTATION_PLAN_20260315.md` — Binance plans
 
 ## Disclaimer
 

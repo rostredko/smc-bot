@@ -12,9 +12,10 @@ from pathlib import Path
 from typing import Dict, Any, Optional
 from uuid import uuid4
 
-# Add project root to path
+# Add project root and web-dashboard to path
 project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
+sys.path.insert(0, str(project_root / "web-dashboard"))
 
 from engine.logger import get_logger, setup_logging
 from engine.bt_backtest_engine import BTBacktestEngine
@@ -22,6 +23,7 @@ from engine.bt_live_engine import BTLiveEngine
 from engine.execution_settings import DEFAULT_EXECUTION_MODE, apply_execution_settings
 from strategies.bt_price_action import PriceActionStrategy
 from strategies.fast_test_strategy import FastTestStrategy
+from services.strategy_runtime import build_runtime_strategy_config
 
 # Bootstrap logging for CLI usage
 setup_logging(enable_ws=False)
@@ -144,20 +146,6 @@ def _normalize_live_config(raw: Dict[str, Any]) -> Dict[str, Any]:
     return apply_execution_settings(base)
 
 
-def _build_cli_runtime_strategy_config(config: Dict[str, Any]) -> Dict[str, Any]:
-    st_config = dict(config.get("strategy_config", {}) or {})
-    st_config["trailing_stop_distance"] = config.get("trailing_stop_distance", 0.0)
-    st_config["breakeven_trigger_r"] = config.get("breakeven_trigger_r", 0.0)
-    st_config["risk_per_trade"] = config.get("risk_per_trade", 1.0)
-    st_config["leverage"] = config.get("leverage", 1.0)
-    st_config["dynamic_position_sizing"] = config.get("dynamic_position_sizing", True)
-    st_config["max_drawdown"] = config.get("max_drawdown", 50.0)
-    st_config["position_cap_adverse"] = config.get("position_cap_adverse", 0.5)
-    st_config["funding_rate_per_8h"] = config.get("funding_rate_per_8h", 0.0)
-    st_config["funding_interval_hours"] = config.get("funding_interval_hours", 8)
-    return st_config
-
-
 def run_backtest_from_config(config: Dict[str, Any], config_name: str = "Backtest"):
     """
     Run backtest from configuration dict.
@@ -179,7 +167,7 @@ def run_backtest_from_config(config: Dict[str, Any], config_name: str = "Backtes
         engine = BTBacktestEngine(config)
         strategy_name = config.get("strategy", "bt_price_action")
         strategy_class = _resolve_cli_strategy_class(strategy_name)
-        engine.add_strategy(strategy_class, **_build_cli_runtime_strategy_config(config))
+        engine.add_strategy(strategy_class, **build_runtime_strategy_config(config))
         metrics = engine.run_backtest()
 
         if config.get("save_results", False) or config.get("export_trades", False):

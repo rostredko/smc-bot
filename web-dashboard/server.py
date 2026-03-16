@@ -30,6 +30,27 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict
 
+from api.logging_handlers import (
+    RunLogCollector,
+    attach_run_log_handlers,
+    attach_run_log_metadata,
+    detach_run_log_handlers,
+    resolve_run_log_levels,
+)
+from api.models import BacktestConfig, BacktestRequest, BacktestStatus
+from api.state import (
+    ACTIVE_CONSOLE_BUFFER_MAX_LINES,
+    _broadcast_shutdown,
+    _has_active_runtime,
+    _latest_running_backtest_run_id,
+    active_connections,
+    active_console_lock,
+    active_console_state,
+    connection_lock,
+    live_trading_state,
+    running_backtests,
+    strategy_schema_cache,
+)
 from engine.bt_backtest_engine import BTBacktestEngine
 from engine.bt_live_engine import BTLiveEngine
 from engine.data_loader import DataLoader
@@ -90,11 +111,8 @@ def _read_version() -> str:
 APP_VERSION = _read_version()
 WS_CLEAR_CONSOLE_SIGNAL = "__BTM_CLEAR_CONSOLE__"
 RUN_LOGS_DIR = BASE_DIR / "logs" / "runs"
-RUN_LOG_CAPTURE_MAX_LINES = 12000
-RUN_LOG_DB_TAIL_LINES = 400
 DEFAULT_APP_LOG_LEVEL = "INFO"
 DEFAULT_LIVE_OUTPUT_LOG_LEVEL = "INFO"
-ACTIVE_CONSOLE_BUFFER_MAX_LINES = 5000
 SENSITIVE_LIVE_CONFIG_FIELDS = {
     "apiKey",
     "secret",
@@ -142,119 +160,6 @@ app.add_middleware(
 
 if os.path.exists("dist"):
     app.mount("/static", StaticFiles(directory="dist"), name="static")
-
-
-class BacktestConfig(BaseModel):
-    initial_capital: float = 10000
-    risk_per_trade: float = 1.5
-    max_drawdown: float = 20.0
-    leverage: float = 10.0
-    symbol: str = "BTC/USDT"
-    timeframes: List[str] = ["4h", "15m"]
-    start_date: str = "2025-01-01"
-    end_date: str = "2025-12-31"
-    confluence_required: str = "false"
-    strategy: str = "smc_strategy"
-    strategy_config: Dict[str, Any] = {}
-    trailing_stop_distance: float = 0.04
-    breakeven_trigger_r: float = 1.5
-    dynamic_position_sizing: bool = True
-    taker_fee: Optional[float] = None  # Legacy percent input; prefer *_fee_bps fields.
-    maker_fee_bps: Optional[float] = None
-    taker_fee_bps: Optional[float] = None
-    exchange: str = "binance"
-    exchange_type: str = "future"
-    execution_mode: str = DEFAULT_EXECUTION_MODE
-    fee_source: Optional[str] = None
-    loaded_template_name: Optional[str] = None
-    position_cap_adverse: float = 0.5  # Worst-case gap for position cap (0.5=50%). Lower = larger positions.
-    slippage_bps: float = 0.0
-    funding_rate_per_8h: float = 0.0
-    funding_interval_hours: int = 8
-    log_level: str = DEFAULT_APP_LOG_LEVEL
-    live_output_log_level: str = DEFAULT_LIVE_OUTPUT_LOG_LEVEL
-
-
-class BacktestRequest(BaseModel):
-    config: BacktestConfig
-    run_id: Optional[str] = None
-
-
-class BacktestStatus(BaseModel):
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-    run_id: str
-    status: str  # "running", "completed", "failed", "cancelled"
-    progress: float = 0.0
-    message: str = ""
-    results: Optional[Dict[str, Any]] = None
-    error: Optional[str] = None
-    config: Optional[Dict[str, Any]] = None
-    should_cancel: bool = False  # Flag to signal cancellation
-    engine: Optional[Any] = None  # Reference to BacktestEngine for cancellation
-
-
-running_backtests: Dict[str, BacktestStatus] = {}
-active_connections: List[WebSocket] = []
-connection_lock = threading.Lock()
-
-live_trading_state: Dict[str, Any] = {
-    "is_running": False,
-    "engine": None,
-    "run_id": None,
-    "config": None,
-    "start_time": None,
-    "stop_requested": False,
-}
-
-active_console_state: Dict[str, Any] = {
-    "run_id": None,
-    "run_type": None,
-    "lines": deque(maxlen=ACTIVE_CONSOLE_BUFFER_MAX_LINES),
-}
-active_console_lock = threading.Lock()
-
-strategy_schema_cache: Dict[str, Dict[str, Any]] = {}
-_broadcast_shutdown: asyncio.Event = asyncio.Event()
-
-
-def _latest_running_backtest_run_id() -> Optional[str]:
-    """Return the newest run_id still in running state."""
-    for rid, status in reversed(list(running_backtests.items())):
-        if status.status == "running":
-            return rid
-    return None
-
-
-def _has_active_runtime() -> bool:
-    return bool(live_trading_state.get("is_running")) or _latest_running_backtest_run_id() is not None
-
-
-class _RunLogCollector(logging.Handler):
-    """Collects tail logs for persistence in run result payloads."""
-
-    def __init__(self, max_lines: int = RUN_LOG_CAPTURE_MAX_LINES):
-        super().__init__(level=logging.INFO)
-        self._lines = deque(maxlen=max_lines)
-        self._lock = threading.Lock()
-        self.total_count = 0
-
-    def emit(self, record: logging.LogRecord) -> None:
-        try:
-            msg = self.format(record).rstrip("\n")
-        except Exception:
-            self.handleError(record)
-            return
-        with self._lock:
-            self._lines.append(msg)
-            self.total_count += 1
-
-    def get_tail(self, max_lines: int = RUN_LOG_DB_TAIL_LINES) -> List[str]:
-        with self._lock:
-            if max_lines <= 0:
-                return []
-            lines = list(self._lines)
-        return lines[-max_lines:]
 
 
 def _strip_sensitive_live_config_fields(config: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -311,71 +216,6 @@ def _clear_active_console_session_if_inactive(
             return
 
     _reset_active_console_session(None, None)
-
-
-def _attach_run_log_handlers(run_id: str, level: int = logging.INFO) -> tuple[_RunLogCollector, logging.FileHandler, str]:
-    """Attach per-run file and in-memory log handlers to the project root logger."""
-    RUN_LOGS_DIR.mkdir(parents=True, exist_ok=True)
-    log_file_path = RUN_LOGS_DIR / f"{run_id}.log"
-    level = coerce_log_level(level, default=logging.INFO)
-    fmt = logging.Formatter(
-        "%(asctime)s [%(name)s] %(levelname)s: %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
-
-    file_handler = logging.FileHandler(log_file_path, encoding="utf-8")
-    file_handler.setLevel(level)
-    file_handler.setFormatter(fmt)
-
-    collector = _RunLogCollector(max_lines=RUN_LOG_CAPTURE_MAX_LINES)
-    collector.setLevel(level)
-    collector.setFormatter(fmt)
-
-    root_logger = logging.getLogger("backtrade")
-    root_logger.addHandler(file_handler)
-    root_logger.addHandler(collector)
-    return collector, file_handler, str(log_file_path)
-
-
-def _detach_run_log_handlers(*handlers: Optional[logging.Handler]) -> None:
-    """Detach and close run-specific handlers safely."""
-    root_logger = logging.getLogger("backtrade")
-    for handler in handlers:
-        if handler is None:
-            continue
-        if handler in root_logger.handlers:
-            root_logger.removeHandler(handler)
-        try:
-            handler.flush()
-        except Exception:
-            pass
-        try:
-            handler.close()
-        except Exception:
-            pass
-
-
-def _attach_run_log_metadata(
-    payload: Dict[str, Any],
-    collector: Optional[_RunLogCollector],
-    log_file_path: Optional[str],
-) -> None:
-    """Embed log metadata into saved run payload."""
-    if collector is None:
-        payload["logs"] = []
-        payload["log_lines_total"] = 0
-        return
-    payload["logs"] = collector.get_tail(RUN_LOG_DB_TAIL_LINES)
-    payload["log_lines_total"] = collector.total_count
-    if log_file_path:
-        payload["log_file"] = log_file_path
-
-
-def _resolve_run_log_levels(config: Optional[Dict[str, Any]] = None) -> tuple[int, int]:
-    cfg = config or {}
-    app_level = coerce_log_level(cfg.get("log_level"), default=logging.INFO)
-    ws_level = coerce_log_level(cfg.get("live_output_log_level"), default=logging.INFO)
-    return app_level, ws_level
 
 
 def _normalize_exchange_fields(config: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -1219,13 +1059,13 @@ async def run_live_trading_task(run_id: str, config: Dict[str, Any]):
     session_start = datetime.now()
     signal_counter = None
     _root_logger = None
-    run_log_collector: Optional[_RunLogCollector] = None
+    run_log_collector: Optional[RunLogCollector] = None
     run_log_file_handler: Optional[logging.FileHandler] = None
     run_log_path: Optional[str] = None
 
     try:
         import logging as _logging
-        app_log_level, ws_log_level = _resolve_run_log_levels(config)
+        app_log_level, ws_log_level = resolve_run_log_levels(config)
         setup_logging(
             level=app_log_level,
             console_level=app_log_level,
@@ -1233,7 +1073,9 @@ async def run_live_trading_task(run_id: str, config: Dict[str, Any]):
             ws_level=ws_log_level,
             enable_ws=True,
         )
-        run_log_collector, run_log_file_handler, run_log_path = _attach_run_log_handlers(run_id, level=app_log_level)
+        run_log_collector, run_log_file_handler, run_log_path = attach_run_log_handlers(
+            run_id, level=app_log_level, logs_dir=RUN_LOGS_DIR
+        )
 
         class _SignalCounter(_logging.Handler):
             def __init__(self):
@@ -1322,7 +1164,7 @@ async def run_live_trading_task(run_id: str, config: Dict[str, Any]):
             session_start=session_start,
             session_end=session_end,
         )
-        _attach_run_log_metadata(mapped_metrics, run_log_collector, run_log_path)
+        attach_run_log_metadata(mapped_metrics, run_log_collector, run_log_path)
         
         # Save into repository as live
         BacktestRepository().save(run_id, mapped_metrics, is_live=True)
@@ -1344,7 +1186,7 @@ async def run_live_trading_task(run_id: str, config: Dict[str, Any]):
         live_trading_state["start_time"] = None
         live_trading_state["stop_requested"] = False
         await _emit_live_output_message("Live engine fully stopped. All processes terminated.", level=logging.INFO)
-        _detach_run_log_handlers(run_log_collector, run_log_file_handler)
+        detach_run_log_handlers(run_log_collector, run_log_file_handler)
         setup_logging(enable_ws=False)
         _clear_active_console_session_if_inactive(run_id=run_id, run_type="live")
 
@@ -1354,7 +1196,7 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
     """Background task to run backtest."""
     signal_counter = None
     _root_logger = None
-    run_log_collector: Optional[_RunLogCollector] = None
+    run_log_collector: Optional[RunLogCollector] = None
     run_log_file_handler: Optional[logging.FileHandler] = None
     run_log_path: Optional[str] = None
 
@@ -1400,7 +1242,7 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
             engine_config['loaded_template_name'] = config['loaded_template_name']
         
         import logging as _logging
-        app_log_level, ws_log_level = _resolve_run_log_levels(engine_config)
+        app_log_level, ws_log_level = resolve_run_log_levels(engine_config)
         setup_logging(
             level=app_log_level,
             console_level=app_log_level,
@@ -1408,7 +1250,9 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
             ws_level=ws_log_level,
             enable_ws=True,
         )
-        run_log_collector, run_log_file_handler, run_log_path = _attach_run_log_handlers(run_id, level=app_log_level)
+        run_log_collector, run_log_file_handler, run_log_path = attach_run_log_handlers(
+            run_id, level=app_log_level, logs_dir=RUN_LOGS_DIR
+        )
         logger.info("Initializing engine...")
         logger.info("============================================================")
         logger.info("BACKTEST CONFIGURATION")
@@ -1525,11 +1369,11 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
                     signals_generated=signal_counter.count,
                 )
                 mapped_metrics["cancelled"] = cancel_requested
-                _attach_run_log_metadata(mapped_metrics, run_log_collector, run_log_path)
+                attach_run_log_metadata(mapped_metrics, run_log_collector, run_log_path)
                 
                 metrics.update(mapped_metrics)
                 metrics["cancelled"] = cancel_requested
-                _attach_run_log_metadata(metrics, run_log_collector, run_log_path)
+                attach_run_log_metadata(metrics, run_log_collector, run_log_path)
                 
                 running_backtests[run_id].results = metrics
                 running_backtests[run_id].progress = 100.0
@@ -1614,7 +1458,7 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
         finally:
             if _root_logger is not None and signal_counter is not None:
                 _root_logger.removeHandler(signal_counter)
-            _detach_run_log_handlers(run_log_collector, run_log_file_handler)
+            detach_run_log_handlers(run_log_collector, run_log_file_handler)
             setup_logging(enable_ws=False)
             _clear_active_console_session_if_inactive(run_id=run_id, run_type="backtest")
         

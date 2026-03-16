@@ -65,6 +65,10 @@ smc-bot/
 │       └── risk_manager.py
 ├── web-dashboard/
 │   ├── server.py
+│   ├── api/
+│   │   ├── models.py
+│   │   ├── state.py
+│   │   └── logging_handlers.py
 │   ├── services/
 │   │   ├── strategy_runtime.py
 │   │   └── result_mapper.py
@@ -85,7 +89,7 @@ smc-bot/
 
 ### 4.1 API and Orchestration (`web-dashboard/server.py`)
 
-`server.py` is the API boundary. It is responsible for:
+`server.py` is the API boundary and imports models, state, and logging utilities from `web-dashboard/api/`. It is responsible for:
 - configuration CRUD
 - backtest lifecycle
 - live paper lifecycle
@@ -93,6 +97,11 @@ smc-bot/
 - OHLCV + indicators API
 - result/history retrieval and deletion
 - WebSocket log broadcasting
+
+**API layer (`web-dashboard/api/`):**
+- `api/models.py` — Pydantic models: `BacktestConfig`, `BacktestRequest`, `BacktestStatus`
+- `api/state.py` — shared state: `running_backtests`, `live_trading_state`, `active_connections`, `active_console_state`; helpers: `_latest_running_backtest_run_id()`, `_has_active_runtime()`
+- `api/logging_handlers.py` — `RunLogCollector` (in-memory tail capture), `attach_run_log_handlers()`, `detach_run_log_handlers()`, `attach_run_log_metadata()`
 
 Recent structure changes:
 - runtime strategy resolution moved to `web-dashboard/services/strategy_runtime.py`
@@ -377,14 +386,14 @@ Frontend checks:
 
 ## 10. Docs Folder Map (`docs/`)
 
-Current docs include:
-- `BT_PRICE_ACTION_AUDIT_20260307.md`
-- `ENGINE_REVIEW.md`
-- `ENGINE_STRATEGY_REVIEW_2026.md`
-- `ENTRY_MECHANISMS_AND_GHOST_TRADE.md`
-- `REAL_LIVE_BINANCE_INTEGRATION_PLAN.md`
-- `TA_LIB_ANALYSIS.md`
-- `VERIFICATION_PLAN.md`
-- and comparison/analysis snapshots
+Current docs (local, gitignored):
+- `BT_PRICE_ACTION_AUDIT_20260307.md` — strategy reference
+- `BACKEND_ENGINE_AND_DASHBOARD_REFERENCE_V1_0_0.md` — backend architecture
+- `ENGINE_REVIEW.md`, `ENGINE_STRATEGY_REVIEW_2026.md` — engine analysis
+- `ENTRY_MECHANISMS_AND_GHOST_TRADE.md` — entry logic (referenced by risk_manager)
+- `REAL_LIVE_BINANCE_INTEGRATION_PLAN.md`, `BINANCE_REAL_TRADING_IMPLEMENTATION_PLAN_20260315.md` — Binance plans
+- `TA_LIB_ANALYSIS.md` — TA-Lib analysis
+- `RELEASE_NOTES_WORKFLOW.md` — release notes workflow
+- `plans/` — implementation plans (e.g. refactoring)
 
 Use this file as source-of-truth for code structure; use `docs/` files for topic deep dives and historical decisions.
