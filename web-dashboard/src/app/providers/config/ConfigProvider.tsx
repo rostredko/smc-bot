@@ -8,6 +8,8 @@ export interface UseConfigReturn {
     selectedStrategy: string;
     config: BacktestConfig;
     strategyConfig: Record<string, any>;
+    activeTab: 'backtest' | 'live';
+    selectedVariantForLive: { params: Record<string, any>; configuration?: Record<string, any> } | null;
     errors: Record<string, string>;
     isRunning: boolean;
     isLiveRunning: boolean;
@@ -23,6 +25,8 @@ export interface UseConfigReturn {
     setSelectedStrategy: React.Dispatch<React.SetStateAction<string>>;
     setConfig: React.Dispatch<React.SetStateAction<BacktestConfig>>;
     setStrategyConfig: React.Dispatch<React.SetStateAction<Record<string, any>>>;
+    setActiveTab: (tab: 'backtest' | 'live') => void;
+    setSelectedVariantForLive: (v: { params: Record<string, any>; configuration?: Record<string, any> } | null) => void;
     setErrors: React.Dispatch<React.SetStateAction<Record<string, string>>>;
     setIsRunning: React.Dispatch<React.SetStateAction<boolean>>;
     setIsLiveRunning: React.Dispatch<React.SetStateAction<boolean>>;
@@ -88,6 +92,17 @@ export const ConfigProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     const [loadedTemplateName, setLoadedTemplateName] = useState<string | null>(null);
     const [activeBacktestRunId, setActiveBacktestRunId] = useState<string | null>(null);
     const [isInitialLoadComplete, setIsInitialLoadComplete] = useState(false);
+    const [activeTab, setActiveTabState] = useState<'backtest' | 'live'>('backtest');
+    const [selectedVariantForLive, setSelectedVariantForLive] = useState<{ params: Record<string, any>; configuration?: Record<string, any> } | null>(null);
+
+    const setActiveTab = useCallback((tab: 'backtest' | 'live') => setActiveTabState(tab), []);
+
+    useEffect(() => {
+        if (activeTab === 'live' && selectedVariantForLive?.params) {
+            setStrategyConfig(selectedVariantForLive.params);
+            setConfig(prev => ({ ...prev, strategy_config: selectedVariantForLive.params }));
+        }
+    }, [activeTab, selectedVariantForLive]);
 
     const strategyMap = useMemo(() => new Map(strategies.map(s => [s.name, s])), [strategies]);
 
@@ -288,6 +303,13 @@ export const ConfigProvider: React.FC<{ children: React.ReactNode }> = ({ childr
                     exchange: String(config.exchange || 'binance').trim().toLowerCase() || 'binance',
                     timeframes: config.timeframes.filter(t => t.trim() !== ""),
                     strategy_config: strategyConfig,
+                    run_mode: config.run_mode || 'single',
+                    opt_params: config.opt_params || undefined,
+                    opt_timeframes: config.opt_timeframes || undefined,
+                    opt_target_metric: config.opt_target_metric || 'sharpe_ratio',
+                    wf_train_months: config.wf_train_months ?? 6,
+                    wf_test_months: config.wf_test_months ?? 1,
+                    wf_step_months: config.wf_step_months ?? 1,
                     ...(loadedTemplateName ? { loaded_template_name: loadedTemplateName } : {}),
                 }
             };
@@ -447,6 +469,13 @@ export const ConfigProvider: React.FC<{ children: React.ReactNode }> = ({ childr
                 return newErrors;
             });
         }
+        if (key === 'opt_params') {
+            setErrors(prev => {
+                const newErrors = { ...prev };
+                ['opt_risk_reward_ratio', 'opt_sl_buffer_atr', 'opt_trailing_stop_distance'].forEach(k => delete newErrors[k]);
+                return newErrors;
+            });
+        }
     }, [errors]);
 
     const handleStrategyConfigChange = useCallback((key: string, value: any) => {
@@ -460,6 +489,13 @@ export const ConfigProvider: React.FC<{ children: React.ReactNode }> = ({ childr
             }
             return { ...prev, [key]: value };
         });
+        if (['risk_reward_ratio', 'sl_buffer_atr'].includes(key)) {
+            setErrors(prev => {
+                const next = { ...prev };
+                delete next[key];
+                return next;
+            });
+        }
     }, []);
 
     const restoreRuntimeConfig = useCallback((runtimeConfig: Record<string, any>) => {
@@ -491,8 +527,10 @@ export const ConfigProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     const value = {
         strategies, selectedStrategy, config, strategyConfig, errors,
         isRunning, isLiveRunning, isLiveStopping, isConfigDisabled, loadDialogOpen, savedConfigs, topSymbols, loadedTemplateName, isInitialLoadComplete,
+        activeTab, selectedVariantForLive,
         setStrategies, setSelectedStrategy, setConfig, setStrategyConfig, setErrors,
         setIsRunning, setIsLiveRunning, setIsLiveStopping, setIsConfigDisabled, setLoadDialogOpen, setSavedConfigs,
+        setActiveTab, setSelectedVariantForLive,
         loadStrategies, loadConfig, loadUserConfigs, handleOpenLoadDialog,
         handleLoadConfig, handleDeleteConfig, handleReorderConfigs, resetDashboard, startBacktest,
         stopBacktest, startLiveTrading, stopLiveTrading, checkLiveStatus, handleStrategyChange, handleConfigChange, handleStrategyConfigChange,

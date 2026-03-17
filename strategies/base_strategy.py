@@ -3,6 +3,14 @@ import backtrader as bt
 from .helpers.risk_manager import RiskManager
 from engine.logger import get_logger
 from engine.trade_narrator import TradeNarrator
+from engine.optimize_context import (
+    should_log_opt_progress,
+    next_opt_combo,
+    get_opt_total,
+    get_current_combo,
+    set_current_combo,
+    clear_current_combo,
+)
 
 logger = get_logger(__name__)
 
@@ -22,6 +30,15 @@ class BaseStrategy(bt.Strategy):
 
     def __init__(self):
         super().__init__()
+        if should_log_opt_progress():
+            n = next_opt_combo()
+            total = get_opt_total()
+            suffix = f"/{total}" if total else ""
+            rr = getattr(self.params, "risk_reward_ratio", None)
+            sl = getattr(self.params, "sl_buffer_atr", None)
+            trail = getattr(self.params, "trailing_stop_distance", None)
+            set_current_combo(n)
+            logger.info(f"Opt combo {n}{suffix}: RR={rr} SLbuf={sl} Trail={trail}")
         self._equity_peak = self.broker.startingcash
         self.order = None
         self.stop_order = None
@@ -42,6 +59,16 @@ class BaseStrategy(bt.Strategy):
         self._entry_exec_data = None
         self._open_trade_funding_adjustment = 0.0
         self._next_funding_dt = None
+
+    def stop(self):
+        if should_log_opt_progress():
+            n = get_current_combo() or 0
+            total = get_opt_total()
+            n_trades = len(self.trade_map)
+            pnl = self.broker.getvalue() - self.broker.startingcash
+            logger.info(f"Combo {n}/{total} done: {n_trades} trades, PnL: ${pnl:,.2f}")
+            clear_current_combo()
+        super().stop()
 
     def _cancel_all_exit_orders_for_data(self, data):
         """Hard cleanup: cancel all live exit orders for this data to prevent orphan orders."""

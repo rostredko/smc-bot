@@ -115,6 +115,10 @@ class BacktestRepository:
                     "session_start": doc.get("session_start"),
                     "session_end": doc.get("session_end"),
                     "session_duration_mins": doc.get("session_duration_mins"),
+                    "run_mode": doc.get("run_mode", "single"),
+                    "is_optimization_batch": doc.get("is_optimization_batch", False),
+                    "variants_count": doc.get("variants_count", 0),
+                    "windows": doc.get("windows", []),
                 }
             )
         return history, total

@@ -146,4 +146,77 @@ describe('BacktestHistoryList', () => {
         expect(screen.queryByText(/trailing_stop_distance:/i)).not.toBeInTheDocument();
         expect(screen.queryByText(/breakeven_trigger_r:/i)).not.toBeInTheDocument();
     });
+
+    it('renders optimization variants table with Variants, Profit Factor, Win Rate and highlights best row', async () => {
+        fetchBacktestHistoryMock.mockResolvedValue({
+            history: [
+                {
+                    filename: 'opt-run.json',
+                    timestamp: '2026-03-17T14:25:00Z',
+                    strategy: 'Optimize (2 variants)',
+                    is_optimization_batch: true,
+                    variants_count: 2,
+                    total_pnl: 116.27,
+                    initial_capital: 10000,
+                    win_rate: 50,
+                    max_drawdown: 0.6,
+                    total_trades: 2,
+                    winning_trades: 1,
+                    losing_trades: 1,
+                    profit_factor: 28.57,
+                    sharpe_ratio: 0.11,
+                    configuration: {},
+                },
+            ],
+            pagination: { total_pages: 1, total_count: 1, page: 1 },
+        });
+        fetchDetailedResultsMock.mockResolvedValue({
+            variants: [
+                {
+                    run_id: 'opt_0',
+                    params: { risk_reward_ratio: 2.5, sl_buffer_atr: 1, trailing_stop_distance: 0.02 },
+                    sharpe_ratio: 0.11,
+                    profit_factor: 28.57,
+                    max_drawdown: 0.6,
+                    total_trades: 2,
+                    win_rate: 50,
+                    total_pnl: 116.27,
+                },
+                {
+                    run_id: 'opt_1',
+                    params: { risk_reward_ratio: 2, sl_buffer_atr: 1.3, trailing_stop_distance: 0.02 },
+                    sharpe_ratio: 0.1,
+                    profit_factor: 22.83,
+                    max_drawdown: 0.6,
+                    total_trades: 2,
+                    win_rate: 50,
+                    total_pnl: 91.82,
+                },
+            ],
+            configuration: {},
+        });
+
+        render(<BacktestHistoryList />);
+
+        await waitFor(() => {
+            expect(screen.getByText('Optimize (2 variants)')).toBeInTheDocument();
+        });
+
+        fireEvent.click(screen.getByText('Optimize (2 variants)'));
+
+        expect(fetchDetailedResultsMock).toHaveBeenCalledWith('opt-run.json');
+
+        await waitFor(() => {
+            expect(screen.getAllByText('Variants').length).toBeGreaterThanOrEqual(1);
+        }, { timeout: 3000 });
+
+        expect(screen.getByText('Profit Factor')).toBeInTheDocument();
+        expect(screen.getAllByText('Win Rate').length).toBeGreaterThanOrEqual(1);
+        expect(screen.getByText('rr 2.5 slb 1 tsd 0.02')).toBeInTheDocument();
+        expect(screen.getByText('rr 2 slb 1.3 tsd 0.02')).toBeInTheDocument();
+        expect(screen.getAllByText('50.0%').length).toBeGreaterThanOrEqual(1);
+
+        const saveButtons = screen.getAllByRole('button', { name: /save/i });
+        expect(saveButtons.length).toBeGreaterThanOrEqual(2);
+    });
 });

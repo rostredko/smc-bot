@@ -147,3 +147,24 @@ def build_runtime_strategy_config(config: Dict[str, Any]) -> Dict[str, Any]:
     st_config["funding_rate_per_8h"] = config.get("funding_rate_per_8h", 0.0)
     st_config["funding_interval_hours"] = config.get("funding_interval_hours", 8)
     return st_config
+
+
+OPT_WHITELIST = frozenset({"risk_reward_ratio", "sl_buffer_atr", "trailing_stop_distance"})
+
+
+def build_opt_strategy_config(config: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Build kwargs for optstrategy: merge base config with opt_params.
+    opt_params values (lists/ranges) override base config for whitelisted keys only.
+    """
+    base = build_runtime_strategy_config(config)
+    opt_params = config.get("opt_params") or {}
+    if not opt_params:
+        return base
+    result = dict(base)
+    for key, values in opt_params.items():
+        if key not in OPT_WHITELIST:
+            continue
+        if values is not None and hasattr(values, "__iter__") and not isinstance(values, (str, bytes)):
+            result[key] = list(values) if not isinstance(values, list) else values
+    return result

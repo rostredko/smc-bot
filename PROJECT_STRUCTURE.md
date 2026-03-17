@@ -113,6 +113,7 @@ Recent structure changes:
 - `strategy_runtime.py`
   - `resolve_strategy_class(strategy_name)`
   - `build_runtime_strategy_config(config)`
+  - `build_opt_strategy_config(config)` — for run_mode `optimize`; whitelist: risk_reward_ratio, sl_buffer_atr, trailing_stop_distance
   - centralizes runnable strategy discovery and runtime risk param injection
 
 - `result_mapper.py`
@@ -121,6 +122,7 @@ Recent structure changes:
   - `build_equity_series(..., max_points)`
   - `build_backtest_metrics_doc(...)`
   - `build_live_metrics_doc(...)`
+  - `build_optimization_metrics_doc(...)` — for run_mode `optimize`
   - centralizes API/storage payload shaping
 
 ### 4.3 Engine Layer (`engine/`)
@@ -140,6 +142,7 @@ Recent structure changes:
   - analyzer registration
   - normalized metrics output
   - forced final close synthesis for open positions at the end of backtests
+  - `run_backtest_optimize(strategy_class, opt_kwargs, opt_target_metric)` — Backtrader optstrategy with Cartesian product fallback for params
 
 - `bt_live_engine.py`
   - warm-up from REST (`fetch_recent_bars`)
@@ -371,6 +374,7 @@ Backend tests are under `tests/` and include:
 - critical regression tests (OCO/orphan/live controls/result backfill)
 - repository and API contract tests
 - service-layer mapper/runtime tests (`test_result_mapper_service.py`, `test_strategy_runtime_service.py`)
+- optimize-save-single parity (`test_optimize_save_single_parity.py`) — asserts single backtest from saved variant matches best optimize variant
 - trade-metric/analyzer consistency checks (`test_trade_metrics.py`, `test_bt_analyzers.py`)
 
 Special test modes:

@@ -105,6 +105,49 @@ const validateCoreConfig = (
         newErrors['symbol'] = "Invalid symbol. Select from dropdown.";
     }
 
+    // Strategy config validation (General Settings) — same rules as Optimize
+    const sc = config.strategy_config || {};
+    const rr = parseFloat(String(sc.risk_reward_ratio));
+    if (!isNaN(rr) && Number.isFinite(rr) && rr < 0) {
+        newErrors['risk_reward_ratio'] = "Must be ≥ 0";
+    }
+    const sl = parseFloat(String(sc.sl_buffer_atr));
+    if (!isNaN(sl) && Number.isFinite(sl) && sl <= 0) {
+        newErrors['sl_buffer_atr'] = "Must be > 0";
+    }
+    const ts = parseFloat(String(config.trailing_stop_distance));
+    if (!isNaN(ts) && Number.isFinite(ts) && ts < 0) {
+        newErrors['trailing_stop_distance'] = "Must be ≥ 0";
+    }
+
+    // Optimize params validation (when run_mode is optimize)
+    const optKeys = ["risk_reward_ratio", "sl_buffer_atr", "trailing_stop_distance"];
+    if (config.run_mode === "optimize" && config.opt_params) {
+        for (const key of optKeys) {
+            const arr = config.opt_params[key];
+            if (!Array.isArray(arr) || arr.length !== 3) continue;
+            for (let i = 0; i < 3; i++) {
+                const v = parseFloat(String(arr[i]));
+                if (isNaN(v) || !Number.isFinite(v)) {
+                    newErrors[`opt_${key}`] = "Invalid number";
+                    break;
+                }
+                if (key === "risk_reward_ratio" && v < 0) {
+                    newErrors[`opt_${key}`] = "Risk:Reward must be ≥ 0";
+                    break;
+                }
+                if (key === "sl_buffer_atr" && v <= 0) {
+                    newErrors[`opt_${key}`] = "SL Buffer must be > 0";
+                    break;
+                }
+                if (key === "trailing_stop_distance" && v < 0) {
+                    newErrors[`opt_${key}`] = "Trailing Stop must be ≥ 0";
+                    break;
+                }
+            }
+        }
+    }
+
     return newErrors;
 };
 

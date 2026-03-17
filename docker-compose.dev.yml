@@ -1,5 +1,11 @@
+# Dev mode: NO bind mounts — avoids fakeowner/import issues on Docker Desktop for Mac.
+# Uses `docker compose watch` to sync source files into containers.
+# Run: docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
+#      docker compose -f docker-compose.yml -f docker-compose.dev.yml watch backend frontend
 services:
   backend:
+    volumes:
+      - data_cache:/app/data_cache
     command:
       [
         "uvicorn",

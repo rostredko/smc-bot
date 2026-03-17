@@ -25,7 +25,6 @@ import pytest
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from engine.bt_backtest_engine import BTBacktestEngine
-from engine.bt_analyzers import TradeListAnalyzer
 from strategies.bt_price_action import PriceActionStrategy
 
 
@@ -76,41 +75,41 @@ def _make_pinbar_context_df(periods=350, base=1000):
     o = base + np.arange(periods) * 0.5
     c = o + 10 * (np.random.rand(periods) > 0.3)
     h = np.maximum(o, c) + 1
-    l = np.minimum(o, c) - 1
+    low = np.minimum(o, c) - 1
     for i in range(periods):
-        h[i] = max(h[i], o[i], c[i], l[i])
-        l[i] = min(l[i], o[i], c[i], h[i])
+        h[i] = max(h[i], o[i], c[i], low[i])
+        low[i] = min(low[i], o[i], c[i], h[i])
     return pd.DataFrame(
-        {"open": o, "high": h, "low": l, "close": c, "volume": np.full(periods, 1000.0)},
+        {"open": o, "high": h, "low": low, "close": c, "volume": np.full(periods, 1000.0)},
         index=dates,
     )
 
 
 def _inject_hammer(df, bar_idx):
     """Inject TA-Lib Hammer at bar_idx (small body at top, long lower shadow)."""
-    o, h, l, c = 1001, 1001.5, 981, 1000.5
-    df.iloc[bar_idx] = [o, h, l, c, 1000]
+    o, h, low, c = 1001, 1001.5, 981, 1000.5
+    df.iloc[bar_idx] = [o, h, low, c, 1000]
     return df
 
 
 def _inject_inverted_hammer(df, bar_idx):
     """Inject Inverted Hammer shape (small body at bottom, long upper shadow)."""
-    o, h, l, c = 998, 1018, 997, 999
-    df.iloc[bar_idx] = [o, h, l, c, 1000]
+    o, h, low, c = 998, 1018, 997, 999
+    df.iloc[bar_idx] = [o, h, low, c, 1000]
     return df
 
 
 def _inject_shooting_star(df, bar_idx):
     """Inject Shooting Star shape (small body at bottom, long upper shadow, bearish)."""
-    o, h, l, c = 1001, 1021, 1000, 1001
-    df.iloc[bar_idx] = [o, h, l, c, 1000]
+    o, h, low, c = 1001, 1021, 1000, 1001
+    df.iloc[bar_idx] = [o, h, low, c, 1000]
     return df
 
 
 def _inject_hanging_man(df, bar_idx):
     """Inject Hanging Man shape (small body at top, long lower shadow, bearish)."""
-    o, h, l, c = 1018, 1020, 998, 1017
-    df.iloc[bar_idx] = [o, h, l, c, 1000]
+    o, h, low, c = 1018, 1020, 998, 1017
+    df.iloc[bar_idx] = [o, h, low, c, 1000]
     return df
 
 

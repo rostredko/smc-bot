@@ -7,6 +7,7 @@ sys.path.insert(0, os.path.join(PROJECT_ROOT, "web-dashboard"))
 
 from services.strategy_runtime import (
     build_runtime_strategy_config,
+    build_opt_strategy_config,
     discover_strategy_definitions,
     list_dashboard_strategies,
     resolve_strategy_class,
@@ -47,6 +48,34 @@ def test_build_runtime_strategy_config_overrides_runtime_controls():
     assert st["funding_rate_per_8h"] == 0.0001
     assert st["funding_interval_hours"] == 8
     assert st["custom_param"] == 42
+
+
+def test_build_opt_strategy_config_replaces_whitelisted_params_with_lists():
+    cfg = {
+        "strategy_config": {"risk_reward_ratio": 2.0, "sl_buffer_atr": 1.3, "trailing_stop_distance": 0.0},
+        "opt_params": {
+            "risk_reward_ratio": [1.5, 2.0, 2.5],
+            "sl_buffer_atr": [1.0, 1.3, 1.5],
+            "trailing_stop_distance": [0, 0.01, 0.02],
+        },
+        "risk_per_trade": 1.5,
+        "leverage": 10.0,
+    }
+    out = build_opt_strategy_config(cfg)
+    assert out["risk_reward_ratio"] == [1.5, 2.0, 2.5]
+    assert out["sl_buffer_atr"] == [1.0, 1.3, 1.5]
+    assert out["trailing_stop_distance"] == [0, 0.01, 0.02]
+    assert out["risk_per_trade"] == 1.5
+
+
+def test_build_opt_strategy_config_ignores_non_whitelisted_opt_params():
+    cfg = {
+        "strategy_config": {"risk_reward_ratio": 2.0},
+        "opt_params": {"risk_reward_ratio": [1.5, 2.0], "atr_period": [7, 14]},
+    }
+    out = build_opt_strategy_config(cfg)
+    assert out["risk_reward_ratio"] == [1.5, 2.0]
+    assert "atr_period" not in out or out.get("atr_period") != [7, 14]
 
 
 def test_list_dashboard_strategies_returns_only_public_runtime_strategies():

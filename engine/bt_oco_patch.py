@@ -13,7 +13,6 @@ cancellations propagate. This patch:
 """
 from __future__ import absolute_import
 
-import backtrader as bt
 from backtrader.brokers import bbroker
 from backtrader.order import Order
 

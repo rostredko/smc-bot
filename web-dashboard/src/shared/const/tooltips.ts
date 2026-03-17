@@ -57,4 +57,12 @@ export const TOOLTIP_HINTS: Record<string, string> = {
     pattern_hanging_man: "Hanging Man: bearish pin bar with long lower wick at top of trend",
     pattern_bullish_engulfing: "Bullish Engulfing: two-candle bullish reversal pattern",
     pattern_bearish_engulfing: "Bearish Engulfing: two-candle bearish reversal pattern",
+
+    run_mode_single: "Standard backtest over the full period with fixed parameters.",
+    run_mode_optimize: "Grid search over Risk:Reward, SL Buffer (ATR), Trailing Stop Distance. Enter 3 values per param manually (no min/max). Results sorted by Sharpe. Pick best → Save as Template.",
+    run_mode_walk_forward: "Robustness check: train on Train months, test on Test months, shift by Step. Example: 6/1/1 = 6 months train, 1 month test, 1 month step. Avoids overfitting by testing on out-of-sample data.",
+
+    wf_train_months: "Number of months used for training (in-sample). Strategy parameters are optimized on this period.",
+    wf_test_months: "Number of months used for testing (out-of-sample). Optimized params are validated here.",
+    wf_step_months: "Months to shift the window forward after each train/test cycle. 1 = roll forward by 1 month.",
 };

@@ -86,6 +86,10 @@ class BaseEngine(ABC):
         """Add a strategy to Cerebro."""
         self.cerebro.addstrategy(strategy_class, **kwargs)
 
+    def add_opt_strategy(self, strategy_class, **kwargs):
+        """Add a strategy for parameter optimization (grid search). kwargs may contain lists/ranges for params."""
+        self.cerebro.optstrategy(strategy_class, **kwargs)
+
     def run(self):
         """Run the engine."""
         return self.cerebro.run(runonce=False)

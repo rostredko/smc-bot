@@ -188,7 +188,8 @@ class BTLiveEngine(BaseEngine):
     def _format_metrics(self, strat) -> Dict[str, Any]:
         """Format analyzer results precisely like the backtest engine."""
         sharpe = strat.analyzers.sharpe.get_analysis().get('sharperatio')
-        if sharpe is None: sharpe = 0.0
+        if sharpe is None:
+            sharpe = 0.0
 
         drawdown_info = strat.analyzers.drawdown.get_analysis()
         max_dd = self._safe_max_drawdown(drawdown_info)

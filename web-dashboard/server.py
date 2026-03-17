@@ -7,7 +7,6 @@ import os
 import asyncio
 import json
 import sys
-import threading
 import logging
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any
@@ -27,7 +26,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel, ConfigDict
 
 from api.logging_handlers import (
@@ -37,7 +36,7 @@ from api.logging_handlers import (
     detach_run_log_handlers,
     resolve_run_log_levels,
 )
-from api.models import BacktestConfig, BacktestRequest, BacktestStatus
+from api.models import BacktestRequest, BacktestStatus
 from api.state import (
     ACTIVE_CONSOLE_BUFFER_MAX_LINES,
     _broadcast_shutdown,
@@ -66,7 +65,6 @@ from engine.live_ws_client import (
     normalize_live_exchange_type,
 )
 from engine.logger import (
-    coerce_log_level,
     get_logger,
     QueueHandler,
     setup_logging,
@@ -76,12 +74,14 @@ from engine.logger import (
 from services.strategy_runtime import (
     resolve_strategy_class,
     build_runtime_strategy_config,
+    build_opt_strategy_config,
     list_dashboard_strategies,
 )
 from services.result_mapper import (
     map_backtest_trades,
     map_live_trades,
     build_backtest_metrics_doc,
+    build_optimization_metrics_doc,
     build_live_metrics_doc,
     build_equity_series,
 )
@@ -492,7 +492,19 @@ async def root():
     if os.path.exists("dist/index.html"):
         return FileResponse("dist/index.html")
     else:
-        return {"message": "SMC Trading Engine API", "version": APP_VERSION, "error": "Frontend not built. Run 'npm run build' first."}
+        # Dev mode: no dist — redirect to Vite dev server
+        html = """<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>SMC API</title>
+<meta http-equiv="refresh" content="2;url=http://localhost:5174/">
+<style>body{font-family:system-ui;max-width:480px;margin:80px auto;padding:24px;background:#1a1a1a;color:#eee;}
+a{color:#2196f3;} code{background:#333;padding:2px 6px;border-radius:4px;}</style></head>
+<body>
+<h2>SMC Trading Engine API</h2>
+<p>Frontend not built. For development, open:</p>
+<p><strong><a href="http://localhost:5174/">http://localhost:5174/</a></strong></p>
+<p><small>Redirecting in 2 seconds…</small></p>
+</body></html>"""
+        return HTMLResponse(html)
 
 
 @app.get("/health")
@@ -513,24 +525,30 @@ async def get_strategies():
 
 
 def _config_to_flat(config: Dict[str, Any]) -> Dict[str, Any]:
-    account = config.get("account", {})
-    trading = config.get("trading", {})
-    period = config.get("period", {})
-    strategy_section = config.get("strategy", {})
+    account = config.get("account") if isinstance(config.get("account"), dict) else {}
+    trading = config.get("trading") if isinstance(config.get("trading"), dict) else {}
+    period = config.get("period") if isinstance(config.get("period"), dict) else {}
+    strategy_section = config.get("strategy")
+    if isinstance(strategy_section, dict):
+        strategy_name = strategy_section.get("name", "smc_strategy")
+        strategy_config = strategy_section.get("config", {})
+    else:
+        strategy_name = strategy_section if isinstance(strategy_section, str) and strategy_section else "smc_strategy"
+        strategy_config = config.get("strategy_config", {})
     flat = {
         "initial_capital": account.get("initial_capital", 10000),
         "risk_per_trade": account.get("risk_per_trade", 2.0),
         "max_drawdown": account.get("max_drawdown", 15.0),
         "leverage": account.get("leverage", 10.0),
-        "symbol": trading.get("symbol", "BTC/USDT"),
-        "timeframes": trading.get("timeframes", ["4h", "15m"]),
+        "symbol": trading.get("symbol", config.get("symbol", "BTC/USDT")),
+        "timeframes": trading.get("timeframes", config.get("timeframes", ["4h", "15m"])),
         "exchange": normalize_live_exchange_name(trading.get("exchange", config.get("exchange", "binance"))),
         "exchange_type": config.get("exchange_type", "future"),
         "execution_mode": config.get("execution_mode", DEFAULT_EXECUTION_MODE),
-        "start_date": period.get("start_date", "2023-01-01"),
-        "end_date": period.get("end_date", "2023-12-31"),
-        "strategy": strategy_section.get("name", "smc_strategy"),
-        "strategy_config": strategy_section.get("config", {}),
+        "start_date": period.get("start_date", config.get("start_date", "2023-01-01")),
+        "end_date": period.get("end_date", config.get("end_date", "2023-12-31")),
+        "strategy": strategy_name,
+        "strategy_config": strategy_config,
         "trailing_stop_distance": config.get("trailing_stop_distance", 0.04),
         "breakeven_trigger_r": config.get("breakeven_trigger_r", 1.5),
         "dynamic_position_sizing": config.get("dynamic_position_sizing", True),
@@ -547,6 +565,11 @@ def _config_to_flat(config: Dict[str, Any]) -> Dict[str, Any]:
         flat["fee_source"] = config.get("fee_source")
     if "taker_fee" in config:
         flat["taker_fee"] = config.get("taker_fee")
+    # Preserve run_mode and opt params when flattening (e.g. bearish_tactical_preset_2026_q1_optimize)
+    for key in ("run_mode", "opt_params", "opt_target_metric", "opt_timeframes",
+                 "wf_train_months", "wf_test_months", "wf_step_months", "loaded_template_name"):
+        if key in config:
+            flat[key] = config[key]
     return _normalize_exchange_fields(flat)
 
 
@@ -1192,6 +1215,67 @@ async def run_live_trading_task(run_id: str, config: Dict[str, Any]):
 
 
 
+def _count_opt_combos(opt_params: Dict[str, Any]) -> int:
+    """Return product of param list lengths for grid search size."""
+    if not opt_params:
+        return 0
+    n = 1
+    for v in opt_params.values():
+        if isinstance(v, (list, tuple)):
+            n *= len(v)
+        elif hasattr(v, "__iter__") and not isinstance(v, (str, bytes)):
+            try:
+                n *= len(list(v))
+            except (TypeError, ValueError):
+                pass
+    return max(1, n)
+
+
+def _estimate_optimize_minutes(
+    n_combos: int,
+    start_date: str,
+    end_date: str,
+    primary_tf: str,
+) -> str:
+    """Rough estimate for optimize duration based on period and combos."""
+    try:
+        start = datetime.strptime(str(start_date)[:10], "%Y-%m-%d")
+        end = datetime.strptime(str(end_date)[:10], "%Y-%m-%d")
+        days = max(1, (end - start).days)
+    except (ValueError, TypeError):
+        days = 365
+    tf = str(primary_tf).lower()
+    if tf.endswith("h"):
+        bars_per_day = 24 / (int(tf[:-1]) or 1)
+    elif tf.endswith("m"):
+        bars_per_day = 24 * 60 / (int(tf[:-1]) or 60)
+    elif tf.endswith("d"):
+        bars_per_day = 1 / (int(tf[:-1]) or 1)
+    else:
+        bars_per_day = 6
+    bars = bars_per_day * days
+    # ~0.0015 sec per bar per combo; runonce+maxcpus ~3x speedup
+    est_sec = n_combos * bars * 0.0015 / 3
+    est_min = max(0.25, est_sec / 60)
+    if est_min < 1:
+        return f"~{int(est_min * 60)} sec"
+    if est_min < 2:
+        return "~1 min"
+    return f"~{int(round(est_min))} min"
+
+
+async def _optimize_heartbeat():
+    """Log every 30s during optimization so console doesn't appear frozen."""
+    tick = 0
+    try:
+        while True:
+            await asyncio.sleep(30)
+            tick += 1
+            logger.info(f"Optimizing... (still running) [{tick}×30s]")
+    except asyncio.CancelledError:
+        pass
+
+
 async def run_backtest_task(run_id: str, config: Dict[str, Any]):
     """Background task to run backtest."""
     signal_counter = None
@@ -1237,6 +1321,13 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
             'detailed_trades': True,
             'market_analysis': True,
             'save_results': True,
+            'run_mode': config.get('run_mode', 'single'),
+            'opt_params': config.get('opt_params') or {},
+            'opt_timeframes': config.get('opt_timeframes'),
+            'opt_target_metric': config.get('opt_target_metric', 'sharpe_ratio'),
+            'wf_train_months': int(config.get('wf_train_months', 6)),
+            'wf_test_months': int(config.get('wf_test_months', 1)),
+            'wf_step_months': int(config.get('wf_step_months', 1)),
         }
         if config.get('loaded_template_name'):
             engine_config['loaded_template_name'] = config['loaded_template_name']
@@ -1297,38 +1388,141 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
         _root_logger.addHandler(signal_counter)
 
         try:
-            logger.info("Creating engine instance...")
-            engine = BTBacktestEngine(engine_config)
-            running_backtests[run_id].engine = engine
-
-            if running_backtests[run_id].should_cancel:
-                engine.cancel()
-                running_backtests[run_id].message = "Cancellation acknowledged before run start. Finalizing partial results..."
-                logger.info("Cancellation requested before execution. Preparing partial results...")
-            
             st_config = build_runtime_strategy_config(engine_config)
             strategy_name = engine_config.get('strategy', 'bt_price_action')
             strategy_class = resolve_strategy_class(strategy_name)
-            engine.add_strategy(strategy_class, **st_config)
+            run_mode = engine_config.get('run_mode', 'single')
+            opt_kwargs = {}
+            if run_mode == 'optimize':
+                opt_kwargs = build_opt_strategy_config(engine_config)
+                if not any(
+                    isinstance(v, (list, range)) and len(list(v)) > 1
+                    for v in (opt_kwargs or {}).values()
+                ):
+                    logger.warning("Optimize mode requires opt_params with list/range values; falling back to single run")
+                    run_mode = 'single'
 
-            if running_backtests[run_id].should_cancel and not engine.should_cancel:
-                engine.cancel()
-            
-            logger.info("✅ Engine created")
-            
-            running_backtests[run_id].message = "Loading data..."
-            running_backtests[run_id].progress = 30.0
+            opt_tf = engine_config.get('opt_timeframes')
+            tf_pairs = []
+            if run_mode == 'optimize' and opt_tf and isinstance(opt_tf, dict):
+                prim = opt_tf.get('primary') or []
+                sec = opt_tf.get('secondary') or []
+                if isinstance(prim, list) and isinstance(sec, list) and prim and sec:
+                    import itertools
+                    tf_pairs = list(itertools.product(prim, sec))
 
-            logger.info("Starting engine.run_backtest()...")
-            
-            loop = asyncio.get_event_loop()
-            metrics = await loop.run_in_executor(None, engine.run_backtest)
+            if tf_pairs:
+                # Multi-timeframe optimize: run one optimize per (primary, secondary) pair
+                all_variants = []
+                total_sigs = 0
+                target_metric = engine_config.get('opt_target_metric', 'sharpe_ratio')
+                loop = asyncio.get_event_loop()
+                for i, (p_tf, s_tf) in enumerate(tf_pairs):
+                    if running_backtests[run_id].should_cancel:
+                        break
+                    running_backtests[run_id].message = f"Optimizing {p_tf}/{s_tf} ({i+1}/{len(tf_pairs)})..."
+                    running_backtests[run_id].progress = 30.0 + (i / len(tf_pairs)) * 60.0
+                    cfg = dict(engine_config)
+                    cfg['timeframes'] = [str(p_tf), str(s_tf)]
+                    logger.info(f"Creating engine for timeframes {p_tf}/{s_tf}...")
+                    engine = BTBacktestEngine(cfg)
+                    running_backtests[run_id].engine = engine
+                    opt_cfg = build_opt_strategy_config(cfg)
+                    n_combos = _count_opt_combos(opt_cfg)
+                    est = _estimate_optimize_minutes(
+                        n_combos, cfg.get("start_date", "2023-01-01"), cfg.get("end_date", "2023-12-31"), p_tf
+                    )
+                    logger.info(f"Running {n_combos} param combos for {p_tf}/{s_tf} — {est}...")
+
+                    def _run_opt(eng, kw):
+                        return eng.run_backtest_optimize(strategy_class, kw, target_metric)
+                    heartbeat_task = asyncio.create_task(_optimize_heartbeat())
+                    try:
+                        m = await loop.run_in_executor(None, lambda e=engine, k=opt_cfg: _run_opt(e, k))
+                    finally:
+                        heartbeat_task.cancel()
+                        try:
+                            await heartbeat_task
+                        except asyncio.CancelledError:
+                            pass
+                    if isinstance(m, dict):
+                        total_sigs += m.get('signals_generated', 0)
+                        for v in m.get('variants', []):
+                            v['timeframe'] = f"{p_tf}/{s_tf}"
+                            all_variants.append(v)
+                rev = target_metric == 'sharpe_ratio'
+                all_variants.sort(key=lambda x: x.get(target_metric, 0) or 0, reverse=rev)
+                metrics = {'variants': all_variants, 'signals_generated': total_sigs}
+            else:
+                logger.info("Creating engine instance...")
+                engine = BTBacktestEngine(engine_config)
+                running_backtests[run_id].engine = engine
+
+                if running_backtests[run_id].should_cancel:
+                    engine.cancel()
+                    running_backtests[run_id].message = "Cancellation acknowledged before run start. Finalizing partial results..."
+                    logger.info("Cancellation requested before execution. Preparing partial results...")
+
+                if run_mode != 'optimize' and run_mode != 'walk_forward':
+                    engine.add_strategy(strategy_class, **st_config)
+
+                if running_backtests[run_id].should_cancel and not engine.should_cancel:
+                    engine.cancel()
+                
+                logger.info("✅ Engine created")
+                
+                running_backtests[run_id].message = "Loading data..."
+                running_backtests[run_id].progress = 30.0
+
+                loop = asyncio.get_event_loop()
+                if run_mode == 'optimize':
+                    n_combos = _count_opt_combos(opt_kwargs)
+                    tfs = engine_config.get("timeframes", ["4h", "15m"])
+                    prim_tf = str(tfs[0]) if tfs else "4h"
+                    est = _estimate_optimize_minutes(
+                        n_combos,
+                        engine_config.get("start_date", "2023-01-01"),
+                        engine_config.get("end_date", "2023-12-31"),
+                        prim_tf,
+                    )
+                    logger.info(f"Starting engine.run_backtest_optimize() — {n_combos} param combos, {est}...")
+                    heartbeat_task = asyncio.create_task(_optimize_heartbeat())
+                    try:
+                        metrics = await loop.run_in_executor(
+                            None,
+                            lambda: engine.run_backtest_optimize(
+                                strategy_class,
+                                opt_kwargs,
+                                engine_config.get('opt_target_metric', 'sharpe_ratio'),
+                            ),
+                        )
+                    finally:
+                        heartbeat_task.cancel()
+                        try:
+                            await heartbeat_task
+                        except asyncio.CancelledError:
+                            pass
+                elif run_mode == 'walk_forward':
+                    logger.info("Starting engine.run_backtest_walk_forward()...")
+                    metrics = await loop.run_in_executor(
+                        None,
+                        lambda: engine.run_backtest_walk_forward(
+                            strategy_class,
+                            st_config,
+                            engine_config.get('wf_train_months', 6),
+                            engine_config.get('wf_test_months', 1),
+                            engine_config.get('wf_step_months', 1),
+                        ),
+                    )
+                else:
+                    logger.info("Starting engine.run_backtest()...")
+                    metrics = await loop.run_in_executor(None, engine.run_backtest)
             if not isinstance(metrics, dict):
                 metrics = {}
 
             cancel_requested = bool(
                 running_backtests[run_id].should_cancel
-                or engine.should_cancel
+                or (not tf_pairs and engine.should_cancel)
                 or bool(metrics.get("cancelled"))
             )
             if cancel_requested:
@@ -1341,33 +1535,45 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
             mapped_metrics = None
             
             try:
-                metrics['signals_generated'] = signal_counter.count
+                if not tf_pairs:
+                    metrics['signals_generated'] = signal_counter.count
                 
-                trades_data = map_backtest_trades(engine.closed_trades)
-
-                # MongoDB 16MB limit: chart_data only for first 75 trades to avoid "document too large"
-                chart_limit = 75
-                trades_for_chart = trades_data[:chart_limit] if len(trades_data) > chart_limit else trades_data
-                try:
-                    _build_chart_data_for_trades(
-                        trades_for_chart,
-                        engine_config,
-                        data_loader=engine.data_loader,
-                        context_bars=DEFAULT_CHART_CONTEXT_BARS,
+                if run_mode == 'optimize' or tf_pairs:
+                    mapped_metrics = build_optimization_metrics_doc(
+                        engine_config=engine_config,
+                        metrics=metrics,
+                        signals_generated=metrics.get('signals_generated', signal_counter.count),
                     )
-                    if len(trades_data) > chart_limit:
-                        logger.debug(f"chart_data added to first {chart_limit} trades only (total {len(trades_data)} — MongoDB size limit)")
-                except Exception as chart_err:
-                    logger.warning(f"chart_data build failed: {chart_err}")
+                else:
+                    trades_data = map_backtest_trades(engine.closed_trades)
+
+                    # MongoDB 16MB limit: chart_data only for first 75 trades to avoid "document too large"
+                    chart_limit = 75
+                    trades_for_chart = trades_data[:chart_limit] if len(trades_data) > chart_limit else trades_data
+                    try:
+                        _build_chart_data_for_trades(
+                            trades_for_chart,
+                            engine_config,
+                            data_loader=engine.data_loader,
+                            context_bars=DEFAULT_CHART_CONTEXT_BARS,
+                        )
+                        if len(trades_data) > chart_limit:
+                            logger.debug(f"chart_data added to first {chart_limit} trades only (total {len(trades_data)} — MongoDB size limit)")
+                    except Exception as chart_err:
+                        logger.warning(f"chart_data build failed: {chart_err}")
+                    
+                    equity_data = build_equity_series(engine.equity_curve, max_points=100)
+                    mapped_metrics = build_backtest_metrics_doc(
+                        engine_config=engine_config,
+                        metrics=metrics,
+                        trades_data=trades_data,
+                        equity_data=equity_data,
+                        signals_generated=signal_counter.count,
+                    )
+                    if run_mode == 'walk_forward':
+                        mapped_metrics["run_mode"] = "walk_forward"
+                        mapped_metrics["windows"] = metrics.get("windows", [])
                 
-                equity_data = build_equity_series(engine.equity_curve, max_points=100)
-                mapped_metrics = build_backtest_metrics_doc(
-                    engine_config=engine_config,
-                    metrics=metrics,
-                    trades_data=trades_data,
-                    equity_data=equity_data,
-                    signals_generated=signal_counter.count,
-                )
                 mapped_metrics["cancelled"] = cancel_requested
                 attach_run_log_metadata(mapped_metrics, run_log_collector, run_log_path)
                 
@@ -1403,7 +1609,8 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
                     logger.info("Generating detailed report...")
                     
                     init_cap = mapped_metrics.get('initial_capital', 1)
-                    if init_cap == 0: init_cap = 1 # Avoid division by zero
+                    if init_cap == 0:
+                        init_cap = 1  # Avoid division by zero
                     
                     total_pnl = mapped_metrics.get('total_pnl', 0)
                     final_cap = mapped_metrics.get('final_capital', 0)

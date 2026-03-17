@@ -67,7 +67,7 @@ class TestBTBacktestEngineInit(unittest.TestCase):
         self.assertEqual(engine.closed_trades, [])
 
     def test_data_loader_uses_config_exchange(self, mock_dataloader_cls):
-        engine = BTBacktestEngine({
+        BTBacktestEngine({
             "symbol": "ETH/USDT",
             "timeframes": ["4h"],
             "exchange": "bybit",
@@ -431,6 +431,72 @@ class TestAddDataDateDefaults(unittest.TestCase):
 
         self.assertEqual(mock_loader.get_data.call_args[0][2], "2024-01-01")
         self.assertEqual(mock_loader.get_data.call_args[0][3], "2024-12-31")
+
+
+@patch("engine.bt_backtest_engine.DataLoader")
+class TestRunBacktestOptimize(unittest.TestCase):
+    """Test run_backtest_optimize flow and variant params."""
+
+    def test_returns_variants_with_cartesian_params(self, mock_dataloader_cls):
+        mock_loader = MagicMock()
+        mock_loader.get_data.return_value = _mock_ohlcv_df(80)
+        mock_dataloader_cls.return_value = mock_loader
+
+        engine = BTBacktestEngine({
+            "symbol": "BTC/USDT",
+            "timeframes": ["1h"],
+            "start_date": "2024-01-01",
+            "end_date": "2024-01-31",
+        })
+        opt_kwargs = {
+            "risk_reward_ratio": [1.5, 2.0],
+            "sl_buffer_atr": [1.0, 1.3],
+            "trailing_stop_distance": [0, 0.01],
+            "use_trend_filter": False,
+            "use_structure_filter": False,
+            "use_adx_filter": False,
+            "use_rsi_filter": False,
+        }
+        result = engine.run_backtest_optimize(PriceActionStrategy, opt_kwargs, "sharpe_ratio")
+
+        self.assertEqual(result["run_mode"], "optimize")
+        self.assertIn("variants", result)
+        variants = result["variants"]
+        self.assertEqual(len(variants), 8)
+
+        param_tuples = [
+            (v["params"]["risk_reward_ratio"], v["params"]["sl_buffer_atr"], v["params"]["trailing_stop_distance"])
+            for v in variants
+        ]
+        expected = [
+            (1.5, 1.0, 0), (1.5, 1.0, 0.01), (1.5, 1.3, 0), (1.5, 1.3, 0.01),
+            (2.0, 1.0, 0), (2.0, 1.0, 0.01), (2.0, 1.3, 0), (2.0, 1.3, 0.01),
+        ]
+        self.assertEqual(param_tuples, expected)
+
+        for v in variants:
+            self.assertIn("run_id", v)
+            self.assertIn("sharpe_ratio", v)
+            self.assertIn("profit_factor", v)
+            self.assertIn("total_trades", v)
+            self.assertIn("win_rate", v)
+            self.assertIn("total_pnl", v)
+
+        self.assertEqual(variants[0]["run_id"], "opt_0")
+        sorted_variants = sorted(variants, key=lambda x: x.get("sharpe_ratio") or 0, reverse=True)
+        self.assertEqual(variants, sorted_variants)
+
+    def test_returns_cancelled_when_flag_set_before_start(self, mock_dataloader_cls):
+        mock_dataloader_cls.return_value = MagicMock()
+        engine = BTBacktestEngine({"symbol": "BTC/USDT", "timeframes": ["1h"]})
+        engine.should_cancel = True
+
+        with patch.object(engine, "add_data"):
+            result = engine.run_backtest_optimize(PriceActionStrategy, {"risk_reward_ratio": [1, 2]})
+
+        self.assertEqual(result["run_mode"], "optimize")
+        self.assertTrue(result.get("cancelled"))
+        self.assertEqual(result["variants"], [])
 
 
 @patch("engine.bt_backtest_engine.DataLoader")

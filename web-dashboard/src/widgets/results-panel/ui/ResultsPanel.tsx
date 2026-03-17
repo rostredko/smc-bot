@@ -1,8 +1,10 @@
-import React, { useMemo } from 'react';
-import { Card, CardHeader, CardContent, Grid, Paper, Typography, TableContainer, Table, TableHead, TableRow, TableCell, TableBody } from '@mui/material';
+import React, { useMemo, useCallback, useState } from 'react';
+import { Card, CardHeader, CardContent, Grid, Paper, Typography, TableContainer, Table, TableHead, TableRow, TableCell, TableBody, Button, IconButton, Tooltip as MuiTooltip, Dialog, DialogTitle, DialogContent, DialogContentText, DialogActions, TextField } from '@mui/material';
+import { FileCopyOutlined, ContentCopy } from '@mui/icons-material';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
 import { useResultsContext } from '../../../app/providers/results/ResultsProvider';
 import { CustomTooltip, CustomPieTooltip } from '../../../shared/ui/ChartTooltips';
+import { formatVariantParamsShort, variantParamsToTemplateName } from '../../../shared/lib/formatVariantParams';
 import { lazy, Suspense } from 'react';
 import TradeAnalysisChart from '../../../entities/trade/ui/TradeAnalysisChart';
 const TradeDetailsModal = lazy(() => import('../../../features/trade-details/ui/TradeDetailsModal'));
@@ -85,8 +87,7 @@ const MemoizedPieChart = React.memo(({ data }: { data: any[] }) => (
 ));
 
 const ResultsPanel: React.FC = () => {
-    const { results, equityData, pieData, handleBarClick, selectedTrade, setSelectedTrade, isTradeModalOpen, setIsTradeModalOpen } = useResultsContext();
-
+    const { results, backtestStatus, equityData, pieData, handleBarClick, selectedTrade, setSelectedTrade, isTradeModalOpen, setIsTradeModalOpen } = useResultsContext();
     // useMemo must run before early return (rules of hooks)
     const chartSymbol = useMemo(
         () => results?.configuration?.symbol ?? 'BTC/USDT',
@@ -117,10 +118,168 @@ const ResultsPanel: React.FC = () => {
         [isLiveResult, results?.configuration]
     );
 
+    const isOptimization = (results as any)?.run_mode === 'optimize' && Array.isArray((results as any)?.variants) && (results as any).variants.length > 0;
+    const variants = (results as any)?.variants ?? [];
+
+    const [saveDialogOpen, setSaveDialogOpen] = useState(false);
+    const [variantToSave, setVariantToSave] = useState<any>(null);
+    const [saveTemplateName, setSaveTemplateName] = useState('');
+    const [saveError, setSaveError] = useState('');
+
+    const buildConfigFromVariant = useCallback((variant: any) => {
+        const cfg = results?.configuration ?? {};
+        const params = variant.params || {};
+        const baseSt = cfg.strategy_config ?? {};
+        const tf = variant.timeframe ? variant.timeframe.split('/') : cfg.timeframes;
+        // Strip any list values from base (opt config has risk_reward_ratio: [1.5,2,2.5]) and override with variant scalars
+        const cleanBase: Record<string, unknown> = {};
+        for (const [k, v] of Object.entries(baseSt)) {
+            cleanBase[k] = Array.isArray(v) && params[k] !== undefined ? params[k] : v;
+        }
+        const strategyConfig = { ...cleanBase, ...params };
+        const toSave: any = {
+            ...cfg,
+            strategy_config: strategyConfig,
+            timeframes: tf || cfg.timeframes,
+        };
+        if (typeof params.trailing_stop_distance === 'number') {
+            toSave.trailing_stop_distance = params.trailing_stop_distance;
+        }
+        // Single-run config: strip optimize fields so loaded template runs as single
+        delete toSave.run_mode;
+        delete toSave.opt_params;
+        delete toSave.opt_target_metric;
+        delete toSave.opt_timeframes;
+        toSave.run_mode = 'single';
+        return toSave;
+    }, [results?.configuration]);
+
+    const handleSaveClick = (variant: any) => {
+        setVariantToSave(variant);
+        setSaveTemplateName(variantParamsToTemplateName(variant.params) || '');
+        setSaveError('');
+        setSaveDialogOpen(true);
+    };
+
+    const handleSaveConfirm = async () => {
+        if (!variantToSave || !saveTemplateName.trim() || !/^[a-zA-Z0-9_-]+$/.test(saveTemplateName)) {
+            setSaveError('Invalid name. Use only letters, numbers, dashes, and underscores.');
+            return;
+        }
+        try {
+            const { saveUserConfigTemplate } = await import('../../backtest-history/api/historyApi');
+            await saveUserConfigTemplate(saveTemplateName.trim(), buildConfigFromVariant(variantToSave));
+            setSaveDialogOpen(false);
+            setVariantToSave(null);
+        } catch (e: any) {
+            setSaveError(e?.message || 'Failed to save template.');
+        }
+    };
+
+    const handleCopyResultsToJson = useCallback(() => {
+        if (!results) return;
+        const base = isOptimization
+            ? { variants: (results as any).variants, configuration: results.configuration }
+            : { ...results, trades: results.trades ?? [] };
+        const toCopy = {
+            run_id: backtestStatus?.run_id ?? (results as any)?.run_id,
+            loaded_template_name: results?.configuration?.loaded_template_name,
+            ...base,
+        };
+        const json = JSON.stringify(toCopy, null, 2);
+        navigator.clipboard.writeText(json).then(
+            () => console.log('Results copied to clipboard'),
+            () => console.warn('Failed to copy')
+        );
+    }, [results, isOptimization, backtestStatus?.run_id]);
+
     if (!results) return null;
 
     return (
         <>
+            {isOptimization && variants[0] && (
+                <Grid item xs={12} mt={3}>
+                    <Card>
+                        <CardHeader
+                            title={`Optimization Results (${variants.length} variants)`}
+                            subheader={
+                                <Typography component="span" variant="body2" color="text.secondary" sx={{ display: 'block', mt: 1.5 }}>
+                                    Best: {formatVariantParamsShort(variants[0].params)} · Sharpe {formatMetric(variants[0].sharpe_ratio)}, PF {formatMetric(variants[0].profit_factor)}, Max DD {formatPercent(variants[0].max_drawdown)}, Trades {variants[0].total_trades ?? '-'}, Win Rate {variants[0].win_rate != null ? (variants[0].win_rate > 1 ? `${variants[0].win_rate.toFixed(1)}%` : `${(variants[0].win_rate * 100).toFixed(1)}%`) : '-'}, PnL {formatCurrency(variants[0].total_pnl)}
+                                </Typography>
+                            }
+                            action={
+                                <MuiTooltip title="Copy results to JSON">
+                                    <IconButton onClick={handleCopyResultsToJson} size="small" color="primary">
+                                        <ContentCopy />
+                                    </IconButton>
+                                </MuiTooltip>
+                            }
+                        />
+                        <CardContent>
+                            <TableContainer>
+                                <Table size="small">
+                                    <TableHead>
+                                        <TableRow>
+                                            <TableCell>#</TableCell>
+                                            {variants.some((v: any) => v.timeframe) && <TableCell>TF</TableCell>}
+                                            <TableCell>Variants</TableCell>
+                                            <TableCell>Sharpe</TableCell>
+                                            <TableCell>Profit Factor</TableCell>
+                                            <TableCell>Max DD</TableCell>
+                                            <TableCell>Trades</TableCell>
+                                            <TableCell>Win Rate</TableCell>
+                                            <TableCell>PnL</TableCell>
+                                            <TableCell align="right">Actions</TableCell>
+                                        </TableRow>
+                                    </TableHead>
+                                    <TableBody>
+                                        {variants.slice(0, 50).map((v: any, i: number) => {
+                                            const paramStr = formatVariantParamsShort(v.params);
+                                            const seenBefore = variants.slice(0, i).some((prev: any) => formatVariantParamsShort(prev.params) === paramStr);
+                                            const label = seenBefore ? `${paramStr} · ${v.run_id || `#${i + 1}`}` : paramStr;
+                                            const isBest = i === 0;
+                                            const wr = v.win_rate;
+                                            const winRateStr = wr != null ? (wr > 1 ? `${wr.toFixed(1)}%` : `${(wr * 100).toFixed(1)}%`) : '-';
+                                            return (
+                                            <TableRow key={i} sx={isBest ? { bgcolor: 'rgba(76, 175, 80, 0.15)' } : undefined}>
+                                                <TableCell>{i + 1}</TableCell>
+                                                {variants.some((x: any) => x.timeframe) && <TableCell>{v.timeframe || '-'}</TableCell>}
+                                                <TableCell sx={{ maxWidth: 200 }} title={JSON.stringify(v.params)}>
+                                                    {label}
+                                                </TableCell>
+                                                <TableCell>{formatMetric(v.sharpe_ratio)}</TableCell>
+                                                <TableCell>{formatMetric(v.profit_factor)}</TableCell>
+                                                <TableCell>{formatPercent(v.max_drawdown)}</TableCell>
+                                                <TableCell>{v.total_trades}</TableCell>
+                                                <TableCell>{winRateStr}</TableCell>
+                                                <TableCell>{formatCurrency(v.total_pnl)}</TableCell>
+                                                <TableCell align="right">
+                                                    <Button size="small" startIcon={<FileCopyOutlined />} onClick={() => handleSaveClick(v)}>Save</Button>
+                                                </TableCell>
+                                            </TableRow>
+                                            );
+                                        })}
+                                    </TableBody>
+                                </Table>
+                            </TableContainer>
+                            {variants.length > 50 && <Typography variant="caption" color="textSecondary">Showing top 50 of {variants.length}</Typography>}
+                        </CardContent>
+                    </Card>
+                </Grid>
+            )}
+
+            <Dialog open={saveDialogOpen} onClose={() => setSaveDialogOpen(false)} PaperProps={{ sx: { bgcolor: '#1e1e1e', color: '#fff' } }}>
+                <DialogTitle sx={{ borderBottom: '1px solid #333' }}>Save Configuration Template</DialogTitle>
+                <DialogContent sx={{ mt: 2 }}>
+                    <DialogContentText sx={{ mb: 2, color: '#aaa' }}>Enter a name for this template to quickly load it later. Use only letters, numbers, dashes, and underscores.</DialogContentText>
+                    <TextField autoFocus margin="dense" label="Template Name" type="text" fullWidth variant="outlined" value={saveTemplateName} onChange={(e) => { setSaveTemplateName(e.target.value); setSaveError(''); }} error={!!saveError} helperText={saveError} sx={{ input: { color: '#fff' }, label: { color: '#aaa' }, '& .MuiOutlinedInput-root': { '& fieldset': { borderColor: '#555' }, '&:hover fieldset': { borderColor: '#888' } } }} />
+                </DialogContent>
+                <DialogActions sx={{ borderTop: '1px solid #333', p: 2 }}>
+                    <Button onClick={() => setSaveDialogOpen(false)} sx={{ color: '#aaa' }}>Cancel</Button>
+                    <Button onClick={handleSaveConfirm} color="primary" variant="contained">Save</Button>
+                </DialogActions>
+            </Dialog>
+
             <Suspense fallback={null}>
                 <TradeDetailsModal
                     open={isTradeModalOpen}
@@ -138,7 +297,8 @@ const ResultsPanel: React.FC = () => {
             </Suspense>
 
 
-            {/* Performance Metrics */}
+            {/* Performance Metrics - skip for optimize (variants table shown instead) */}
+            {!isOptimization && (
             <Grid item xs={12} mt={3}>
                 <Card>
                     <CardHeader title="Performance Metrics" />
@@ -204,8 +364,10 @@ const ResultsPanel: React.FC = () => {
                     </CardContent>
                 </Card>
             </Grid>
+            )}
 
-            {/* Charts */}
+            {/* Charts - skip for optimize */}
+            {!isOptimization && (
             <Grid item xs={12} mt={3}>
                 <Grid container spacing={3}>
                     <Grid item xs={12} md={6}>
@@ -227,18 +389,31 @@ const ResultsPanel: React.FC = () => {
                     </Grid>
                 </Grid>
             </Grid>
+            )}
 
-            {/* Trade Analysis */}
+            {/* Trade Analysis - skip for optimize */}
+            {!isOptimization && (
             <Grid item xs={12} mt={3}>
                 <Card>
-                    <CardHeader title="Trade Analysis" />
+                    <CardHeader
+                        title="Trade Analysis"
+                        action={
+                            <MuiTooltip title="Copy results (trades) to JSON">
+                                <IconButton onClick={handleCopyResultsToJson} size="small" color="primary">
+                                    <ContentCopy />
+                                </IconButton>
+                            </MuiTooltip>
+                        }
+                    />
                     <CardContent>
                         <TradeAnalysisChart trades={results.trades || []} onTradeClick={handleBarClick} />
                     </CardContent>
                 </Card>
             </Grid>
+            )}
 
-            {/* Detailed Results Table */}
+            {/* Detailed Results Table - skip for optimize */}
+            {!isOptimization && (
             <Grid item xs={12} mt={3}>
                 <Card>
                     <CardHeader title="Detailed Results" />
@@ -309,6 +484,7 @@ const ResultsPanel: React.FC = () => {
                     </CardContent>
                 </Card>
             </Grid>
+            )}
         </>
     );
 };

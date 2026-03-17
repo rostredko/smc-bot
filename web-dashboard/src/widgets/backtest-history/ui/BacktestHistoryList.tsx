@@ -2,15 +2,16 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
     Box, Card, CardHeader, CardContent, Typography, Table, TableBody, TableCell,
     TableContainer, TableHead, TableRow, Paper, IconButton, Collapse, Button, Stack,
-    Dialog, DialogTitle, DialogContent, DialogContentText, DialogActions, TextField, CircularProgress, Chip
+    Dialog, DialogTitle, DialogContent, DialogContentText, DialogActions, TextField, CircularProgress, Chip, Tooltip
 } from '@mui/material';
 import {
     KeyboardArrowDown, KeyboardArrowUp, History, NavigateBefore, NavigateNext,
-    FirstPage, LastPage, DeleteOutline, FileCopyOutlined, ArrowUpward, ArrowDownward
+    FirstPage, LastPage, DeleteOutline, FileCopyOutlined, ArrowUpward, ArrowDownward, ContentCopy
 } from '@mui/icons-material';
 
 import { BacktestSummary } from '../model/types';
 import { fetchBacktestHistory, fetchDetailedResults, saveUserConfigTemplate, deleteBacktestHistory } from '../api/historyApi';
+import { formatVariantParamsShort, variantParamsToTemplateName } from '../../../shared/lib/formatVariantParams';
 import TradeAnalysisChart from '../../../entities/trade/ui/TradeAnalysisChart';
 import TradeDetailsModal from '../../../features/trade-details/ui/TradeDetailsModal';
 import { useConfigContext } from '../../../app/providers/config/ConfigProvider';
@@ -240,27 +241,63 @@ const BacktestHistoryList: React.FC = () => {
     const [itemToDelete, setItemToDelete] = useState<string | null>(null);
     const [saveDialogOpen, setSaveDialogOpen] = useState(false);
     const [itemToSave, setItemToSave] = useState<BacktestSummary | null>(null);
+    const [variantToSave, setVariantToSave] = useState<{ variant: any; item: BacktestSummary } | null>(null);
     const [saveTemplateName, setSaveTemplateName] = useState("");
     const [saveError, setSaveError] = useState("");
 
     const handleSaveClick = (e: React.MouseEvent, item: BacktestSummary) => {
         e.stopPropagation();
         setItemToSave(item);
+        setVariantToSave(null);
         setSaveTemplateName("");
         setSaveError("");
         setSaveDialogOpen(true);
     };
 
+    const handleVariantSaveClick = (e: React.MouseEvent, variant: any, item: BacktestSummary) => {
+        e.stopPropagation();
+        setItemToSave(null);
+        setVariantToSave({ variant, item });
+        setSaveTemplateName(variantParamsToTemplateName(variant.params) || "");
+        setSaveError("");
+        setSaveDialogOpen(true);
+    };
+
     const handleSaveConfirm = async () => {
-        if (!itemToSave || !saveTemplateName.trim() || !/^[a-zA-Z0-9_-]+$/.test(saveTemplateName)) {
+        if (!saveTemplateName.trim() || !/^[a-zA-Z0-9_-]+$/.test(saveTemplateName)) {
             setSaveError("Invalid name. Use only letters, numbers, dashes, and underscores.");
             return;
         }
+        const config = variantToSave
+            ? (() => {
+                const cfg = variantToSave.item.configuration || {};
+                const baseSt = cfg.strategy_config ?? {};
+                const params = variantToSave.variant.params ?? {};
+                const cleanBase: Record<string, unknown> = {};
+                for (const [k, v] of Object.entries(baseSt)) {
+                    cleanBase[k] = Array.isArray(v) && params[k] !== undefined ? params[k] : v;
+                }
+                const strategyConfig = { ...cleanBase, ...params };
+                const out: Record<string, unknown> = { ...cfg, strategy_config: strategyConfig };
+                // Single-run config: strip optimize fields so loaded template runs as single
+                delete out.run_mode;
+                delete out.opt_params;
+                delete out.opt_target_metric;
+                delete out.opt_timeframes;
+                out.run_mode = 'single';
+                if (typeof params.trailing_stop_distance === 'number') {
+                    out.trailing_stop_distance = params.trailing_stop_distance;
+                }
+                return out;
+            })()
+            : itemToSave?.configuration;
+        if (!config) return;
         try {
-            await saveUserConfigTemplate(saveTemplateName, itemToSave.configuration);
+            await saveUserConfigTemplate(saveTemplateName, config);
             loadUserConfigs();
             setSaveDialogOpen(false);
             setItemToSave(null);
+            setVariantToSave(null);
         } catch (error: any) {
             setSaveError(error.message || "Network error occurred.");
         }
@@ -300,9 +337,9 @@ const BacktestHistoryList: React.FC = () => {
                     </Typography>
                 }
             />
-            <CardContent>
-                <TableContainer component={Paper} variant="outlined">
-                    <Table size="small">
+            <CardContent sx={{ overflowX: 'auto', px: { xs: 1, sm: 2 } }}>
+                <TableContainer component={Paper} variant="outlined" sx={{ overflowX: 'auto', minWidth: 0 }}>
+                    <Table size="small" sx={{ minWidth: 520 }}>
                         <TableHead>
                             <TableRow>
                                 <TableCell width="50px" />
@@ -378,10 +415,12 @@ const BacktestHistoryList: React.FC = () => {
                                                     </IconButton>
                                                 </TableCell>
                                                 <TableCell component="th" scope="row">{formatDate(item.timestamp)}</TableCell>
-                                                <TableCell>
-                                                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                                                        <span>{item.strategy}</span>
-                                                        {item.is_live && <Chip label="LIVE" size="small" color="secondary" sx={{ height: 20, fontSize: '0.65rem' }} />}
+                                                <TableCell sx={{ minWidth: { xs: 100, sm: 120 } }}>
+                                                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap', minWidth: 0 }}>
+                                                        <span style={{ wordBreak: 'break-word' }}>{item.is_optimization_batch ? `Optimize (${item.variants_count ?? 0} variants)` : item.strategy}</span>
+                                                        {item.is_live && <Chip label="LIVE" size="small" color="secondary" sx={{ height: 20, fontSize: '0.65rem', flexShrink: 0 }} />}
+                                                        {item.is_optimization_batch && <Chip label="OPTIMIZE" size="small" color="info" sx={{ height: 20, fontSize: '0.65rem', flexShrink: 0 }} />}
+                                                        {item.run_mode === 'walk_forward' && <Chip label="WF" size="small" variant="outlined" sx={{ height: 20, fontSize: '0.65rem', flexShrink: 0 }} />}
                                                     </Box>
                                                 </TableCell>
                                                 <TableCell>
@@ -433,6 +472,98 @@ const BacktestHistoryList: React.FC = () => {
                                                                         color="primary"
                                                                         sx={{ height: 20, fontSize: '0.65rem' }}
                                                                     />
+                                                                </Box>
+                                                            )}
+                                                            {item.is_optimization_batch && Array.isArray(detailedResults[item.filename]?.variants) && detailedResults[item.filename].variants.length > 0 && (
+                                                                <Box sx={{ mb: 3 }}>
+                                                                    <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 1, mb: 1 }}>
+                                                                        <Typography variant="subtitle2">Variants</Typography>
+                                                                        <Tooltip title="Copy to JSON">
+                                                                            <IconButton
+                                                                                size="small"
+                                                                                onClick={() => {
+                                                                                    const data = detailedResults[item.filename];
+                                                                                    const toCopy = { variants: data.variants, configuration: data.configuration };
+                                                                                    navigator.clipboard.writeText(JSON.stringify(toCopy, null, 2)).then(
+                                                                                        () => console.log('Results copied to clipboard'),
+                                                                                        () => console.warn('Failed to copy')
+                                                                                    );
+                                                                                }}
+                                                                            >
+                                                                                <ContentCopy />
+                                                                            </IconButton>
+                                                                        </Tooltip>
+                                                                    </Box>
+                                                                    <TableContainer sx={{ maxHeight: 300, mb: 2 }}>
+                                                                        <Table size="small" stickyHeader>
+                                                                            <TableHead>
+                                                                                <TableRow>
+                                                                                    <TableCell>#</TableCell>
+                                                                                    <TableCell>Variants</TableCell>
+                                                                                    <TableCell>Sharpe</TableCell>
+                                                                                    <TableCell>Profit Factor</TableCell>
+                                                                                    <TableCell>Max DD</TableCell>
+                                                                                    <TableCell>Trades</TableCell>
+                                                                                    <TableCell>Win Rate</TableCell>
+                                                                                    <TableCell>PnL</TableCell>
+                                                                                    <TableCell align="right">Actions</TableCell>
+                                                                                </TableRow>
+                                                                            </TableHead>
+                                                                            <TableBody>
+                                                                                {detailedResults[item.filename].variants.slice(0, 30).map((v: any, i: number) => {
+                                                                                    const wr = v.win_rate;
+                                                                                    const winRateStr = wr != null ? (wr > 1 ? `${wr.toFixed(1)}%` : `${(wr * 100).toFixed(1)}%`) : '-';
+                                                                                    return (
+                                                                                    <TableRow key={i} sx={i === 0 ? { bgcolor: 'rgba(76, 175, 80, 0.15)' } : undefined}>
+                                                                                        <TableCell>{i + 1}</TableCell>
+                                                                                        <TableCell sx={{ maxWidth: 150 }} title={JSON.stringify(v.params)}>{formatVariantParamsShort(v.params)}</TableCell>
+                                                                                        <TableCell>{v.sharpe_ratio?.toFixed(2) ?? '-'}</TableCell>
+                                                                                        <TableCell>{v.profit_factor?.toFixed(2) ?? '-'}</TableCell>
+                                                                                        <TableCell>{v.max_drawdown?.toFixed(2) ?? '-'}%</TableCell>
+                                                                                        <TableCell>{v.total_trades ?? '-'}</TableCell>
+                                                                                        <TableCell>{winRateStr}</TableCell>
+                                                                                        <TableCell>${v.total_pnl?.toFixed(2) ?? '-'}</TableCell>
+                                                                                        <TableCell align="right">
+                                                                                            <Button size="small" startIcon={<FileCopyOutlined />} onClick={(e) => handleVariantSaveClick(e, v, item)}>Save</Button>
+                                                                                        </TableCell>
+                                                                                    </TableRow>
+                                                                                    );
+                                                                                })}
+                                                                            </TableBody>
+                                                                        </Table>
+                                                                    </TableContainer>
+                                                                    {detailedResults[item.filename].variants.length > 30 && <Typography variant="caption">Showing top 30 of {detailedResults[item.filename].variants.length}</Typography>}
+                                                                </Box>
+                                                            )}
+                                                            {item.run_mode === 'walk_forward' && Array.isArray(item.windows) && item.windows.length > 0 && (
+                                                                <Box sx={{ mb: 3 }}>
+                                                                    <Typography variant="subtitle2" gutterBottom>Walk-Forward Windows</Typography>
+                                                                    <TableContainer sx={{ maxHeight: 200, mb: 2 }}>
+                                                                        <Table size="small">
+                                                                            <TableHead>
+                                                                                <TableRow>
+                                                                                    <TableCell>Window</TableCell>
+                                                                                    <TableCell>Sharpe</TableCell>
+                                                                                    <TableCell>PF</TableCell>
+                                                                                    <TableCell>Max DD</TableCell>
+                                                                                    <TableCell>Trades</TableCell>
+                                                                                    <TableCell>PnL</TableCell>
+                                                                                </TableRow>
+                                                                            </TableHead>
+                                                                            <TableBody>
+                                                                                {item.windows.map((w: any, i: number) => (
+                                                                                    <TableRow key={i}>
+                                                                                        <TableCell>{w.window_start} - {w.window_end}</TableCell>
+                                                                                        <TableCell>{w.sharpe_ratio?.toFixed(2) ?? '-'}</TableCell>
+                                                                                        <TableCell>{w.profit_factor?.toFixed(2) ?? '-'}</TableCell>
+                                                                                        <TableCell>{w.max_drawdown?.toFixed(2) ?? '-'}%</TableCell>
+                                                                                        <TableCell>{w.total_trades ?? '-'}</TableCell>
+                                                                                        <TableCell>${w.total_pnl?.toFixed(2) ?? '-'}</TableCell>
+                                                                                    </TableRow>
+                                                                                ))}
+                                                                            </TableBody>
+                                                                        </Table>
+                                                                    </TableContainer>
                                                                 </Box>
                                                             )}
                                                             <Box sx={{ display: 'flex', gap: 4, mb: 2, flexWrap: 'wrap' }}>
@@ -580,7 +711,7 @@ const BacktestHistoryList: React.FC = () => {
                     </Stack>
                 )}
 
-                <Dialog open={saveDialogOpen} onClose={() => setSaveDialogOpen(false)} PaperProps={{ sx: { bgcolor: '#1e1e1e', color: '#fff' } }}>
+                <Dialog open={saveDialogOpen} onClose={() => { setSaveDialogOpen(false); setItemToSave(null); setVariantToSave(null); }} PaperProps={{ sx: { bgcolor: '#1e1e1e', color: '#fff' } }}>
                     <DialogTitle sx={{ borderBottom: '1px solid #333' }}>Save Configuration Template</DialogTitle>
                     <DialogContent sx={{ mt: 2 }}>
                         <DialogContentText sx={{ mb: 2, color: '#aaa' }}>Enter a name for this template to quickly load it later. Use only letters, numbers, dashes, and underscores.</DialogContentText>

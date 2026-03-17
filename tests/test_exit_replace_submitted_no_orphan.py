@@ -38,7 +38,7 @@ class ExitReplaceSubmittedStrategy(BaseStrategy):
     def next(self):
         # NO bar_ok guard — trigger cancel/recreate even when orders may be in submitted
         stop_accepted = self.stop_order and self.stop_order.status == bt.Order.Accepted
-        tp_ok = self.tp_order is None or self.tp_order.status == bt.Order.Accepted
+        tp_ok = self.tp_order is None or self.tp_order.status == bt.Order.Accepted  # noqa: F841
         # Also allow Submitted (the path we're testing)
         stop_pending = self.stop_order and self.stop_order.status in (
             bt.Order.Submitted,

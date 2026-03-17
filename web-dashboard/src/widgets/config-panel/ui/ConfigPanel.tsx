@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useEffect } from 'react';
 import {
     DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, useSensors,
 } from '@dnd-kit/core';
@@ -7,7 +7,7 @@ import { CSS } from '@dnd-kit/utilities';
 import {
     Card, CardHeader, CardContent, Grid, FormControl, InputLabel, Select, MenuItem,
     Box, Button, LinearProgress, Accordion, AccordionSummary, Typography, Chip,
-    AccordionDetails, TextField, Tooltip as MuiTooltip, Autocomplete, FormControlLabel, Switch, Dialog, DialogTitle, DialogContent, DialogActions, TableContainer, Table, TableBody, TableRow, TableCell, IconButton
+    AccordionDetails, TextField, Tooltip as MuiTooltip, Autocomplete, FormControlLabel, Switch, Dialog, DialogTitle, DialogContent, DialogActions, TableContainer, Table, TableBody, TableRow, TableCell, IconButton, ToggleButtonGroup, ToggleButton
 } from '@mui/material';
 import {
     PlayArrow,
@@ -17,7 +17,6 @@ import {
     ExpandMore,
     DeleteOutline,
     Tune,
-    Settings,
     PlayCircleOutline,
     FlashOn,
     DragIndicator,
@@ -27,6 +26,43 @@ import { useResultsContext } from '../../../app/providers/results/ResultsProvide
 import { useConsoleContext } from '../../../app/providers/console/ConsoleProvider';
 import { TOOLTIP_HINTS } from '../../../shared/const/tooltips';
 import StrategyField from '../../../shared/ui/StrategyField/StrategyField';
+
+/** 3 numeric params for Optimize mode. */
+const OPTIMIZE_PRESETS: Array<{ key: string; label: string; default: number }> = [
+    { key: 'risk_reward_ratio', label: 'Risk:Reward', default: 2.0 },
+    { key: 'sl_buffer_atr', label: 'SL Buffer (ATR)', default: 1.5 },
+    { key: 'trailing_stop_distance', label: 'Trailing Stop Distance', default: 0.04 },
+];
+/** Keys that are controlled by Optimize section — disable in General Settings when run_mode is optimize. */
+const OPTIMIZE_PARAM_KEYS = new Set(OPTIMIZE_PRESETS.map((p) => p.key));
+
+function getOptValues(config: Record<string, any>, strategyConfig: Record<string, any>, key: string, preset: typeof OPTIMIZE_PRESETS[0]): [number, number, number] {
+    const arr = config.opt_params?.[key];
+    if (Array.isArray(arr) && arr.length === 3) {
+        const a = arr.map((v: any) => parseFloat(String(v)));
+        const valid = a.filter((n: number) => !isNaN(n) && Number.isFinite(n));
+        if (valid.length === 3) return valid as [number, number, number];
+    }
+    const val = key === 'trailing_stop_distance' ? config.trailing_stop_distance : strategyConfig[key];
+    const base = typeof val === 'number' && !isNaN(val) && Number.isFinite(val) ? val : preset.default;
+    return [base, base, base];
+}
+
+function validateOptValue(key: string, val: number): string | null {
+    if (isNaN(val) || !Number.isFinite(val)) return "Invalid number";
+    if (key === 'risk_reward_ratio' && val < 0) return "Must be ≥ 0";
+    if (key === 'sl_buffer_atr' && val <= 0) return "Must be > 0";
+    if (key === 'trailing_stop_distance' && val < 0) return "Must be ≥ 0";
+    return null;
+}
+
+function buildOptParamsFromValues(config: Record<string, any>, strategyConfig: Record<string, any>): Record<string, number[]> {
+    const out: Record<string, number[]> = {};
+    for (const p of OPTIMIZE_PRESETS) {
+        out[p.key] = getOptValues(config, strategyConfig, p.key, p);
+    }
+    return out;
+}
 
 interface SortableTemplateRowProps {
     name: string;
@@ -65,7 +101,11 @@ const SortableTemplateRow: React.FC<SortableTemplateRowProps> = ({ name, onLoad,
     );
 };
 
-const ConfigPanel: React.FC = () => {
+interface ConfigPanelProps {
+    activeTab?: 'backtest' | 'live';
+}
+
+const ConfigPanel: React.FC<ConfigPanelProps> = ({ activeTab = 'backtest' }) => {
     const {
         strategies, selectedStrategy, config, strategyConfig,
         errors, isRunning, isLiveRunning, isLiveStopping, isConfigDisabled, loadDialogOpen, savedConfigs,
@@ -95,6 +135,19 @@ const ConfigPanel: React.FC = () => {
 
     const configDisabled = isConfigDisabled || isRunning || isLiveRunning;
     const liveExchangeValue = config.exchange || "binance";
+
+    // When switching to Optimize, init opt_params if empty; clear opt_timeframes (use General Settings)
+    useEffect(() => {
+        if (config.run_mode === 'optimize') {
+            if (!config.opt_params || Object.keys(config.opt_params).length === 0) {
+                handleConfigChange('opt_params', buildOptParamsFromValues(config, strategyConfig));
+            }
+            if (config.opt_timeframes) {
+                handleConfigChange('opt_timeframes', undefined);
+            }
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- only run when mode switches to optimize
+    }, [config.run_mode]);
 
     const strategySections: Array<{ title: string; keys: string[] }> = [
         {
@@ -216,202 +269,213 @@ const ConfigPanel: React.FC = () => {
                 <CardHeader
                     title={
                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                            <Tune sx={{ fontSize: 22, color: 'primary.main' }} />
+                            <Tune sx={{ fontSize: 20, color: 'primary.main' }} />
                             <Typography variant="h6">Control Panel</Typography>
                         </Box>
                     }
-                    subheader={
-                        <Typography variant="body2" color="text.secondary">
-                            Select a strategy, tune risk and launch backtests or live runs.
-                        </Typography>
-                    }
+                    subheader="Strategy, run mode & launch"
+                    sx={{ py: 1.5, '& .MuiCardHeader-subheader': { mt: 0.25 } }}
                 />
-                <CardContent>
-                    <Grid container spacing={3}>
-                        {/* Strategy Selection & Utilities */}
-                        <Grid item xs={12} md={4}>
-                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
-                                <Settings sx={{ fontSize: 18, color: 'text.secondary' }} />
-                                <Typography variant="subtitle2" color="textSecondary">
-                                    Strategy Setup
-                                </Typography>
-                            </Box>
-                            <FormControl fullWidth disabled={configDisabled} size="small">
-                                <InputLabel>Strategy</InputLabel>
-                                <Select
-                                    value={selectedStrategy}
-                                    onChange={e => handleStrategyChange(e.target.value)}
-                                    label="Strategy"
-                                >
-                                    <MenuItem value="">
-                                        <em>Select a strategy...</em>
-                                    </MenuItem>
-                                    {strategies.map(s => (
-                                        <MenuItem key={s.name} value={s.name}>
-                                            {s.display_name}
-                                        </MenuItem>
-                                    ))}
-                                </Select>
-                            </FormControl>
-
-                            <Box mt={2} display="flex" flexDirection="column" gap={1}>
-                                <Box display="flex" gap={1}>
-                                    <Button variant="text" size="small" startIcon={<FileDownloadOutlined />} onClick={handleOpenLoadDialog} disabled={isRunning || isLiveRunning}>
-                                        Load Template
+                <CardContent sx={{ pt: 0, pb: 2, px: { xs: 1.5, sm: 3 } }}>
+                    <Grid container spacing={{ xs: 1.5, sm: 2 }} alignItems="flex-start">
+                        <Grid item xs={12}>
+                            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
+                                {/* Strategy + Load/Reset row */}
+                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
+                                    <FormControl disabled={configDisabled} size="small" sx={{ minWidth: 160, flex: '1 1 auto', maxWidth: { sm: 320 } }}>
+                                        <InputLabel>Strategy</InputLabel>
+                                        <Select
+                                            value={selectedStrategy}
+                                            onChange={e => handleStrategyChange(e.target.value)}
+                                            label="Strategy"
+                                        >
+                                            <MenuItem value=""><em>Select...</em></MenuItem>
+                                            {strategies.map(s => (
+                                                <MenuItem key={s.name} value={s.name}>{s.display_name}</MenuItem>
+                                            ))}
+                                        </Select>
+                                    </FormControl>
+                                    <Button variant="text" size="small" startIcon={<FileDownloadOutlined sx={{ fontSize: 16 }} />} onClick={handleOpenLoadDialog} disabled={isRunning || isLiveRunning} sx={{ minWidth: 0, px: 1 }}>
+                                        Load
                                     </Button>
-                                    <Button variant="text" size="small" startIcon={<Refresh />} onClick={resetDashboard} disabled={isRunning || isLiveRunning}>
-                                        Reset Settings
+                                    <Button variant="text" size="small" startIcon={<Refresh sx={{ fontSize: 16 }} />} onClick={resetDashboard} disabled={isRunning || isLiveRunning} sx={{ minWidth: 0, px: 1 }}>
+                                        Reset
                                     </Button>
+                                    {loadedTemplateName && (
+                                        <Chip label={loadedTemplateName} size="small" variant="outlined" onDelete={isRunning || isLiveRunning ? undefined : resetStrategySettings} sx={{ fontSize: '0.7rem' }} />
+                                    )}
                                 </Box>
-                                {loadedTemplateName && (
-                                    <Chip
-                                        label={`📋 ${loadedTemplateName}`}
-                                        size="small"
-                                        color="primary"
-                                        variant="outlined"
-                                        onDelete={isRunning || isLiveRunning ? undefined : resetStrategySettings}
-                                        sx={{ alignSelf: 'flex-start', fontSize: '0.72rem', maxWidth: 220, fontWeight: 600 }}
-                                    />
+
+                                {/* Backtest Controls */}
+                                {activeTab === 'backtest' && (
+                            <Card variant="outlined" sx={{ bgcolor: 'rgba(46, 125, 50, 0.04)', borderColor: 'rgba(46, 125, 50, 0.25)' }}>
+                                <CardContent sx={{ p: { xs: 1.5, sm: 2 }, '&:last-child': { pb: { xs: 1.5, sm: 2 } } }}>
+                                    <Box sx={{ display: 'flex', flexDirection: { xs: 'column', sm: 'row' }, flexWrap: 'wrap', alignItems: { sm: 'center' }, gap: 1.5 }}>
+                                        <Box sx={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 1, flex: { xs: 'none', sm: 1 }, minWidth: 0 }}>
+                                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                                                <PlayCircleOutline sx={{ fontSize: 18, color: 'success.main' }} />
+                                                <Typography variant="subtitle2" color="primary">Run Mode</Typography>
+                                            </Box>
+                                            <ToggleButtonGroup value={config.run_mode || 'single'} exclusive onChange={(_, v) => v && handleConfigChange('run_mode', v)} size="small" sx={{ flexWrap: 'wrap' }}>
+                                                <MuiTooltip title={TOOLTIP_HINTS.run_mode_single} arrow placement="top">
+                                                    <ToggleButton value="single">Single</ToggleButton>
+                                                </MuiTooltip>
+                                                <MuiTooltip title={TOOLTIP_HINTS.run_mode_optimize} arrow placement="top">
+                                                    <ToggleButton value="optimize">Optimize</ToggleButton>
+                                                </MuiTooltip>
+                                                <MuiTooltip title={TOOLTIP_HINTS.run_mode_walk_forward} arrow placement="top">
+                                                    <ToggleButton value="walk_forward">Walk-Forward</ToggleButton>
+                                                </MuiTooltip>
+                                            </ToggleButtonGroup>
+                                        </Box>
+                                        <Box sx={{ display: 'flex', gap: 1, width: { xs: '100%', sm: 'auto' }, justifyContent: { xs: 'stretch', sm: 'flex-end' } }}>
+                                            <Button variant="contained" disableElevation startIcon={<PlayArrow />} onClick={() => { setResults(null); startBacktest(setConsoleOutput, setResults, setBacktestStatus); }} disabled={!selectedStrategy || isRunning || isLiveRunning} color="success" sx={{ py: 1.25, px: 2, fontSize: '0.95rem', minHeight: 44, flex: { xs: 1, sm: 'none' } }}>
+                                                Start Backtest
+                                            </Button>
+                                            <Button variant="contained" disableElevation color="error" startIcon={<Stop />} onClick={() => stopBacktest(backtestStatus?.run_id)} disabled={!isRunning} sx={{ py: 1.25, px: 2, minHeight: 44 }}>
+                                                Stop
+                                            </Button>
+                                        </Box>
+                                    </Box>
+                                    {(config.run_mode === 'optimize') && (
+                                        <Box sx={{ mt: 1.5 }}>
+                                            <Typography variant="caption" component="div" sx={{ mb: 1.5, color: 'text.secondary', lineHeight: 1.6 }}>
+                                                {TOOLTIP_HINTS.run_mode_optimize}
+                                            </Typography>
+                                            <Typography variant="caption" color="textSecondary" sx={{ display: 'block', mb: 1 }}>
+                                                Params: enter 3 values to test (grid search).
+                                            </Typography>
+                                            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
+                                                <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: { xs: 1.5, sm: 2 }, alignItems: 'flex-start' }}>
+                                                    {OPTIMIZE_PRESETS.map((p) => {
+                                                        const [v1, v2, v3] = getOptValues(config, strategyConfig, p.key, p);
+                                                        const updateVal = (idx: 0 | 1 | 2, raw: string) => {
+                                                            const n = parseFloat(raw);
+                                                            const vals = [v1, v2, v3];
+                                                            vals[idx] = isNaN(n) ? vals[idx] : n;
+                                                            handleConfigChange('opt_params', { ...config.opt_params, [p.key]: vals });
+                                                        };
+                                                        const err1 = validateOptValue(p.key, v1);
+                                                        const err2 = validateOptValue(p.key, v2);
+                                                        const err3 = validateOptValue(p.key, v3);
+                                                        const rowError = err1 || err2 || err3 || errors[`opt_${p.key}`] || null;
+                                                        return (
+                                                            <Box key={p.key} sx={{ display: 'flex', flexDirection: { xs: 'column', sm: 'row' }, alignItems: { xs: 'flex-start', sm: 'center' }, gap: 0.5 }}>
+                                                                <MuiTooltip title={TOOLTIP_HINTS[p.key] || p.label} arrow placement="top">
+                                                                    <Typography variant="caption" color="text.secondary" sx={{ whiteSpace: 'nowrap', alignSelf: 'center' }}>{p.label}:</Typography>
+                                                                </MuiTooltip>
+                                                                <TextField
+                                                                    size="small"
+                                                                    type="number"
+                                                                    value={v1}
+                                                                    onChange={(e) => updateVal(0, e.target.value)}
+                                                                    error={!!rowError}
+                                                                    helperText={rowError}
+                                                                    inputProps={{ step: p.key === 'trailing_stop_distance' ? 0.01 : 0.1 }}
+                                                                    InputLabelProps={{ shrink: true }}
+                                                                    sx={{ width: p.key === 'trailing_stop_distance' ? 100 : 72 }}
+                                                                />
+                                                                <TextField
+                                                                    size="small"
+                                                                    type="number"
+                                                                    value={v2}
+                                                                    onChange={(e) => updateVal(1, e.target.value)}
+                                                                    error={!!rowError}
+                                                                    inputProps={{ step: p.key === 'trailing_stop_distance' ? 0.01 : 0.1 }}
+                                                                    InputLabelProps={{ shrink: true }}
+                                                                    sx={{ width: p.key === 'trailing_stop_distance' ? 100 : 72 }}
+                                                                />
+                                                                <TextField
+                                                                    size="small"
+                                                                    type="number"
+                                                                    value={v3}
+                                                                    onChange={(e) => updateVal(2, e.target.value)}
+                                                                    error={!!rowError}
+                                                                    inputProps={{ step: p.key === 'trailing_stop_distance' ? 0.01 : 0.1 }}
+                                                                    InputLabelProps={{ shrink: true }}
+                                                                    sx={{ width: p.key === 'trailing_stop_distance' ? 100 : 72 }}
+                                                                />
+                                                            </Box>
+                                                        );
+                                                    })}
+                                                </Box>
+                                            </Box>
+                                        </Box>
+                                    )}
+                                    {(config.run_mode === 'walk_forward') && (
+                                        <Box sx={{ mt: 1.5 }}>
+                                            <Typography variant="caption" component="div" sx={{ mb: 1.5, color: 'text.secondary', lineHeight: 1.6 }}>
+                                                {TOOLTIP_HINTS.run_mode_walk_forward}
+                                            </Typography>
+                                            <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
+                                                <MuiTooltip title={TOOLTIP_HINTS.wf_train_months} arrow placement="top">
+                                                    <span><TextField size="small" label="Train" type="number" value={config.wf_train_months ?? 6} onChange={e => handleConfigChange('wf_train_months', parseInt(e.target.value, 10) || 6)} sx={{ width: 70 }} inputProps={{ min: 1, max: 24 }} /></span>
+                                                </MuiTooltip>
+                                                <MuiTooltip title={TOOLTIP_HINTS.wf_test_months} arrow placement="top">
+                                                    <span><TextField size="small" label="Test" type="number" value={config.wf_test_months ?? 1} onChange={e => handleConfigChange('wf_test_months', parseInt(e.target.value, 10) || 1)} sx={{ width: 70 }} inputProps={{ min: 1, max: 12 }} /></span>
+                                                </MuiTooltip>
+                                                <MuiTooltip title={TOOLTIP_HINTS.wf_step_months} arrow placement="top">
+                                                    <span><TextField size="small" label="Step" type="number" value={config.wf_step_months ?? 1} onChange={e => handleConfigChange('wf_step_months', parseInt(e.target.value, 10) || 1)} sx={{ width: 70 }} inputProps={{ min: 1, max: 12 }} /></span>
+                                                </MuiTooltip>
+                                            </Box>
+                                        </Box>
+                                    )}
+                                    {isRunning && backtestStatus && (
+                                        <Box sx={{ mt: 2 }}>
+                                            <LinearProgress color="success" variant="determinate" value={backtestStatus.progress} sx={{ height: 4, borderRadius: 2 }} />
+                                            <Typography variant="caption" color="textSecondary" sx={{ display: 'block', mt: 0.25 }}>{backtestStatus.message}</Typography>
+                                        </Box>
+                                    )}
+                                </CardContent>
+                            </Card>
+                                )}
+
+                                {/* Live Trading Controls */}
+                                {activeTab === 'live' && (
+                            <Card variant="outlined" sx={{ bgcolor: 'rgba(237, 108, 2, 0.04)', borderColor: 'rgba(237, 108, 2, 0.25)' }}>
+                                <CardContent sx={{ p: { xs: 1.5, sm: 2 }, '&:last-child': { pb: { xs: 1.5, sm: 2 } } }}>
+                                    <Box sx={{ display: 'flex', flexDirection: { xs: 'column', sm: 'row' }, flexWrap: 'wrap', alignItems: { sm: 'center' }, gap: 1.5 }}>
+                                        <Box sx={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 1, flex: { xs: 'none', sm: 1 }, minWidth: 0 }}>
+                                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                                                <FlashOn sx={{ fontSize: 18, color: 'warning.main' }} />
+                                                <Typography variant="subtitle2" color="warning.main">Live (Paper)</Typography>
+                                            </Box>
+                                            <FormControl size="small" error={!!errors.exchange} disabled={configDisabled} sx={{ minWidth: { xs: 120, sm: 140 } }}>
+                                                <InputLabel id="live-exchange-label">Exchange</InputLabel>
+                                                <Select labelId="live-exchange-label" value={liveExchangeValue} label="Exchange" onChange={e => handleConfigChange("exchange", e.target.value)}>
+                                                    <MenuItem value="binance">Binance</MenuItem>
+                                                </Select>
+                                            </FormControl>
+                                            {errors.exchange && <Typography variant="caption" color="error">{errors.exchange}</Typography>}
+                                        </Box>
+                                        <Box sx={{ display: 'flex', gap: 1, width: { xs: '100%', sm: 'auto' }, justifyContent: { xs: 'stretch', sm: 'flex-end' } }}>
+                                            <Button variant="contained" disableElevation color="warning" startIcon={<PlayArrow />} onClick={() => { setResults(null); setConsoleOutput([]); startLiveTrading(); }} disabled={isRunning || isLiveRunning || !selectedStrategy} sx={{ py: 1.25, px: 2, fontSize: '0.95rem', minHeight: 44, flex: { xs: 1, sm: 'none' } }}>
+                                                Start Live Run
+                                            </Button>
+                                            <Button variant="contained" disableElevation color="error" startIcon={<Stop />} onClick={stopLiveTrading} disabled={!isLiveRunning || isLiveStopping} sx={{ py: 1.25, px: 2, minHeight: 44 }}>
+                                                Stop
+                                            </Button>
+                                        </Box>
+                                    </Box>
+                                    {(isLiveRunning || isLiveStopping) && (
+                                        <Box sx={{ mt: 1 }}>
+                                            <LinearProgress color={isLiveStopping ? "error" : "warning"} sx={{ height: 4, borderRadius: 2 }} />
+                                            <Typography variant="caption" color="textSecondary" sx={{ display: 'block', mt: 0.25 }}>{isLiveStopping ? "Stopping..." : "Running via WebSocket"}</Typography>
+                                        </Box>
+                                    )}
+                                </CardContent>
+                            </Card>
                                 )}
                             </Box>
                         </Grid>
-
-                        {/* Backtest Controls */}
-                        <Grid item xs={12} md={4}>
-                            <Card variant="outlined" sx={{ bgcolor: 'rgba(46, 125, 50, 0.03)', borderColor: 'rgba(46, 125, 50, 0.2)', height: '100%' }}>
-                                <CardContent sx={{ p: 2, '&:last-child': { pb: 2 } }}>
-                                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.5 }}>
-                                        <PlayCircleOutline sx={{ fontSize: 20, color: 'success.main' }} />
-                                        <Typography variant="subtitle2" color="primary">
-                                            Backtesting Engine
-                                        </Typography>
-                                    </Box>
-                                    <Box display="flex" gap={1} mt={1}>
-                                        <Button
-                                            fullWidth
-                                            variant="contained"
-                                            disableElevation
-                                            startIcon={<PlayArrow />}
-                                            onClick={() => {
-                                                setResults(null);
-                                                startBacktest(
-                                                    setConsoleOutput,
-                                                    setResults,
-                                                    setBacktestStatus
-                                                );
-                                            }}
-                                            disabled={!selectedStrategy || isRunning || isLiveRunning}
-                                            color="success"
-                                            sx={{ whiteSpace: 'nowrap' }}
-                                        >
-                                            Start Backtest
-                                        </Button>
-                                        <Button
-                                            variant="contained"
-                                            disableElevation
-                                            color="error"
-                                            startIcon={<Stop />}
-                                            onClick={() => stopBacktest(backtestStatus?.run_id)}
-                                            disabled={!isRunning}
-                                            sx={{ minWidth: 'auto', px: 2 }}
-                                        >
-                                            Stop
-                                        </Button>
-                                    </Box>
-                                    {isRunning && backtestStatus && (
-                                        <Box sx={{ mt: 2 }}>
-                                            <Typography variant="caption" color="textSecondary" sx={{ display: 'block', mb: 0.5, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                                                {backtestStatus.message}
-                                            </Typography>
-                                            <LinearProgress color="success" variant="determinate" value={backtestStatus.progress} sx={{ height: 6, borderRadius: 3 }} />
-                                        </Box>
-                                    )}
-                                </CardContent>
-                            </Card>
-                        </Grid>
-
-                        {/* Live Trading Controls */}
-                        <Grid item xs={12} md={4}>
-                            <Card variant="outlined" sx={{ bgcolor: 'rgba(237, 108, 2, 0.03)', borderColor: 'rgba(237, 108, 2, 0.2)', height: '100%' }}>
-                                <CardContent sx={{ p: 2, '&:last-child': { pb: 2 } }}>
-                                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.5 }}>
-                                        <FlashOn sx={{ fontSize: 20, color: 'warning.main' }} />
-                                        <Typography variant="subtitle2" color="warning.main">
-                                            Live Data Feed (Paper Trading)
-                                        </Typography>
-                                    </Box>
-                                    <FormControl
-                                        fullWidth
-                                        required
-                                        size="small"
-                                        error={!!errors.exchange}
-                                        disabled={configDisabled}
-                                        sx={{ mt: 1.5 }}
-                                    >
-                                        <InputLabel id="live-exchange-label">Exchange</InputLabel>
-                                        <Select
-                                            labelId="live-exchange-label"
-                                            value={liveExchangeValue}
-                                            label="Exchange"
-                                            onChange={e => handleConfigChange("exchange", e.target.value)}
-                                        >
-                                            <MenuItem value="binance">Binance</MenuItem>
-                                        </Select>
-                                        {errors.exchange && (
-                                            <Typography variant="caption" color="error" sx={{ mt: 0.75, ml: 1.75 }}>
-                                                {errors.exchange}
-                                            </Typography>
-                                        )}
-                                    </FormControl>
-                                    <Box display="flex" gap={1} mt={1}>
-                                        <Button
-                                            fullWidth
-                                            variant="contained"
-                                            disableElevation
-                                            color="warning"
-                                            startIcon={<PlayArrow />}
-                                            onClick={() => {
-                                                setResults(null);
-                                                setConsoleOutput([]);
-                                                startLiveTrading();
-                                            }}
-                                            disabled={isRunning || isLiveRunning || !selectedStrategy}
-                                            sx={{ whiteSpace: 'nowrap' }}
-                                        >
-                                            Start Live Run
-                                        </Button>
-                                        <Button
-                                            variant="contained"
-                                            disableElevation
-                                            color="error"
-                                            startIcon={<Stop />}
-                                            onClick={stopLiveTrading}
-                                            disabled={!isLiveRunning || isLiveStopping}
-                                            sx={{ minWidth: 'auto', px: 2 }}
-                                        >
-                                            Stop
-                                        </Button>
-                                    </Box>
-                                    {(isLiveRunning || isLiveStopping) && (
-                                        <Box sx={{ mt: 2 }}>
-                                            <Typography variant="caption" color="textSecondary" sx={{ display: 'block', mb: 0.5 }}>
-                                                {isLiveStopping ? "Stopping Engine..." : "Engine is running via WebSocket."}
-                                            </Typography>
-                                            <LinearProgress color={isLiveStopping ? "error" : "warning"} sx={{ height: 6, borderRadius: 3 }} />
-                                        </Box>
-                                    )}
-                                </CardContent>
-                            </Card>
-                        </Grid>
-
                     </Grid>
                 </CardContent>
-            </Card >
+            </Card>
 
-            <Box mt={3} />
+            <Box mt={2} />
 
             <Card>
-                <CardHeader title="Configuration" />
+                <CardHeader title="Configuration" sx={{ py: 1.5 }} />
                 <CardContent>
                     <Accordion>
                         <AccordionSummary expandIcon={<ExpandMore />}>
@@ -496,7 +560,7 @@ const ConfigPanel: React.FC = () => {
 
                                 <Grid item xs={12} md={3}>
                                     <MuiTooltip title={TOOLTIP_HINTS["trailing_stop_distance"]} arrow placement="top">
-                                        <TextField label="Trailing Stop Distance" type="number" value={isNaN(config.trailing_stop_distance) ? "" : config.trailing_stop_distance} onChange={e => handleConfigChange("trailing_stop_distance", parseFloat(e.target.value))} disabled={configDisabled} fullWidth />
+                                        <TextField label="Trailing Stop Distance" type="number" value={isNaN(config.trailing_stop_distance) ? "" : config.trailing_stop_distance} onChange={e => handleConfigChange("trailing_stop_distance", parseFloat(e.target.value))} disabled={configDisabled || config.run_mode === 'optimize'} error={!!errors.trailing_stop_distance} helperText={errors.trailing_stop_distance} fullWidth />
                                     </MuiTooltip>
                                 </Grid>
                                 <Grid item xs={12} md={3}>
@@ -518,13 +582,14 @@ const ConfigPanel: React.FC = () => {
                                 {generalStrategyKeys.map((key) => {
                                     const schema = selectedStrategyDef?.config_schema?.[key];
                                     if (!schema) return null;
-
+                                    const disabledByOptimize = config.run_mode === 'optimize' && OPTIMIZE_PARAM_KEYS.has(key);
                                     return (
                                         <StrategyField
                                             key={key} fieldKey={key} schema={schema} value={strategyConfig[key]}
                                             label={formatStrategyLabel(key)}
                                             tooltip={TOOLTIP_HINTS[key] || "No description available"}
-                                            isDisabled={configDisabled} onChange={handleStrategyConfigChange}
+                                            isDisabled={configDisabled || disabledByOptimize} onChange={handleStrategyConfigChange}
+                                            error={errors[key]}
                                         />
                                     );
                                 })}
@@ -577,7 +642,7 @@ const ConfigPanel: React.FC = () => {
                                             const schema = selectedStrategyDef.config_schema?.[key];
                                             if (!schema) return null;
 
-                                            let isDisabled = configDisabled;
+                                            let isDisabled = configDisabled || (config.run_mode === 'optimize' && OPTIMIZE_PARAM_KEYS.has(key));
                                             if (!isDisabled) {
                                                 if (["rsi_period", "rsi_overbought", "rsi_oversold"].includes(key)) {
                                                     if (strategyConfig["use_rsi_filter"] === false) isDisabled = true;

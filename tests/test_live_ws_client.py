@@ -4,7 +4,7 @@ import queue
 import threading
 import asyncio
 import time
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 import pytest
 

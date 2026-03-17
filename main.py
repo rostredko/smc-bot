@@ -4,12 +4,11 @@ Backtrade Machine - Main Entry Point
 This script provides easy access to all main functionality including backtesting, live trading, and testing.
 """
 
-import json
 import sys
 import argparse
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 from uuid import uuid4
 
 # Add project root and web-dashboard to path

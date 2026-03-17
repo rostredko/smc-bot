@@ -3,7 +3,7 @@ Tests for BaseEngine broker setup and core behavior.
 BaseEngine is abstract; we test via BTBacktestEngine with mocked DataLoader.
 """
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 import pandas as pd
 import sys
 import os

@@ -11,6 +11,7 @@ from services.result_mapper import (
     build_equity_series,
     build_backtest_metrics_doc,
     build_live_metrics_doc,
+    build_optimization_metrics_doc,
 )
 
 
@@ -116,3 +117,36 @@ def test_build_live_metrics_doc_derives_stats_from_trades_and_equity_fallback():
     assert doc["max_drawdown"] == pytest.approx((300.0 / 10100.0) * 100.0)
     # Fallback keeps signals non-zero when counter misses but trades were executed.
     assert doc["signals_generated"] == 3
+
+
+def test_build_optimization_metrics_doc_uses_best_variant():
+    variants = [
+        {
+            "params": {"risk_reward_ratio": 2.5, "sl_buffer_atr": 1, "trailing_stop_distance": 0.02},
+            "sharpe_ratio": 0.11,
+            "profit_factor": 28.57,
+            "total_pnl": 116.27,
+            "total_trades": 2,
+            "win_rate": 50,
+            "win_count": 1,
+            "loss_count": 1,
+            "max_drawdown": 0.6,
+            "final_capital": 10116.27,
+        },
+        {"params": {}, "sharpe_ratio": 0.05, "total_pnl": 50},
+    ]
+    doc = build_optimization_metrics_doc(
+        engine_config={"initial_capital": 10000, "strategy": "bt_price_action"},
+        metrics={"variants": variants, "signals_generated": 10},
+        signals_generated=10,
+    )
+    assert doc["run_mode"] == "optimize"
+    assert doc["is_optimization_batch"] is True
+    assert doc["variants_count"] == 2
+    assert doc["variants"] == variants
+    assert doc["total_pnl"] == 116.27
+    assert doc["sharpe_ratio"] == 0.11
+    assert doc["profit_factor"] == 28.57
+    assert doc["total_trades"] == 2
+    assert doc["win_rate"] == 0.5
+    assert doc["final_capital"] == 10116.27

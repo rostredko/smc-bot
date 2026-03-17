@@ -99,15 +99,14 @@ code {
   font-weight: bold;
 }
 
-/* Cards enhancement */
+/* Cards enhancement - no transform on hover to avoid scroll jank (transform triggers repaint during scroll) */
 .MuiCard-root {
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08) !important;
   border-radius: 12px !important;
-  transition: transform 0.2s ease, box-shadow 0.2s ease;
+  transition: box-shadow 0.2s ease;
 }
 
 .MuiCard-root:hover {
-  transform: translateY(-2px);
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.12) !important;
 }
 
@@ -131,7 +130,6 @@ code {
 
 .MuiButton-contained:hover {
   box-shadow: 0 6px 16px rgba(0, 0, 0, 0.2) !important;
-  transform: translateY(-2px);
 }
 
 /* TextField */

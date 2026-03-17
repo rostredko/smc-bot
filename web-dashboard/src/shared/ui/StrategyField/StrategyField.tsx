@@ -11,9 +11,10 @@ interface StrategyFieldProps {
     onChange: (key: string, value: any) => void;
     description?: string;
     compact?: boolean;
+    error?: string;
 }
 
-const StrategyField = memo(({ fieldKey, schema, value, label, tooltip, isDisabled, onChange, description, compact }: StrategyFieldProps) => {
+const StrategyField = memo(({ fieldKey, schema, value, label, tooltip, isDisabled, onChange, description, compact, error }: StrategyFieldProps) => {
     const isBoolean = schema?.type === "boolean" || typeof value === "boolean" || value === "true" || value === "false";
     const gridMd = isBoolean ? (compact ? 6 : 12) : 6;
 
@@ -49,6 +50,8 @@ const StrategyField = memo(({ fieldKey, schema, value, label, tooltip, isDisable
                                 onChange(fieldKey, newValue);
                             }}
                             disabled={isDisabled}
+                            error={!!error}
+                            helperText={error}
                             fullWidth
                         />
                     )}

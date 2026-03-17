@@ -41,19 +41,17 @@ Notes:
 
 ## Docker Dev Hot Reload
 
-Optional Docker-based dev mode without bind mounts:
+Optional Docker-based dev mode without bind mounts (avoids fakeowner/import issues on Docker Desktop for Mac). **Use one command** so watch runs and hot reload works:
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
-docker compose -f docker-compose.yml -f docker-compose.dev.yml watch backend frontend
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build --watch
 ```
 
-What it does:
-- backend runs `uvicorn --reload`
-- `docker compose watch` syncs changed source files into containers
-- dependency changes still trigger a rebuild
+Or: `./scripts/dev.sh`
 
-This is the safest Docker hot-reload path for this repo because direct bind mounts under `/Users` were unstable on this Docker Desktop setup.
+- backend runs `uvicorn --reload`
+- watch syncs changed files into containers; Vite and uvicorn hot-reload
+- Keep the terminal open; edits apply automatically
 
 ## Local Development (without full Docker)
 
@@ -100,7 +98,7 @@ python main.py test
 Backend tests:
 
 ```bash
-./.venv/bin/python -m pytest -q
+python -m pytest -q
 ```
 
 Frontend checks:
@@ -117,7 +115,7 @@ If local frontend tooling is using an older Node runtime, prefer running the sam
 Live E2E test (internet-dependent, opt-in):
 
 ```bash
-RUN_LIVE_TESTS=1 ./.venv/bin/python -m pytest -m live -q
+RUN_LIVE_TESTS=1 python -m pytest -m live -q
 ```
 
 ## Environment Variables
@@ -133,6 +131,7 @@ Testing helper:
 ## Documentation
 
 - Full technical map: [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md)
+- Backtest run modes (Single, Optimize, Walk-Forward): [docs/BACKTEST_RUN_MODES.md](docs/BACKTEST_RUN_MODES.md)
 
 ## Disclaimer
 

@@ -1,29 +1,37 @@
 import React from 'react';
-import { Container, Grid, Typography, Box, Paper, Tooltip } from '@mui/material';
-import { Dashboard, Timeline } from '@mui/icons-material';
+import { Container, Grid, Typography, Box, Paper, Tooltip, Tabs, Tab } from '@mui/material';
+import { Dashboard, Timeline, PlayArrow, FlashOn } from '@mui/icons-material';
 import ConfigPanel from '../../../widgets/config-panel/ui/ConfigPanel';
 import ConsoleOutput from '../../../widgets/console-output/ui/ConsoleOutput';
 import { lazy, Suspense } from 'react';
 import ResultsPanel from '../../../widgets/results-panel/ui/ResultsPanel';
 const BacktestHistoryList = lazy(() => import('../../../widgets/backtest-history/ui/BacktestHistoryList'));
 import { useConsoleContext } from '../../../app/providers/console/ConsoleProvider';
+import { useConfigContext } from '../../../app/providers/config/ConfigProvider';
 
 const DashboardPage: React.FC = () => {
     const { websocketConnected } = useConsoleContext();
+    const { activeTab, setActiveTab } = useConfigContext();
+    const tabValue = activeTab ?? 'backtest';
+
+    const handleTabChange = (_: React.SyntheticEvent, v: 'backtest' | 'live') => {
+        setActiveTab?.(v);
+    };
 
     return (
-        <Container maxWidth="xl" sx={{ py: 4 }}>
+        <Container maxWidth="xl" sx={{ py: { xs: 2, sm: 4 }, px: { xs: 1.5, sm: 3 } }}>
             <Paper
                 elevation={0}
                 sx={{
-                    mb: 3,
-                    px: 3,
-                    py: 2.5,
+                    mb: { xs: 2, sm: 3 },
+                    px: { xs: 2, sm: 3 },
+                    py: { xs: 1.5, sm: 2.5 },
                     borderRadius: 3,
                     background: 'linear-gradient(to right, #2d2d2d, #5a5a5a, #7a7a7a)',
                     border: '1px solid rgba(255,255,255,0.08)',
                     display: 'flex',
-                    alignItems: 'center',
+                    flexDirection: { xs: 'column', sm: 'row' },
+                    alignItems: { xs: 'flex-start', sm: 'center' },
                     justifyContent: 'space-between',
                     gap: 2,
                 }}
@@ -73,9 +81,49 @@ const DashboardPage: React.FC = () => {
                 </Tooltip>
             </Paper>
 
-            <Grid container spacing={3}>
+            <Paper sx={{ mb: 2 }}>
+                <Tabs
+                    value={tabValue}
+                    onChange={handleTabChange}
+                    TabIndicatorProps={{
+                        sx: {
+                            height: 3,
+                            borderRadius: '3px 3px 0 0',
+                            backgroundColor: tabValue === 'backtest' ? '#2e7d32' : '#ed6c02',
+                        },
+                    }}
+                    sx={{
+                        borderBottom: 1,
+                        borderColor: 'divider',
+                        '& .MuiTab-root': { textTransform: 'none', fontWeight: 600 },
+                    }}
+                >
+                    <Tab
+                        value="backtest"
+                        label="Backtest"
+                        icon={<PlayArrow sx={{ fontSize: 18 }} />}
+                        iconPosition="start"
+                        sx={{
+                            color: tabValue === 'backtest' ? '#2e7d32' : 'text.secondary',
+                            '&.Mui-selected': { color: '#2e7d32' },
+                        }}
+                    />
+                    <Tab
+                        value="live"
+                        label="Live"
+                        icon={<FlashOn sx={{ fontSize: 18 }} />}
+                        iconPosition="start"
+                        sx={{
+                            color: tabValue === 'live' ? '#ed6c02' : 'text.secondary',
+                            '&.Mui-selected': { color: '#ed6c02' },
+                        }}
+                    />
+                </Tabs>
+            </Paper>
+
+            <Grid container spacing={{ xs: 2, sm: 3 }}>
                 <Grid item xs={12}>
-                    <ConfigPanel />
+                    <ConfigPanel activeTab={tabValue} />
                 </Grid>
                 <Grid item xs={12}>
                     <ConsoleOutput />

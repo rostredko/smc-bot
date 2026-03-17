@@ -245,3 +245,42 @@ def build_backtest_metrics_doc(
         "strategy": engine_config.get("strategy", "Unknown"),
         "configuration": engine_config,
     }
+
+
+def build_optimization_metrics_doc(
+    engine_config: Dict[str, Any],
+    metrics: Dict[str, Any],
+    signals_generated: int,
+) -> Dict[str, Any]:
+    """Build metrics doc for optimization batch (optstrategy) runs."""
+    variants = metrics.get("variants", [])
+    best = variants[0] if variants else {}
+    init_cap = float(engine_config.get("initial_capital", 10000))
+    total_pnl = best.get("total_pnl", 0)
+    final_capital = best.get("final_capital", init_cap)
+    win_rate = best.get("win_rate", 0)
+    if win_rate and win_rate > 1:
+        win_rate = win_rate / 100
+    return {
+        "run_mode": "optimize",
+        "is_optimization_batch": True,
+        "variants_count": len(variants),
+        "variants": variants,
+        "total_pnl": total_pnl,
+        "winning_trades": best.get("win_count", 0),
+        "losing_trades": best.get("loss_count", 0),
+        "total_trades": best.get("total_trades", 0),
+        "win_rate": win_rate,
+        "profit_factor": best.get("profit_factor", 0),
+        "max_drawdown": best.get("max_drawdown", 0),
+        "sharpe_ratio": best.get("sharpe_ratio", 0),
+        "avg_win": best.get("avg_win", 0),
+        "avg_loss": best.get("avg_loss", 0),
+        "initial_capital": init_cap,
+        "final_capital": final_capital,
+        "signals_generated": signals_generated,
+        "equity_curve": [],
+        "trades": [],
+        "strategy": engine_config.get("strategy", "Unknown"),
+        "configuration": engine_config,
+    }

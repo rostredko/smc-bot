@@ -1,6 +1,5 @@
 """Unit tests for engine/utils.py."""
 
-import pytest
 
 from engine.utils import safe_float
 

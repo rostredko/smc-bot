@@ -1,6 +1,5 @@
 """Unit tests for engine/timeframe_utils.py."""
 
-import pytest
 
 from engine.timeframe_utils import timeframe_to_minutes, ordered_timeframes
 

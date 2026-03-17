@@ -1,7 +1,6 @@
 import datetime
 import backtrader as bt
 import queue
-import threading
 
 from engine.logger import get_logger
 

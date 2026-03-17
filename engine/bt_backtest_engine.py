@@ -1,9 +1,12 @@
+import itertools
 import backtrader as bt
-import pandas as pd
+import calendar
 import logging
+import os
+import pandas as pd
 import threading
-from datetime import timezone
-from typing import Dict, Any
+from datetime import datetime, timezone
+from typing import Dict, Any, List
 from .base_engine import BaseEngine
 from .data_loader import DataLoader
 from .logger import get_logger
@@ -13,6 +16,44 @@ from .bt_analyzers import TradeListAnalyzer, EquityCurveAnalyzer
 from .trade_metrics import build_closed_trade_metrics
 
 logger = get_logger(__name__)
+
+
+def _add_months(dt: datetime, months: int) -> datetime:
+    """Add months to a datetime (naive month arithmetic)."""
+    year = dt.year + (dt.month - 1 + months) // 12
+    month = (dt.month - 1 + months) % 12 + 1
+    max_day = calendar.monthrange(year, month)[1]
+    day = min(dt.day, max_day)
+    return dt.replace(year=year, month=month, day=day)
+
+
+def _params_to_dict(params) -> Dict[str, Any]:
+    """Extract Backtrader params object to a JSON-serializable dict."""
+    if params is None:
+        return {}
+    out = {}
+    try:
+        if hasattr(params, "_getitems"):
+            for k, v in params._getitems():
+                if v is not None and not callable(v):
+                    try:
+                        out[k] = float(v) if isinstance(v, (int, float)) else v
+                    except (TypeError, ValueError):
+                        out[k] = v
+        else:
+            for attr in dir(params):
+                if attr.startswith("_"):
+                    continue
+                try:
+                    v = getattr(params, attr)
+                    if callable(v):
+                        continue
+                    out[attr] = float(v) if isinstance(v, (int, float)) else v
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    return out
 
 class SMCDataFeed(bt.feeds.PandasData):
     params = (
@@ -168,7 +209,8 @@ class BTBacktestEngine(BaseEngine):
             self.equity_curve[-1]["equity"] = realized_final_capital
 
         sharpe = strat.analyzers.sharpe.get_analysis().get('sharperatio')
-        if sharpe is None: sharpe = 0.0
+        if sharpe is None:
+            sharpe = 0.0
 
         drawdown_info = strat.analyzers.drawdown.get_analysis()
         max_dd = self._safe_max_drawdown(drawdown_info)
@@ -197,6 +239,297 @@ class BTBacktestEngine(BaseEngine):
         }
 
         return metrics
+
+    @staticmethod
+    def _count_opt_combos(opt_kwargs: Dict[str, Any]) -> int:
+        """Return product of param list lengths for grid search size."""
+        if not opt_kwargs:
+            return 0
+        n = 1
+        for v in opt_kwargs.values():
+            if isinstance(v, (list, tuple)):
+                n *= len(v)
+            elif hasattr(v, "__iter__") and not isinstance(v, (str, bytes)):
+                try:
+                    n *= len(list(v))
+                except (TypeError, ValueError):
+                    pass
+        return max(1, n)
+
+    def run_backtest_optimize(
+        self,
+        strategy_class,
+        opt_kwargs: Dict[str, Any],
+        opt_target_metric: str = "sharpe_ratio",
+    ) -> Dict[str, Any]:
+        """
+        Run parameter optimization via Backtrader optstrategy.
+        Returns {run_mode, variants: [{params, sharpe_ratio, profit_factor, ...}], ...}.
+        """
+        if self.should_cancel:
+            self.equity_curve = []
+            self.closed_trades = []
+            return {"run_mode": "optimize", "cancelled": True, "variants": []}
+
+        self.add_data()
+        if self.should_cancel:
+            self.equity_curve = []
+            self.closed_trades = []
+            return {"run_mode": "optimize", "cancelled": True, "variants": []}
+
+        self.cerebro.addanalyzer(bt.analyzers.SharpeRatio, _name='sharpe', riskfreerate=0.0, timeframe=bt.TimeFrame.Days, compression=1, factor=365)
+        self.cerebro.addanalyzer(bt.analyzers.DrawDown, _name='drawdown')
+        self.cerebro.addanalyzer(bt.analyzers.TradeAnalyzer, _name='trades')
+        self.cerebro.addanalyzer(bt.analyzers.SQN, _name='sqn')
+        self.cerebro.addanalyzer(TradeListAnalyzer, _name='tradelist')
+        self.cerebro.addanalyzer(EquityCurveAnalyzer, _name='equity')
+        self.cerebro.addobserver(bt.observers.DrawDown)
+
+        self.add_opt_strategy(strategy_class, **opt_kwargs)
+
+        n_combos = self._count_opt_combos(opt_kwargs)
+        from engine.optimize_context import set_opt_progress_logging, OptComboLogFilter
+        set_opt_progress_logging(True, n_combos)
+        root = logging.getLogger("backtrade")
+        opt_filter = OptComboLogFilter()
+        root.addFilter(opt_filter)
+        try:
+            logger.info("Starting Backtrader optimization (optstrategy)...")
+            # runonce=True: vectorized indicators, ~2-3x faster.
+            # maxcpus>1 only when n_combos large — multiprocessing overhead kills small runs (27 combos, 2 days)
+            maxcpus = min(4, max(1, (os.cpu_count() or 2) - 1)) if n_combos >= 50 else 1
+            results = self.cerebro.run(runonce=True, maxcpus=maxcpus)
+        finally:
+            root.removeFilter(opt_filter)
+            set_opt_progress_logging(False, 0)
+
+        if not results:
+            return {
+                "run_mode": "optimize",
+                "cancelled": bool(self.should_cancel),
+                "variants": [],
+            }
+
+        # Flatten: optstrategy returns list of lists (one per combo)
+        flat: List[Any] = []
+        for r in results:
+            if isinstance(r, (list, tuple)):
+                flat.extend(r)
+            else:
+                flat.append(r)
+
+        # Only params that were varied (list/range with >1 value) — for display and template names
+        opt_keys = {
+            k for k, v in opt_kwargs.items()
+            if isinstance(v, (list, range)) and len(list(v)) > 1
+        }
+        # Cartesian product in same order as Backtrader (last key varies fastest)
+        ordered_opt_keys = [k for k in opt_kwargs if k in opt_keys]
+        opt_combos: List[tuple] = []
+        if ordered_opt_keys:
+            vals = [list(opt_kwargs[k]) for k in ordered_opt_keys]
+            opt_combos = list(itertools.product(*vals))
+
+        variants: List[Dict[str, Any]] = []
+        for idx, strat in enumerate(flat):
+            if self.should_cancel:
+                break
+            try:
+                params = getattr(strat, "params", None) or getattr(strat, "p", None)
+                full_params = _params_to_dict(params)
+                params_dict = {k: full_params[k] for k in opt_keys if k in full_params} if opt_keys else full_params
+                # Backtrader optreturn objects may return same params for all; use Cartesian product by index
+                if opt_combos and idx < len(opt_combos):
+                    params_dict = dict(zip(ordered_opt_keys, opt_combos[idx]))
+                analyzers = getattr(strat, "analyzers", None)
+                if analyzers is None:
+                    continue
+
+                closed_trades = []
+                if hasattr(analyzers, "tradelist"):
+                    closed_trades = analyzers.tradelist.get_analysis()
+
+                sharpe = 0.0
+                if hasattr(analyzers, "sharpe"):
+                    sharpe = analyzers.sharpe.get_analysis().get("sharperatio") or 0.0
+
+                max_dd = 0.0
+                if hasattr(analyzers, "drawdown"):
+                    dd_info = analyzers.drawdown.get_analysis()
+                    max_dd = self._safe_max_drawdown(dd_info)
+
+                realized_capital = self.cerebro.broker.startingcash + sum(
+                    safe_float(t.get("realized_pnl", 0.0)) for t in closed_trades
+                )
+                trade_metrics = build_closed_trade_metrics(
+                    initial_capital=self.cerebro.broker.startingcash,
+                    final_capital=realized_capital,
+                    closed_trades=closed_trades,
+                )
+
+                variants.append({
+                    "run_id": f"opt_{idx}",
+                    "params": params_dict,
+                    "sharpe_ratio": sharpe,
+                    "profit_factor": trade_metrics["profit_factor"],
+                    "max_drawdown": max_dd,
+                    "total_trades": trade_metrics["total_trades"],
+                    "win_rate": trade_metrics["win_rate"],
+                    "win_count": trade_metrics["win_count"],
+                    "loss_count": trade_metrics["loss_count"],
+                    "total_pnl": trade_metrics["total_pnl"],
+                    "initial_capital": trade_metrics["initial_capital"],
+                    "final_capital": trade_metrics["final_capital"],
+                    "avg_win": trade_metrics["avg_win"],
+                    "avg_loss": trade_metrics["avg_loss"],
+                })
+            except Exception as e:
+                logger.warning(f"Failed to extract metrics for optimization variant {idx}: {e}")
+
+        # Sort by target metric (descending: higher is better)
+        reverse = True
+        key = opt_target_metric if opt_target_metric in ("sharpe_ratio", "profit_factor") else "sharpe_ratio"
+        variants.sort(key=lambda v: v.get(key) or 0, reverse=reverse)
+
+        self.closed_trades = []
+        self.equity_curve = []
+
+        return {
+            "run_mode": "optimize",
+            "cancelled": bool(self.should_cancel),
+            "variants": variants,
+            "initial_capital": self.cerebro.broker.startingcash,
+        }
+
+    def run_backtest_walk_forward(
+        self,
+        strategy_class,
+        st_config: Dict[str, Any],
+        wf_train_months: int = 6,
+        wf_test_months: int = 1,
+        wf_step_months: int = 1,
+    ) -> Dict[str, Any]:
+        """
+        Run walk-forward backtest: train N months, test M months, slide window.
+        In this phase we run backtest on test window only (no optimization on train).
+        """
+        if self.should_cancel:
+            return {"run_mode": "walk_forward", "cancelled": True, "windows": []}
+
+        start_s = self.config.get("start_date") or "2024-01-01"
+        end_s = self.config.get("end_date") or "2024-12-31"
+        try:
+            start_dt = datetime.strptime(start_s[:10], "%Y-%m-%d")
+            end_dt = datetime.strptime(end_s[:10], "%Y-%m-%d")
+        except (ValueError, TypeError):
+            return {"run_mode": "walk_forward", "cancelled": False, "windows": [], "error": "Invalid date format"}
+
+        windows: List[Dict[str, Any]] = []
+        all_trades: List[Dict[str, Any]] = []
+        all_equity: List[Dict[str, Any]] = []
+        window_start = start_dt
+        initial_capital = float(self.config.get("initial_capital", 10000))
+        running_capital = initial_capital
+
+        while window_start < end_dt:
+            if self.should_cancel:
+                break
+
+            train_end = _add_months(window_start, wf_train_months)
+            test_end = _add_months(train_end, wf_test_months)
+            if test_end > end_dt:
+                test_end = end_dt
+            if train_end >= end_dt:
+                break
+
+            test_start_str = train_end.strftime("%Y-%m-%d")
+            test_end_str = test_end.strftime("%Y-%m-%d")
+
+            wf_config = dict(self.config)
+            wf_config["start_date"] = test_start_str
+            wf_config["end_date"] = test_end_str
+            wf_config["initial_capital"] = running_capital
+
+            wf_engine = BTBacktestEngine(wf_config)
+            wf_engine.should_cancel = self.should_cancel
+            wf_engine.add_strategy(strategy_class, **st_config)
+            wf_engine.add_data()
+            if self.should_cancel:
+                break
+
+            wf_engine.cerebro.addanalyzer(bt.analyzers.SharpeRatio, _name='sharpe', riskfreerate=0.0, timeframe=bt.TimeFrame.Days, compression=1, factor=365)
+            wf_engine.cerebro.addanalyzer(bt.analyzers.DrawDown, _name='drawdown')
+            wf_engine.cerebro.addanalyzer(bt.analyzers.TradeAnalyzer, _name='trades')
+            wf_engine.cerebro.addanalyzer(bt.analyzers.SQN, _name='sqn')
+            wf_engine.cerebro.addanalyzer(TradeListAnalyzer, _name='tradelist')
+            wf_engine.cerebro.addanalyzer(EquityCurveAnalyzer, _name='equity')
+            wf_engine.cerebro.addobserver(bt.observers.DrawDown)
+
+            logger.info("Walk-forward window: test %s to %s", test_start_str, test_end_str)
+            results = wf_engine.run()
+            if not results:
+                window_start = _add_months(window_start, wf_step_months)
+                continue
+
+            strat = results[0]
+            closed = strat.analyzers.tradelist.get_analysis()
+            equity = strat.analyzers.equity.get_analysis()
+            sharpe = strat.analyzers.sharpe.get_analysis().get("sharperatio") or 0.0
+            max_dd = self._safe_max_drawdown(strat.analyzers.drawdown.get_analysis())
+            realized = initial_capital + sum(safe_float(t.get("realized_pnl", 0.0)) for t in closed)
+            trade_metrics = build_closed_trade_metrics(
+                initial_capital=wf_engine.cerebro.broker.startingcash,
+                final_capital=realized,
+                closed_trades=closed,
+            )
+
+            windows.append({
+                "window_start": test_start_str,
+                "window_end": test_end_str,
+                "sharpe_ratio": sharpe,
+                "profit_factor": trade_metrics["profit_factor"],
+                "max_drawdown": max_dd,
+                "total_trades": trade_metrics["total_trades"],
+                "win_rate": trade_metrics["win_rate"],
+                "total_pnl": trade_metrics["total_pnl"],
+            })
+
+            for t in closed:
+                all_trades.append(dict(t))
+            for e in equity:
+                all_equity.append(dict(e))
+
+            running_capital = realized
+            window_start = _add_months(window_start, wf_step_months)
+
+        total_pnl = running_capital - initial_capital
+        agg_metrics = build_closed_trade_metrics(
+            initial_capital=initial_capital,
+            final_capital=running_capital,
+            closed_trades=all_trades,
+        )
+        max_dd_agg = max((w.get("max_drawdown", 0) or 0 for w in windows), default=0.0)
+
+        self.closed_trades = all_trades
+        self.equity_curve = all_equity
+
+        return {
+            "run_mode": "walk_forward",
+            "cancelled": bool(self.should_cancel),
+            "windows": windows,
+            "initial_capital": initial_capital,
+            "final_capital": running_capital,
+            "total_pnl": total_pnl,
+            "sharpe_ratio": 0.0,
+            "profit_factor": agg_metrics["profit_factor"],
+            "max_drawdown": max_dd_agg,
+            "total_trades": agg_metrics["total_trades"],
+            "win_rate": agg_metrics["win_rate"],
+            "win_count": agg_metrics["win_count"],
+            "loss_count": agg_metrics["loss_count"],
+            "avg_win": agg_metrics["avg_win"],
+            "avg_loss": agg_metrics["avg_loss"],
+        }
 
     def _compute_realized_final_capital(self) -> float:
         return self.cerebro.broker.startingcash + sum(

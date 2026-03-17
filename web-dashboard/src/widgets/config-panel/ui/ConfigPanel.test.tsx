@@ -85,10 +85,11 @@ describe('ConfigPanel', () => {
     });
 
     it('renders live exchange selector defaulted to Binance', () => {
-        render(<ConfigPanel />);
+        render(<ConfigPanel activeTab="live" />);
 
-        expect(screen.getByText('Exchange')).toBeInTheDocument();
-        expect(screen.getByRole('combobox', { name: /exchange/i })).toHaveTextContent('Binance');
+        const combobox = screen.getByRole('combobox', { name: /exchange/i });
+        expect(combobox).toBeInTheDocument();
+        expect(combobox).toHaveTextContent('Binance');
     });
 
     it('renders POI fields separately and keeps extra controls under advanced parameters', () => {
