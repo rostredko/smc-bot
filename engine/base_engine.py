@@ -91,5 +91,5 @@ class BaseEngine(ABC):
         self.cerebro.optstrategy(strategy_class, **kwargs)
 
     def run(self):
-        """Run the engine."""
-        return self.cerebro.run(runonce=False)
+        """Run the engine. runonce=True enables vectorized indicators (~2-3x faster)."""
+        return self.cerebro.run(runonce=True)

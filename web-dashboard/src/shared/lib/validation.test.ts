@@ -137,4 +137,5 @@ describe('validateBacktestConfig', () => {
         expect(errors.exchange).toBeUndefined();
         expect(errors.execution_mode).toBeUndefined();
     });
+
 });

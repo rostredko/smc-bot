@@ -1,6 +1,5 @@
 import itertools
 import backtrader as bt
-import calendar
 import logging
 import os
 import pandas as pd
@@ -16,15 +15,6 @@ from .bt_analyzers import TradeListAnalyzer, EquityCurveAnalyzer
 from .trade_metrics import build_closed_trade_metrics
 
 logger = get_logger(__name__)
-
-
-def _add_months(dt: datetime, months: int) -> datetime:
-    """Add months to a datetime (naive month arithmetic)."""
-    year = dt.year + (dt.month - 1 + months) // 12
-    month = (dt.month - 1 + months) % 12 + 1
-    max_day = calendar.monthrange(year, month)[1]
-    day = min(dt.day, max_day)
-    return dt.replace(year=year, month=month, day=day)
 
 
 def _params_to_dict(params) -> Dict[str, Any]:
@@ -399,136 +389,6 @@ class BTBacktestEngine(BaseEngine):
             "cancelled": bool(self.should_cancel),
             "variants": variants,
             "initial_capital": self.cerebro.broker.startingcash,
-        }
-
-    def run_backtest_walk_forward(
-        self,
-        strategy_class,
-        st_config: Dict[str, Any],
-        wf_train_months: int = 6,
-        wf_test_months: int = 1,
-        wf_step_months: int = 1,
-    ) -> Dict[str, Any]:
-        """
-        Run walk-forward backtest: train N months, test M months, slide window.
-        In this phase we run backtest on test window only (no optimization on train).
-        """
-        if self.should_cancel:
-            return {"run_mode": "walk_forward", "cancelled": True, "windows": []}
-
-        start_s = self.config.get("start_date") or "2024-01-01"
-        end_s = self.config.get("end_date") or "2024-12-31"
-        try:
-            start_dt = datetime.strptime(start_s[:10], "%Y-%m-%d")
-            end_dt = datetime.strptime(end_s[:10], "%Y-%m-%d")
-        except (ValueError, TypeError):
-            return {"run_mode": "walk_forward", "cancelled": False, "windows": [], "error": "Invalid date format"}
-
-        windows: List[Dict[str, Any]] = []
-        all_trades: List[Dict[str, Any]] = []
-        all_equity: List[Dict[str, Any]] = []
-        window_start = start_dt
-        initial_capital = float(self.config.get("initial_capital", 10000))
-        running_capital = initial_capital
-
-        while window_start < end_dt:
-            if self.should_cancel:
-                break
-
-            train_end = _add_months(window_start, wf_train_months)
-            test_end = _add_months(train_end, wf_test_months)
-            if test_end > end_dt:
-                test_end = end_dt
-            if train_end >= end_dt:
-                break
-
-            test_start_str = train_end.strftime("%Y-%m-%d")
-            test_end_str = test_end.strftime("%Y-%m-%d")
-
-            wf_config = dict(self.config)
-            wf_config["start_date"] = test_start_str
-            wf_config["end_date"] = test_end_str
-            wf_config["initial_capital"] = running_capital
-
-            wf_engine = BTBacktestEngine(wf_config)
-            wf_engine.should_cancel = self.should_cancel
-            wf_engine.add_strategy(strategy_class, **st_config)
-            wf_engine.add_data()
-            if self.should_cancel:
-                break
-
-            wf_engine.cerebro.addanalyzer(bt.analyzers.SharpeRatio, _name='sharpe', riskfreerate=0.0, timeframe=bt.TimeFrame.Days, compression=1, factor=365)
-            wf_engine.cerebro.addanalyzer(bt.analyzers.DrawDown, _name='drawdown')
-            wf_engine.cerebro.addanalyzer(bt.analyzers.TradeAnalyzer, _name='trades')
-            wf_engine.cerebro.addanalyzer(bt.analyzers.SQN, _name='sqn')
-            wf_engine.cerebro.addanalyzer(TradeListAnalyzer, _name='tradelist')
-            wf_engine.cerebro.addanalyzer(EquityCurveAnalyzer, _name='equity')
-            wf_engine.cerebro.addobserver(bt.observers.DrawDown)
-
-            logger.info("Walk-forward window: test %s to %s", test_start_str, test_end_str)
-            results = wf_engine.run()
-            if not results:
-                window_start = _add_months(window_start, wf_step_months)
-                continue
-
-            strat = results[0]
-            closed = strat.analyzers.tradelist.get_analysis()
-            equity = strat.analyzers.equity.get_analysis()
-            sharpe = strat.analyzers.sharpe.get_analysis().get("sharperatio") or 0.0
-            max_dd = self._safe_max_drawdown(strat.analyzers.drawdown.get_analysis())
-            realized = initial_capital + sum(safe_float(t.get("realized_pnl", 0.0)) for t in closed)
-            trade_metrics = build_closed_trade_metrics(
-                initial_capital=wf_engine.cerebro.broker.startingcash,
-                final_capital=realized,
-                closed_trades=closed,
-            )
-
-            windows.append({
-                "window_start": test_start_str,
-                "window_end": test_end_str,
-                "sharpe_ratio": sharpe,
-                "profit_factor": trade_metrics["profit_factor"],
-                "max_drawdown": max_dd,
-                "total_trades": trade_metrics["total_trades"],
-                "win_rate": trade_metrics["win_rate"],
-                "total_pnl": trade_metrics["total_pnl"],
-            })
-
-            for t in closed:
-                all_trades.append(dict(t))
-            for e in equity:
-                all_equity.append(dict(e))
-
-            running_capital = realized
-            window_start = _add_months(window_start, wf_step_months)
-
-        total_pnl = running_capital - initial_capital
-        agg_metrics = build_closed_trade_metrics(
-            initial_capital=initial_capital,
-            final_capital=running_capital,
-            closed_trades=all_trades,
-        )
-        max_dd_agg = max((w.get("max_drawdown", 0) or 0 for w in windows), default=0.0)
-
-        self.closed_trades = all_trades
-        self.equity_curve = all_equity
-
-        return {
-            "run_mode": "walk_forward",
-            "cancelled": bool(self.should_cancel),
-            "windows": windows,
-            "initial_capital": initial_capital,
-            "final_capital": running_capital,
-            "total_pnl": total_pnl,
-            "sharpe_ratio": 0.0,
-            "profit_factor": agg_metrics["profit_factor"],
-            "max_drawdown": max_dd_agg,
-            "total_trades": agg_metrics["total_trades"],
-            "win_rate": agg_metrics["win_rate"],
-            "win_count": agg_metrics["win_count"],
-            "loss_count": agg_metrics["loss_count"],
-            "avg_win": agg_metrics["avg_win"],
-            "avg_loss": agg_metrics["avg_loss"],
         }
 
     def _compute_realized_final_capital(self) -> float:

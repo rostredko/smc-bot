@@ -237,7 +237,7 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ activeTab = 'backtest' }) => 
                 <DialogContent sx={{ p: 0 }}>
                     {savedConfigs.length === 0 ? (
                         <Typography sx={{ color: '#aaa', p: 3, textAlign: 'center' }}>
-                            No saved configurations found. Save a configuration from Recent Backtests first.
+                            No saved configurations found. Save a configuration from History first.
                         </Typography>
                     ) : (
                         <TableContainer sx={{ overflowX: 'hidden' }}>
@@ -318,13 +318,16 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ activeTab = 'backtest' }) => 
                                             </Box>
                                             <ToggleButtonGroup value={config.run_mode || 'single'} exclusive onChange={(_, v) => v && handleConfigChange('run_mode', v)} size="small" sx={{ flexWrap: 'wrap' }}>
                                                 <MuiTooltip title={TOOLTIP_HINTS.run_mode_single} arrow placement="top">
-                                                    <ToggleButton value="single">Single</ToggleButton>
+                                                    <ToggleButton value="single" sx={{
+                                                        '&.Mui-selected': { bgcolor: 'rgba(46, 125, 50, 0.45)', color: '#1b5e20', fontWeight: 600, border: '1px solid #1b5e20', '&:hover': { bgcolor: 'rgba(46, 125, 50, 0.55)' } },
+                                                        '&:not(.Mui-selected)': { bgcolor: 'rgba(46, 125, 50, 0.12)', color: '#2e7d32', border: '1px solid transparent', '&:hover': { bgcolor: 'rgba(46, 125, 50, 0.2)' } },
+                                                    }}>Single</ToggleButton>
                                                 </MuiTooltip>
                                                 <MuiTooltip title={TOOLTIP_HINTS.run_mode_optimize} arrow placement="top">
-                                                    <ToggleButton value="optimize">Optimize</ToggleButton>
-                                                </MuiTooltip>
-                                                <MuiTooltip title={TOOLTIP_HINTS.run_mode_walk_forward} arrow placement="top">
-                                                    <ToggleButton value="walk_forward">Walk-Forward</ToggleButton>
+                                                    <ToggleButton value="optimize" sx={{
+                                                        '&.Mui-selected': { bgcolor: 'rgba(33, 150, 243, 0.45)', color: '#0d47a1', fontWeight: 600, border: '1px solid #0d47a1', '&:hover': { bgcolor: 'rgba(33, 150, 243, 0.55)' } },
+                                                        '&:not(.Mui-selected)': { bgcolor: 'rgba(33, 150, 243, 0.12)', color: '#1565c0', border: '1px solid transparent', '&:hover': { bgcolor: 'rgba(33, 150, 243, 0.2)' } },
+                                                    }}>Optimize</ToggleButton>
                                                 </MuiTooltip>
                                             </ToggleButtonGroup>
                                         </Box>
@@ -343,8 +346,13 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ activeTab = 'backtest' }) => 
                                                 {TOOLTIP_HINTS.run_mode_optimize}
                                             </Typography>
                                             <Typography variant="caption" color="textSecondary" sx={{ display: 'block', mb: 1 }}>
-                                                Params: enter 3 values to test (grid search).
+                                                Params: enter 3 values to test (grid search). All 3 params required = 27 runs.
                                             </Typography>
+                                            {errors.opt_params && (
+                                                <Typography variant="caption" color="error" sx={{ display: 'block', mb: 1 }}>
+                                                    {errors.opt_params}
+                                                </Typography>
+                                            )}
                                             <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
                                                 <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: { xs: 1.5, sm: 2 }, alignItems: 'flex-start' }}>
                                                     {OPTIMIZE_PRESETS.map((p) => {
@@ -399,24 +407,6 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ activeTab = 'backtest' }) => 
                                                         );
                                                     })}
                                                 </Box>
-                                            </Box>
-                                        </Box>
-                                    )}
-                                    {(config.run_mode === 'walk_forward') && (
-                                        <Box sx={{ mt: 1.5 }}>
-                                            <Typography variant="caption" component="div" sx={{ mb: 1.5, color: 'text.secondary', lineHeight: 1.6 }}>
-                                                {TOOLTIP_HINTS.run_mode_walk_forward}
-                                            </Typography>
-                                            <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
-                                                <MuiTooltip title={TOOLTIP_HINTS.wf_train_months} arrow placement="top">
-                                                    <span><TextField size="small" label="Train" type="number" value={config.wf_train_months ?? 6} onChange={e => handleConfigChange('wf_train_months', parseInt(e.target.value, 10) || 6)} sx={{ width: 70 }} inputProps={{ min: 1, max: 24 }} /></span>
-                                                </MuiTooltip>
-                                                <MuiTooltip title={TOOLTIP_HINTS.wf_test_months} arrow placement="top">
-                                                    <span><TextField size="small" label="Test" type="number" value={config.wf_test_months ?? 1} onChange={e => handleConfigChange('wf_test_months', parseInt(e.target.value, 10) || 1)} sx={{ width: 70 }} inputProps={{ min: 1, max: 12 }} /></span>
-                                                </MuiTooltip>
-                                                <MuiTooltip title={TOOLTIP_HINTS.wf_step_months} arrow placement="top">
-                                                    <span><TextField size="small" label="Step" type="number" value={config.wf_step_months ?? 1} onChange={e => handleConfigChange('wf_step_months', parseInt(e.target.value, 10) || 1)} sx={{ width: 70 }} inputProps={{ min: 1, max: 12 }} /></span>
-                                                </MuiTooltip>
                                             </Box>
                                         </Box>
                                     )}

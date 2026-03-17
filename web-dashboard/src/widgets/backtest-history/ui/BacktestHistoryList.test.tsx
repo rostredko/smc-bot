@@ -153,7 +153,7 @@ describe('BacktestHistoryList', () => {
                 {
                     filename: 'opt-run.json',
                     timestamp: '2026-03-17T14:25:00Z',
-                    strategy: 'Optimize (2 variants)',
+                    strategy: 'bt_price_action',
                     is_optimization_batch: true,
                     variants_count: 2,
                     total_pnl: 116.27,
@@ -199,10 +199,10 @@ describe('BacktestHistoryList', () => {
         render(<BacktestHistoryList />);
 
         await waitFor(() => {
-            expect(screen.getByText('Optimize (2 variants)')).toBeInTheDocument();
+            expect(screen.getByText('bt_price_action (2 variants)')).toBeInTheDocument();
         });
 
-        fireEvent.click(screen.getByText('Optimize (2 variants)'));
+        fireEvent.click(screen.getByText('bt_price_action (2 variants)'));
 
         expect(fetchDetailedResultsMock).toHaveBeenCalledWith('opt-run.json');
 

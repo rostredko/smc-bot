@@ -26,13 +26,10 @@ export interface BacktestConfig {
     maker_fee_bps?: number;
     taker_fee_bps?: number;
     fee_source?: string;
-    run_mode?: 'single' | 'optimize' | 'walk_forward';
+    run_mode?: 'single' | 'optimize';
     opt_params?: Record<string, number[]>;
     opt_timeframes?: { primary: string[]; secondary: string[] };
     opt_target_metric?: 'sharpe_ratio' | 'profit_factor';
-    wf_train_months?: number;
-    wf_test_months?: number;
-    wf_step_months?: number;
 }
 
 export interface BacktestStatus {

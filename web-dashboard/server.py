@@ -566,8 +566,7 @@ def _config_to_flat(config: Dict[str, Any]) -> Dict[str, Any]:
     if "taker_fee" in config:
         flat["taker_fee"] = config.get("taker_fee")
     # Preserve run_mode and opt params when flattening (e.g. bearish_tactical_preset_2026_q1_optimize)
-    for key in ("run_mode", "opt_params", "opt_target_metric", "opt_timeframes",
-                 "wf_train_months", "wf_test_months", "wf_step_months", "loaded_template_name"):
+    for key in ("run_mode", "opt_params", "opt_target_metric", "opt_timeframes", "loaded_template_name"):
         if key in config:
             flat[key] = config[key]
     return _normalize_exchange_fields(flat)
@@ -750,7 +749,10 @@ async def start_backtest(request: BacktestRequest, background_tasks: BackgroundT
     
     if run_id in running_backtests:
         raise HTTPException(status_code=400, detail=f"Backtest {run_id} is already running")
-    
+
+    run_mode = (request.config.run_mode or "single").strip().lower()
+    if run_mode == "optimize":
+        _validate_optimize_params(request.config.opt_params)
     if len(running_backtests) > 20:
         for k in list(running_backtests.keys())[:-20]:
             del running_backtests[k]
@@ -1215,6 +1217,47 @@ async def run_live_trading_task(run_id: str, config: Dict[str, Any]):
 
 
 
+OPT_KEYS = frozenset({"risk_reward_ratio", "sl_buffer_atr", "trailing_stop_distance"})
+
+
+def _validate_optimize_params(opt_params: Optional[Dict[str, Any]]) -> None:
+    """Raise HTTPException if optimize mode requires all 3 params with 3 values each (27 runs)."""
+    if not opt_params:
+        raise HTTPException(
+            status_code=400,
+            detail="Optimize requires all 3 params: risk_reward_ratio, sl_buffer_atr, trailing_stop_distance (3 values each = 27 runs)",
+        )
+    missing = OPT_KEYS - set(opt_params.keys())
+    if missing:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Optimize requires all 3 params. Missing: {', '.join(sorted(missing))}. Need 3 values each = 27 runs.",
+        )
+    for key in OPT_KEYS:
+        arr = opt_params.get(key)
+        if not isinstance(arr, (list, tuple)) or len(arr) != 3:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Optimize param '{key}' must have exactly 3 values. Got {len(arr) if isinstance(arr, (list, tuple)) else 'non-list'}.",
+            )
+        for i, v in enumerate(arr):
+            try:
+                x = float(v)
+                if not (x == x and abs(x) != float("inf")):
+                    raise ValueError("nan/inf")
+            except (TypeError, ValueError):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Optimize param '{key}' value {i + 1} must be a valid number.",
+                )
+        if key == "sl_buffer_atr" and any(float(v) <= 0 for v in arr):
+            raise HTTPException(status_code=400, detail="sl_buffer_atr must be > 0")
+        if key == "risk_reward_ratio" and any(float(v) < 0 for v in arr):
+            raise HTTPException(status_code=400, detail="risk_reward_ratio must be >= 0")
+        if key == "trailing_stop_distance" and any(float(v) < 0 for v in arr):
+            raise HTTPException(status_code=400, detail="trailing_stop_distance must be >= 0")
+
+
 def _count_opt_combos(opt_params: Dict[str, Any]) -> int:
     """Return product of param list lengths for grid search size."""
     if not opt_params:
@@ -1325,9 +1368,6 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
             'opt_params': config.get('opt_params') or {},
             'opt_timeframes': config.get('opt_timeframes'),
             'opt_target_metric': config.get('opt_target_metric', 'sharpe_ratio'),
-            'wf_train_months': int(config.get('wf_train_months', 6)),
-            'wf_test_months': int(config.get('wf_test_months', 1)),
-            'wf_step_months': int(config.get('wf_step_months', 1)),
         }
         if config.get('loaded_template_name'):
             engine_config['loaded_template_name'] = config['loaded_template_name']
@@ -1463,7 +1503,7 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
                     running_backtests[run_id].message = "Cancellation acknowledged before run start. Finalizing partial results..."
                     logger.info("Cancellation requested before execution. Preparing partial results...")
 
-                if run_mode != 'optimize' and run_mode != 'walk_forward':
+                if run_mode != 'optimize':
                     engine.add_strategy(strategy_class, **st_config)
 
                 if running_backtests[run_id].should_cancel and not engine.should_cancel:
@@ -1502,18 +1542,6 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
                             await heartbeat_task
                         except asyncio.CancelledError:
                             pass
-                elif run_mode == 'walk_forward':
-                    logger.info("Starting engine.run_backtest_walk_forward()...")
-                    metrics = await loop.run_in_executor(
-                        None,
-                        lambda: engine.run_backtest_walk_forward(
-                            strategy_class,
-                            st_config,
-                            engine_config.get('wf_train_months', 6),
-                            engine_config.get('wf_test_months', 1),
-                            engine_config.get('wf_step_months', 1),
-                        ),
-                    )
                 else:
                     logger.info("Starting engine.run_backtest()...")
                     metrics = await loop.run_in_executor(None, engine.run_backtest)
@@ -1570,10 +1598,6 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
                         equity_data=equity_data,
                         signals_generated=signal_counter.count,
                     )
-                    if run_mode == 'walk_forward':
-                        mapped_metrics["run_mode"] = "walk_forward"
-                        mapped_metrics["windows"] = metrics.get("windows", [])
-                
                 mapped_metrics["cancelled"] = cancel_requested
                 attach_run_log_metadata(mapped_metrics, run_log_collector, run_log_path)
                 

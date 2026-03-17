@@ -6,7 +6,7 @@ import {
 } from '@mui/material';
 import {
     KeyboardArrowDown, KeyboardArrowUp, History, NavigateBefore, NavigateNext,
-    FirstPage, LastPage, DeleteOutline, FileCopyOutlined, ArrowUpward, ArrowDownward, ContentCopy
+    FirstPage, LastPage, DeleteOutline, FileCopyOutlined, ArrowUpward, ArrowDownward, ContentCopy, Refresh
 } from '@mui/icons-material';
 
 import { BacktestSummary } from '../model/types';
@@ -66,7 +66,7 @@ const formatLiveDuration = (mins: number | null | undefined): string => {
 };
 
 const BacktestHistoryList: React.FC = () => {
-    const { loadUserConfigs, isLiveRunning, isLiveStopping } = useConfigContext();
+    const { loadUserConfigs, isLiveRunning, isLiveStopping, isRunning } = useConfigContext();
     const { backtestStatus } = useResultsContext();
     const [history, setHistory] = useState<BacktestSummary[]>([]);
     const [openRows, setOpenRows] = useState<Record<string, boolean>>({});
@@ -85,6 +85,7 @@ const BacktestHistoryList: React.FC = () => {
     const [expandedForChart, setExpandedForChart] = useState<Record<string, boolean>>({});
     const lastHistorySyncRunRef = useRef<string>('');
     const prevLiveBusyRef = useRef<boolean>(false);
+    const prevBacktestRunRef = useRef<boolean>(false);
 
     const loadData = useCallback(async (currentPage: number = 1, field?: string, direction?: 'asc' | 'desc') => {
         setLoading(true);
@@ -113,6 +114,7 @@ const BacktestHistoryList: React.FC = () => {
         setExpandedForChart({});
     }, [page]);
 
+    // Refresh history when backtest completes or is cancelled (from status update)
     useEffect(() => {
         const runId = backtestStatus?.run_id;
         const status = backtestStatus?.status;
@@ -123,12 +125,30 @@ const BacktestHistoryList: React.FC = () => {
         if (lastHistorySyncRunRef.current === syncKey) return;
         lastHistorySyncRunRef.current = syncKey;
 
-        if (page !== 1) {
-            setPage(1);
-            return;
-        }
-        loadData(1);
+        const delay = page !== 1 ? 100 : 500;
+        const t1 = setTimeout(() => loadData(1), delay);
+        // Retry after 1.5s in case MongoDB write was slow
+        const t2 = setTimeout(() => loadData(1), delay + 1500);
+        return () => {
+            clearTimeout(t1);
+            clearTimeout(t2);
+        };
     }, [backtestStatus?.run_id, backtestStatus?.status, page, loadData]);
+
+    // Refresh history when backtest stops (isRunning: true -> false) — catches stop + completion even if status update missed
+    useEffect(() => {
+        const wasRunning = prevBacktestRunRef.current;
+        prevBacktestRunRef.current = isRunning;
+        if (!wasRunning || isRunning) return;
+
+        if (page !== 1) setPage(1);
+        const t1 = setTimeout(() => loadData(1), 300);
+        const t2 = setTimeout(() => loadData(1), 1800);
+        return () => {
+            clearTimeout(t1);
+            clearTimeout(t2);
+        };
+    }, [isRunning, page, loadData]);
 
     useEffect(() => {
         const isLiveBusy = isLiveRunning || isLiveStopping;
@@ -326,15 +346,20 @@ const BacktestHistoryList: React.FC = () => {
         <Card sx={{ mt: 3 }}>
             <CardHeader
                 title={
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                        <History />
-                        <Typography variant="h6">Recent Backtests</Typography>
+                    <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', flexWrap: 'wrap', gap: 1 }}>
+                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                            <History />
+                            <Typography variant="h6">History</Typography>
+                            <Typography variant="body2" color="text.secondary" sx={{ ml: 0.5 }}>
+                                {totalCount > 0 ? `${totalCount} runs stored in history` : 'No runs stored yet'}
+                            </Typography>
+                        </Box>
+                        <Tooltip title="Refresh list">
+                            <IconButton size="small" onClick={() => loadData(page)} disabled={loading}>
+                                <Refresh fontSize="small" />
+                            </IconButton>
+                        </Tooltip>
                     </Box>
-                }
-                subheader={
-                    <Typography variant="body2" color="text.secondary">
-                        {totalCount > 0 ? `${totalCount} runs stored in history` : 'No runs stored yet'}
-                    </Typography>
                 }
             />
             <CardContent sx={{ overflowX: 'auto', px: { xs: 1, sm: 2 } }}>
@@ -417,10 +442,9 @@ const BacktestHistoryList: React.FC = () => {
                                                 <TableCell component="th" scope="row">{formatDate(item.timestamp)}</TableCell>
                                                 <TableCell sx={{ minWidth: { xs: 100, sm: 120 } }}>
                                                     <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap', minWidth: 0 }}>
-                                                        <span style={{ wordBreak: 'break-word' }}>{item.is_optimization_batch ? `Optimize (${item.variants_count ?? 0} variants)` : item.strategy}</span>
+                                                        <span style={{ wordBreak: 'break-word' }}>{item.is_optimization_batch ? `${item.strategy} (${item.variants_count ?? 0} variants)` : item.strategy}</span>
                                                         {item.is_live && <Chip label="LIVE" size="small" color="secondary" sx={{ height: 20, fontSize: '0.65rem', flexShrink: 0 }} />}
                                                         {item.is_optimization_batch && <Chip label="OPTIMIZE" size="small" color="info" sx={{ height: 20, fontSize: '0.65rem', flexShrink: 0 }} />}
-                                                        {item.run_mode === 'walk_forward' && <Chip label="WF" size="small" variant="outlined" sx={{ height: 20, fontSize: '0.65rem', flexShrink: 0 }} />}
                                                     </Box>
                                                 </TableCell>
                                                 <TableCell>
@@ -533,37 +557,6 @@ const BacktestHistoryList: React.FC = () => {
                                                                         </Table>
                                                                     </TableContainer>
                                                                     {detailedResults[item.filename].variants.length > 30 && <Typography variant="caption">Showing top 30 of {detailedResults[item.filename].variants.length}</Typography>}
-                                                                </Box>
-                                                            )}
-                                                            {item.run_mode === 'walk_forward' && Array.isArray(item.windows) && item.windows.length > 0 && (
-                                                                <Box sx={{ mb: 3 }}>
-                                                                    <Typography variant="subtitle2" gutterBottom>Walk-Forward Windows</Typography>
-                                                                    <TableContainer sx={{ maxHeight: 200, mb: 2 }}>
-                                                                        <Table size="small">
-                                                                            <TableHead>
-                                                                                <TableRow>
-                                                                                    <TableCell>Window</TableCell>
-                                                                                    <TableCell>Sharpe</TableCell>
-                                                                                    <TableCell>PF</TableCell>
-                                                                                    <TableCell>Max DD</TableCell>
-                                                                                    <TableCell>Trades</TableCell>
-                                                                                    <TableCell>PnL</TableCell>
-                                                                                </TableRow>
-                                                                            </TableHead>
-                                                                            <TableBody>
-                                                                                {item.windows.map((w: any, i: number) => (
-                                                                                    <TableRow key={i}>
-                                                                                        <TableCell>{w.window_start} - {w.window_end}</TableCell>
-                                                                                        <TableCell>{w.sharpe_ratio?.toFixed(2) ?? '-'}</TableCell>
-                                                                                        <TableCell>{w.profit_factor?.toFixed(2) ?? '-'}</TableCell>
-                                                                                        <TableCell>{w.max_drawdown?.toFixed(2) ?? '-'}%</TableCell>
-                                                                                        <TableCell>{w.total_trades ?? '-'}</TableCell>
-                                                                                        <TableCell>${w.total_pnl?.toFixed(2) ?? '-'}</TableCell>
-                                                                                    </TableRow>
-                                                                                ))}
-                                                                            </TableBody>
-                                                                        </Table>
-                                                                    </TableContainer>
                                                                 </Box>
                                                             )}
                                                             <Box sx={{ display: 'flex', gap: 4, mb: 2, flexWrap: 'wrap' }}>
@@ -726,7 +719,7 @@ const BacktestHistoryList: React.FC = () => {
                 <Dialog open={deleteDialogOpen} onClose={() => setDeleteDialogOpen(false)} PaperProps={{ sx: { bgcolor: '#1e1e1e', color: '#fff' } }}>
                     <DialogTitle sx={{ borderBottom: '1px solid #333' }}>Confirm Deletion</DialogTitle>
                     <DialogContent sx={{ mt: 2 }}>
-                        <DialogContentText sx={{ color: '#aaa' }}>Are you sure you want to delete this backtest result? This action cannot be undone.</DialogContentText>
+                        <DialogContentText sx={{ color: '#aaa' }}>Are you sure you want to delete this run? This action cannot be undone.</DialogContentText>
                     </DialogContent>
                     <DialogActions sx={{ borderTop: '1px solid #333', p: 2 }}>
                         <Button onClick={() => setDeleteDialogOpen(false)} sx={{ color: '#aaa' }}>Cancel</Button>

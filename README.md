@@ -131,7 +131,7 @@ Testing helper:
 ## Documentation
 
 - Full technical map: [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md)
-- Backtest run modes (Single, Optimize, Walk-Forward): [docs/BACKTEST_RUN_MODES.md](docs/BACKTEST_RUN_MODES.md)
+- Backtest run modes (Single, Optimize): [docs/BACKTEST_RUN_MODES.md](docs/BACKTEST_RUN_MODES.md)
 
 ## Disclaimer
 

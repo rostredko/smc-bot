@@ -38,7 +38,7 @@ export const deleteBacktestHistory = async (filename: string) => {
         method: 'DELETE',
     });
     if (!response.ok) {
-        throw new Error(`Failed to delete backtest: HTTP ${response.status}`);
+        throw new Error(`Failed to delete run: HTTP ${response.status}`);
     }
     return response;
 };

@@ -36,13 +36,10 @@ class BacktestConfig(BaseModel):
     funding_interval_hours: int = 8
     log_level: str = "INFO"
     live_output_log_level: str = "INFO"
-    run_mode: str = "single"  # "single" | "optimize" | "walk_forward"
+    run_mode: str = "single"  # "single" | "optimize"
     opt_params: Optional[Dict[str, Any]] = None  # e.g. {"risk_reward_ratio": [1.5, 2.0, 2.5]}
     opt_timeframes: Optional[Dict[str, list]] = None  # {"primary": ["4h","1h"], "secondary": ["15m","5m"]}
     opt_target_metric: str = "sharpe_ratio"  # "sharpe_ratio" | "profit_factor"
-    wf_train_months: int = 6
-    wf_test_months: int = 1
-    wf_step_months: int = 1
 
 
 class BacktestRequest(BaseModel):

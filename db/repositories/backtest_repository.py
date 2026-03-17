@@ -118,7 +118,6 @@ class BacktestRepository:
                     "run_mode": doc.get("run_mode", "single"),
                     "is_optimization_batch": doc.get("is_optimization_batch", False),
                     "variants_count": doc.get("variants_count", 0),
-                    "windows": doc.get("windows", []),
                 }
             )
         return history, total

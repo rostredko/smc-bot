@@ -23,9 +23,8 @@ export interface BacktestSummary {
     session_start?: string;
     session_end?: string;
     session_duration_mins?: number;
-    // Optimization / Walk-Forward
-    run_mode?: 'single' | 'optimize' | 'walk_forward';
+    // Optimization
+    run_mode?: 'single' | 'optimize';
     is_optimization_batch?: boolean;
     variants_count?: number;
-    windows?: Array<{ window_start: string; window_end: string; sharpe_ratio?: number; profit_factor?: number; max_drawdown?: number; total_trades?: number; win_rate?: number; total_pnl?: number }>;
 }

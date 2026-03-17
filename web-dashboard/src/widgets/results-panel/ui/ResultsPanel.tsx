@@ -1,11 +1,10 @@
-import React, { useMemo, useCallback, useState } from 'react';
-import { Card, CardHeader, CardContent, Grid, Paper, Typography, TableContainer, Table, TableHead, TableRow, TableCell, TableBody, Button, IconButton, Tooltip as MuiTooltip, Dialog, DialogTitle, DialogContent, DialogContentText, DialogActions, TextField } from '@mui/material';
+import React, { useMemo, useCallback, useState, lazy, Suspense } from 'react';
+import { Box, Card, CardHeader, CardContent, Grid, Paper, Typography, TableContainer, Table, TableHead, TableRow, TableCell, TableBody, Button, IconButton, Tooltip as MuiTooltip, Dialog, DialogTitle, DialogContent, DialogContentText, DialogActions, TextField } from '@mui/material';
 import { FileCopyOutlined, ContentCopy } from '@mui/icons-material';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
 import { useResultsContext } from '../../../app/providers/results/ResultsProvider';
 import { CustomTooltip, CustomPieTooltip } from '../../../shared/ui/ChartTooltips';
 import { formatVariantParamsShort, variantParamsToTemplateName } from '../../../shared/lib/formatVariantParams';
-import { lazy, Suspense } from 'react';
 import TradeAnalysisChart from '../../../entities/trade/ui/TradeAnalysisChart';
 const TradeDetailsModal = lazy(() => import('../../../features/trade-details/ui/TradeDetailsModal'));
 
@@ -297,7 +296,7 @@ const ResultsPanel: React.FC = () => {
             </Suspense>
 
 
-            {/* Performance Metrics - skip for optimize (variants table shown instead) */}
+            {/* Performance Metrics */}
             {!isOptimization && (
             <Grid item xs={12} mt={3}>
                 <Card>
@@ -366,7 +365,7 @@ const ResultsPanel: React.FC = () => {
             </Grid>
             )}
 
-            {/* Charts - skip for optimize */}
+            {/* Charts */}
             {!isOptimization && (
             <Grid item xs={12} mt={3}>
                 <Grid container spacing={3}>
@@ -391,20 +390,11 @@ const ResultsPanel: React.FC = () => {
             </Grid>
             )}
 
-            {/* Trade Analysis - skip for optimize */}
+            {/* Trade Analysis */}
             {!isOptimization && (
             <Grid item xs={12} mt={3}>
                 <Card>
-                    <CardHeader
-                        title="Trade Analysis"
-                        action={
-                            <MuiTooltip title="Copy results (trades) to JSON">
-                                <IconButton onClick={handleCopyResultsToJson} size="small" color="primary">
-                                    <ContentCopy />
-                                </IconButton>
-                            </MuiTooltip>
-                        }
-                    />
+                    <CardHeader title="Trade Analysis" />
                     <CardContent>
                         <TradeAnalysisChart trades={results.trades || []} onTradeClick={handleBarClick} />
                     </CardContent>
@@ -412,7 +402,7 @@ const ResultsPanel: React.FC = () => {
             </Grid>
             )}
 
-            {/* Detailed Results Table - skip for optimize */}
+            {/* Detailed Results Table */}
             {!isOptimization && (
             <Grid item xs={12} mt={3}>
                 <Card>

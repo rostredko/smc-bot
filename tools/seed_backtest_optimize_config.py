@@ -19,7 +19,7 @@ from db.repositories import UserConfigRepository
 CONFIG_NAME = "backtest_optimize_quick_test"
 
 # Jan 2026 - today for test trades, optimize mode, 3 params × 3 values = 27 combos
-# 1h+15m for more bars; relaxed filters for signals
+# Wide param ranges so all 27 runs produce visibly different results
 CONFIG = {
     "initial_capital": 10000,
     "risk_per_trade": 1.5,
@@ -35,7 +35,7 @@ CONFIG = {
     "strategy": "bt_price_action",
     "strategy_config": {
         "risk_reward_ratio": 2.0,
-        "sl_buffer_atr": 1.3,
+        "sl_buffer_atr": 1.5,
         "trailing_stop_distance": 0.0,
         "use_trend_filter": False,
         "use_rsi_filter": False,
@@ -58,9 +58,9 @@ CONFIG = {
     "funding_interval_hours": 8,
     "run_mode": "optimize",
     "opt_params": {
-        "risk_reward_ratio": [1.5, 2.0, 2.5],
-        "sl_buffer_atr": [1.0, 1.3, 1.5],
-        "trailing_stop_distance": [0, 0.01, 0.02],
+        "risk_reward_ratio": [1.0, 2.5, 4.0],
+        "sl_buffer_atr": [0.8, 1.5, 2.2],
+        "trailing_stop_distance": [0, 0.03, 0.08],
     },
     "opt_target_metric": "sharpe_ratio",
 }

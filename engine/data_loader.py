@@ -323,29 +323,61 @@ class DataLoader:
         return all_data
 
     def _upsert_bars_to_db(self, symbol: str, timeframe: str, bars: List[List[Any]]) -> None:
-        """Store fetched OHLCV bars in DB cache."""
+        """Store fetched OHLCV bars in DB cache via bulk_write (faster than per-bar update_one)."""
         if self._cache_collection is None or not bars:
             return
+
+        from pymongo import UpdateOne
 
         identity = self._cache_identity(symbol, timeframe)
         cached_at = datetime.now(timezone.utc)
 
-        for bar in bars:
-            ts = int(bar[0])
-            self._cache_collection.update_one(
-                {**identity, "timestamp": ts},
-                {
-                    "$set": {
-                        "open": float(bar[1]),
-                        "high": float(bar[2]),
-                        "low": float(bar[3]),
-                        "close": float(bar[4]),
-                        "volume": float(bar[5]),
-                        "cached_at": cached_at,
-                    }
-                },
-                upsert=True,
-            )
+        def _do_bulk(chunk: List[List[Any]]) -> bool:
+            operations = [
+                UpdateOne(
+                    {**identity, "timestamp": int(bar[0])},
+                    {
+                        "$set": {
+                            "open": float(bar[1]),
+                            "high": float(bar[2]),
+                            "low": float(bar[3]),
+                            "close": float(bar[4]),
+                            "volume": float(bar[5]),
+                            "cached_at": cached_at,
+                        }
+                    },
+                    upsert=True,
+                )
+                for bar in chunk
+            ]
+            try:
+                self._cache_collection.bulk_write(operations, ordered=False)
+                return True
+            except TypeError as e:
+                if "sort" in str(e) or "unexpected keyword" in str(e).lower():
+                    return False
+                raise
+
+        chunk_size = 1000
+        for i in range(0, len(bars), chunk_size):
+            chunk = bars[i : i + chunk_size]
+            if not _do_bulk(chunk):
+                for bar in chunk:
+                    ts = int(bar[0])
+                    self._cache_collection.update_one(
+                        {**identity, "timestamp": ts},
+                        {
+                            "$set": {
+                                "open": float(bar[1]),
+                                "high": float(bar[2]),
+                                "low": float(bar[3]),
+                                "close": float(bar[4]),
+                                "volume": float(bar[5]),
+                                "cached_at": cached_at,
+                            }
+                        },
+                        upsert=True,
+                    )
 
     def _docs_to_dataframe(self, docs: List[Dict[str, Any]]) -> pd.DataFrame:
         """Convert cached DB docs into an OHLCV dataframe."""
@@ -369,6 +401,15 @@ class DataLoader:
         cached_docs = self._load_cached_docs(symbol, timeframe, start_ts, end_ts)
         cached_timestamps = [int(doc["timestamp"]) for doc in cached_docs if "timestamp" in doc]
         missing_ranges = self._find_missing_ranges(cached_timestamps, start_ts, end_ts, timeframe_ms)
+
+        if cached_docs:
+            self._log_operational(
+                f"{symbol} {timeframe}: {len(cached_docs)} bars from DB cache, {len(missing_ranges)} gap(s) to fetch"
+            )
+        elif missing_ranges:
+            self._log_operational(
+                f"{symbol} {timeframe}: cache empty, fetching {len(missing_ranges)} range(s)"
+            )
 
         fetched_total = 0
         for gap_start, gap_end in missing_ranges:
@@ -409,9 +450,16 @@ class DataLoader:
 
     def _fetch_ohlcv_with_file_cache(self, symbol: str, timeframe: str, start_date: str, end_date: str) -> pd.DataFrame:
         """Legacy exact-range CSV cache fallback when DB cache is unavailable."""
+        self._log_operational(f"Using file cache (MongoDB OHLCV cache unavailable)")
         cache_file = self._get_cache_file(symbol, timeframe, start_date, end_date)
         if os.path.exists(cache_file):
             file_age_days = (time.time() - os.path.getmtime(cache_file)) / (24 * 3600)
+            end_dt = self._to_utc_naive(end_date)
+            recent_cutoff_naive = (datetime.now(timezone.utc) - timedelta(days=self.max_cache_age_days)).replace(tzinfo=None)
+            is_historical_only = end_dt < recent_cutoff_naive
+            if is_historical_only:
+                self._log_operational(f"Loading cached data from {cache_file} (historical range, age: {file_age_days:.1f} days)")
+                return pd.read_csv(cache_file, index_col=0, parse_dates=True)
             if file_age_days > self.max_cache_age_days:
                 self._log_operational(
                     f"Cache file {cache_file} is {file_age_days:.1f} days old "

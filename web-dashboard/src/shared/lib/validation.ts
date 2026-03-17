@@ -120,29 +120,34 @@ const validateCoreConfig = (
         newErrors['trailing_stop_distance'] = "Must be ≥ 0";
     }
 
-    // Optimize params validation (when run_mode is optimize)
+    // Optimize params validation (when run_mode is optimize) — require exactly 3 params, 3 values each (27 runs)
     const optKeys = ["risk_reward_ratio", "sl_buffer_atr", "trailing_stop_distance"];
-    if (config.run_mode === "optimize" && config.opt_params) {
-        for (const key of optKeys) {
-            const arr = config.opt_params[key];
-            if (!Array.isArray(arr) || arr.length !== 3) continue;
-            for (let i = 0; i < 3; i++) {
-                const v = parseFloat(String(arr[i]));
-                if (isNaN(v) || !Number.isFinite(v)) {
-                    newErrors[`opt_${key}`] = "Invalid number";
-                    break;
-                }
-                if (key === "risk_reward_ratio" && v < 0) {
-                    newErrors[`opt_${key}`] = "Risk:Reward must be ≥ 0";
-                    break;
-                }
-                if (key === "sl_buffer_atr" && v <= 0) {
-                    newErrors[`opt_${key}`] = "SL Buffer must be > 0";
-                    break;
-                }
-                if (key === "trailing_stop_distance" && v < 0) {
-                    newErrors[`opt_${key}`] = "Trailing Stop must be ≥ 0";
-                    break;
+    if (config.run_mode === "optimize") {
+        const optParams = config.opt_params || {};
+        const missingKeys = optKeys.filter((k) => !Array.isArray(optParams[k]) || optParams[k].length !== 3);
+        if (missingKeys.length > 0) {
+            newErrors["opt_params"] = "Optimize requires all 3 params: Risk:Reward, SL Buffer, Trailing Stop Distance (3 values each = 27 runs)";
+        } else {
+            for (const key of optKeys) {
+                const arr = optParams[key];
+                for (let i = 0; i < 3; i++) {
+                    const v = parseFloat(String(arr[i]));
+                    if (isNaN(v) || !Number.isFinite(v)) {
+                        newErrors[`opt_${key}`] = "Invalid number";
+                        break;
+                    }
+                    if (key === "risk_reward_ratio" && v < 0) {
+                        newErrors[`opt_${key}`] = "Risk:Reward must be ≥ 0";
+                        break;
+                    }
+                    if (key === "sl_buffer_atr" && v <= 0) {
+                        newErrors[`opt_${key}`] = "SL Buffer must be > 0";
+                        break;
+                    }
+                    if (key === "trailing_stop_distance" && v < 0) {
+                        newErrors[`opt_${key}`] = "Trailing Stop must be ≥ 0";
+                        break;
+                    }
                 }
             }
         }
