@@ -23,12 +23,12 @@ Crypto **backtesting** and **paper live** trading: Backtrader execution engine, 
 ## How to work (HOW)
 
 1. **Onboard by reading** [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md) when touching architecture, API, or persistence.
-2. **Progressive disclosure**—open only what matches the task under [agent_docs/](agent_docs/):
+2. **Follow the development workflow** — [agent_docs/development_workflow.md](agent_docs/development_workflow.md).
+3. **Progressive disclosure**—open only what matches the task under [agent_docs/](agent_docs/):
   - [agent_docs/building_and_docker.md](agent_docs/building_and_docker.md)
   - [agent_docs/running_tests.md](agent_docs/running_tests.md)
   - [agent_docs/api_and_architecture.md](agent_docs/api_and_architecture.md)
-3. **Do not restate linter policy**—use **Ruff** (`pyproject.toml`) and **ESLint** in `web-dashboard/`. Fix issues with tools, not prose.
-4. **Verify before claiming done:** from repo root: `python -m pytest -q` (set `PYTHONPATH=.` if needed); frontend: `cd web-dashboard && npm run test -- --run && npm run lint && npm run build`.
+4. **Do not restate linter policy**—use **Ruff** (`pyproject.toml`) and **ESLint** in `web-dashboard/`. Fix issues with tools, not prose.
 5. **Commit policy:** agents must not create, amend, or rewrite commits. Prepare changes and verification, but leave every commit to the user.
 
 ## Runtime & ports (local)
@@ -48,12 +48,6 @@ Crypto **backtesting** and **paper live** trading: Backtrader execution engine, 
 - **Observability:** logging via `engine/logger.py`; dashboard log stream uses `api/logging_handlers.py` and `WS /ws`—preserve attach/detach patterns when changing runs.
 - **Safe defaults:** live path is **paper** (`execution_mode`); do not assume real-money execution exists.
 - **Human gates:** destructive deletes and long optimize runs should stay behind existing API checks and user intent—not silent automation.
-
-## Engineering principles
-
-- Premature complexity is ego disguised as architecture.
-- Build fast, iterate; DRY and KISS; stub/fake until real integrations are needed.
-- Prefer small, test-backed changes over wide refactors unless asked.
 
 ## Related docs
 

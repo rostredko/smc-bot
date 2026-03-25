@@ -1,6 +1,6 @@
 # Technical Debt Report
 
-Current snapshot: 2026-03-25
+Current snapshot: 2026-03-26 (engine layer review added)
 
 This document is the current technical debt register and execution roadmap for `smc-bot`. It is intentionally implementation-oriented: it records the main debt items, explains the underlying architectural causes, and lays out a safe five-phase plan to reduce risk without breaking working behavior.
 
@@ -39,7 +39,8 @@ Current module sizes in the main hotspot areas:
 |--------|--------------|----------------|
 | [`web-dashboard/server.py`](../web-dashboard/server.py) | 2476 lines | Concentrates routes, orchestration, lifecycle, OHLCV, cache, and chart enrichment |
 | [`strategies/bt_price_action.py`](../strategies/bt_price_action.py) | 1287 lines | Concentrates signal logic, filters, SL/TP logic, trigger state, and metadata shaping |
-| [`engine/bt_backtest_engine.py`](../engine/bt_backtest_engine.py) | 546 lines | Owns data loading, analyzers, metrics normalization, optimization, and forced close behavior |
+| [`engine/bt_backtest_engine.py`](../engine/bt_backtest_engine.py) | 547 lines | Owns data loading, analyzers, metrics normalization, optimization, and forced close behavior |
+| [`engine/data_loader.py`](../engine/data_loader.py) | 650 lines | Mixes exchange client, CSV/DB cache strategy, rate limiting, and data transformation |
 | [`web-dashboard/src/app/providers/config/ConfigProvider.tsx`](../web-dashboard/src/app/providers/config/ConfigProvider.tsx) | 541 lines | Concentrates config loading, validation, persistence, and command side effects |
 | [`strategies/base_strategy.py`](../strategies/base_strategy.py) | 436 lines | Concentrates order lifecycle, OCO, trailing, funding, and drawdown logic |
 | [`engine/bt_live_engine.py`](../engine/bt_live_engine.py) | 232 lines | Lifecycle and threading surface for live-paper execution |
@@ -107,6 +108,17 @@ The debt program should follow these rules:
 | `TD-09` | `P2` | Strategy discovery hides import failures | [`web-dashboard/services/strategy_runtime.py`](../web-dashboard/services/strategy_runtime.py) silently skips import errors | structured diagnostics with non-crashing failure visibility | Phase 1 |
 | `TD-10` | `P3` | Toolchain and verification are not pinned tightly enough | local Node drift vs CI; Python command ambiguity | reproducible local verification path aligned with CI | Phase 1 and Phase 5 |
 | `TD-11` | `P3` | Docs had historical reviews but no current execution register | historical reports existed, but no current roadmap | this file becomes the maintained source for debt status and order of work | Phase 1 |
+| `TD-12` | `P2` | `safe_float` is duplicated across engine modules | `engine/utils.py:4` and `engine/trade_metrics.py:6` define identical functions | one canonical `safe_float` used everywhere | Phase 4 |
+| `TD-13` | `P2` | `_safe_max_drawdown` is copy-pasted between engines | identical method at `bt_backtest_engine.py:534` and `bt_live_engine.py:218` | promote to `BaseEngine` | Phase 4 |
+| `TD-14` | `P2` | Analyzer setup is repeated verbatim in backtest and optimize paths | 6 `addanalyzer` + 1 `addobserver` calls duplicated in `bt_backtest_engine.py:154-161` and `270-277` | extract to `BaseEngine._setup_analyzers()` | Phase 4 |
+| `TD-15` | `P2` | `DataLoader` mixes four concerns in one 650-line file | exchange init, rate-limiting, CSV-cache, DB-cache, and transformation all in `engine/data_loader.py` | split into `exchange_client`, `data_cache`, and a thin coordinator | Phase 3 |
+| `TD-16` | `P2` | Optimize progress context uses unguarded module-level globals | `engine/optimize_context.py:8-11` — `_log_opt_progress` and `_opt_total_combos` mutated without a lock; unsafe if concurrent optimizations ever run | replace with a context object or fully lock all globals | Phase 4 |
+| `TD-17` | `P3` | Dead code in `BaseEngine` and `BTBacktestEngine` | `MockLogger` (never used), `_setup_sizers` (empty pass), `_ordered_timeframes` (trivial delegate), `_calculate_win_rate`/`_calculate_profit_factor` (never called) | remove | Phase 4 |
+| `TD-18` | `P3` | `BaseLiveStreamClient` does not use ABC | `engine/live_ws_client.py:32` — raises `NotImplementedError` manually; `SUPPORTED_LIVE_EXCHANGES` constant is declared but never validated | switch to `abc.ABC` + `@abstractmethod`; enforce at factory | Phase 4 |
+| `TD-19` | `P3` | `_build_forced_final_close_record` is 80 lines doing five things | `engine/bt_backtest_engine.py:431` — datetime normalization, slippage, commission, PnL calc, and dict building in one method | split into smaller helpers | Phase 4 |
+| `TD-20` | `P3` | `datetime.utcfromtimestamp` is deprecated (Python 3.12+) | `engine/live_data_feed.py:63` uses `datetime.datetime.utcfromtimestamp` | replace with `datetime.fromtimestamp(ts/1000, tz=timezone.utc)` | Phase 4 |
+| `TD-21` | `P3` | Redundant MongoDB index in `DataLoader` | `engine/data_loader.py:127-146` creates a unique index and a non-unique index on the exact same fields | remove the redundant non-unique index | Phase 3 |
+| `TD-22` | `P3` | `TradeNarrator.duration_days` is a matplotlib float, not days | `engine/trade_narrator.py:27` — `duration = trade.dtclose - trade.dtopen` yields a matplotlib date number; formatted as `{duration_days:.1f} days` shows wrong values | convert via `bt.num2date` or timedelta arithmetic | Phase 4 |
 
 ## 5. Root-cause analysis by cluster
 
@@ -161,6 +173,80 @@ The frontend is not in crisis, but it is drifting toward “provider as applicat
 - UI state and transport state are co-located
 
 That structure is workable for a single page, but it makes future UI changes more coupled than necessary.
+
+### 5.7 Engine layer — detailed review (2026-03-26)
+
+This section records findings from a full read-through of every file under `engine/`. The engine layer is generally in better shape than the backend HTTP layer, but it has accumulated several maintainability costs that should be addressed in Phase 4 (and partly Phase 3).
+
+#### `engine/utils.py` + `engine/trade_metrics.py` — duplicated `safe_float` (`TD-12`)
+
+`engine/utils.py:4-8` defines `safe_float`. `engine/trade_metrics.py:6-10` defines a private `_safe_float` that is byte-for-byte identical. Any callers importing from `trade_metrics` get a private copy. Fix: import from `engine/utils.py` everywhere and remove the private copy.
+
+#### `engine/bt_backtest_engine.py` + `engine/bt_live_engine.py` — duplicated `_safe_max_drawdown` (`TD-13`)
+
+Both files carry the same 15-line method (`bt_backtest_engine.py:534`, `bt_live_engine.py:218`). The live engine version even has a more complete docstring. This should live once in `BaseEngine` or a shared metrics helper.
+
+#### Analyzer setup repeated verbatim (`TD-14`)
+
+The same block of six `addanalyzer` calls and one `addobserver` call appears twice in `bt_backtest_engine.py` (lines 154–161 in `run_backtest` and lines 270–277 in `run_backtest_optimize`). Extract to `BaseEngine._setup_analyzers()`.
+
+#### `engine/data_loader.py` — file too large, four concerns mixed (`TD-15`)
+
+At 650 lines, `DataLoader` owns:
+- ccxt exchange initialization and rate limiting (`_initialize_exchange`, `_rate_limit`)
+- CSV file cache management (`_fetch_ohlcv_with_file_cache`, `_get_cache_file`)
+- MongoDB OHLCV cache (`_init_db_cache_collection`, `_load_cached_docs`, `_upsert_bars_to_db`, `_find_missing_ranges`)
+- Data transformation (`_ohlcv_to_dataframe`, `_docs_to_dataframe`, `_timeframe_to_ms`)
+
+Recommended split:
+- `engine/exchange_client.py` — ccxt init, `fetch_ohlcv`, `fetch_recent_bars`, rate limiting (~120 lines)
+- `engine/ohlcv_cache.py` — DB and CSV cache read/write/gap-fill (~200 lines)
+- `engine/data_loader.py` — thin coordinator calling the above (~100 lines)
+
+Additional issue in `_init_db_cache_collection`: two MongoDB indexes are created on the exact same field set (`exchange, exchange_type, symbol, timeframe, timestamp`). The second (`ix_ohlcv_cache_lookup`) is redundant — MongoDB will use the unique index for lookups (`TD-21`).
+
+#### `engine/optimize_context.py` — unprotected module-level globals (`TD-16`)
+
+`_log_opt_progress` and `_opt_total_combos` are read and written without a lock. Only `_opt_combo_counter` and `_current_combo` use `_combo_lock`. If two optimize runs ever run in the same process concurrently (currently unlikely), this would corrupt shared progress state. Safer approach: replace module globals with a context object instantiated per run and passed explicitly to the optimizer.
+
+#### `BaseEngine` — dead code accumulation (`TD-17`)
+
+- `MockLogger` (lines 26–30): an inline class set on `self.logger` and never called anywhere in the engine hierarchy. Dead code.
+- `_setup_sizers` (lines 68–70): empty `pass` method. Either remove or mark as an explicit extension hook with a comment.
+- `_ordered_timeframes` (lines 72–77): a one-liner wrapper around `ordered_timeframes()` that adds no value. Callers already import from `timeframe_utils`; this wrapper is noise.
+- `BTBacktestEngine._calculate_win_rate` / `_calculate_profit_factor` (lines 519–532): both methods are dead since `build_closed_trade_metrics` took over all metric calculation. They are never called.
+
+#### `BTBacktestEngine` — oversized methods (`TD-19`)
+
+- `_build_forced_final_close_record` (lines 431–511, ~80 lines): does five distinct things: resolves datetime, calculates slippage, calculates commission, computes PnL, and builds the output dict. Split into `_resolve_exit_price`, `_compute_forced_pnl`, and the dict assembly.
+- `run_backtest_optimize` (lines 249–392, ~143 lines): the inner per-variant processing loop (lines 323–377) should be extracted to `_extract_opt_variant_metrics(idx, strat, ...)`.
+- Late import at line 281: `from engine.optimize_context import ...` inside a method body. Move to top of file.
+
+#### `engine/live_ws_client.py` — `BaseLiveStreamClient` not using ABC (`TD-18`)
+
+`BaseLiveStreamClient` raises `NotImplementedError` manually. Python has `abc.ABC` for this. Also, `SUPPORTED_LIVE_EXCHANGES = {"binance"}` at line 21 is declared but never referenced — the factory function at line 215 hardcodes the string comparison. Either validate against the set or remove the dead constant.
+
+#### `engine/live_data_feed.py` — deprecated datetime API (`TD-20`)
+
+Line 63: `datetime.datetime.utcfromtimestamp(bar["timestamp"] / 1000.0)` is deprecated since Python 3.12 and will raise a `DeprecationWarning`. Replace with:
+```python
+datetime.datetime.fromtimestamp(bar["timestamp"] / 1000.0, tz=datetime.timezone.utc)
+```
+Note: Backtrader's `bt.date2num` accepts tz-aware datetimes, so this change is safe.
+
+#### `engine/trade_narrator.py` — `duration_days` bug (`TD-22`)
+
+Line 27: `duration = trade.dtclose - trade.dtopen` in Backtrader yields a float in matplotlib date-number units (days since epoch ÷ 1), NOT a timedelta. The variable is then used as `{duration_days:.1f} days` in output strings, which will print the raw matplotlib float (e.g., `20087.4 days` instead of `2.3 days`). Fix: convert using `bt.num2date` difference or cast via `datetime.timedelta`.
+
+#### What is already good in the engine layer
+
+- `engine/execution_settings.py`: clean dataclass-based design with a `CommissionRateProvider` Protocol; fee source tracking is well-structured.
+- `engine/bt_oco_patch.py`: the OCO ghost-trade fix is well-documented and narrowly scoped. The patch is applied once at startup and is stable.
+- `engine/timeframe_utils.py`: pure, small, well-bounded.
+- `engine/logger.py`: centralized, clean; the `QueueHandler` pattern for WS delivery is correct.
+- `engine/trade_metrics.py`: pure function, well-bounded, no side effects.
+- `engine/binance_account_client.py`: focused, clean, defensive.
+- `engine/base_engine.py`: the `_filter_strategy_params` logic is appropriately defensive and covers all known Backtrader param storage patterns.
 
 ### 5.6 Verification depends too much on local environment luck
 
