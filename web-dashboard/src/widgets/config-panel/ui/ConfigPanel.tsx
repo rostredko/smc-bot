@@ -154,7 +154,7 @@ const getStrategyFieldDependencyState = (strategyConfig: Record<string, any>, ke
 };
 
 const getNodeDependencySummary = (title: string, strategyConfig: Record<string, any>): string | undefined => {
-    if (title === "Structure & POI") {
+    if (title === "Structure & POI" || title === "Market Context") {
         const messages = [
             strategyConfig["use_ote_filter"] === false ? "OTE retracement inputs stay locked until Use OTE Filter is enabled." : null,
             strategyConfig["use_min_pullback_filter"] === false ? "Min Pullback threshold stays locked until Use Min Pullback Filter is enabled." : null,
@@ -421,7 +421,7 @@ const CoreStrategyNodeCard: React.FC<{
 };
 
 const NODE_LAYOUT_ROWS = [
-    ["Structure & POI"],
+    ["Market Context", "Structure & POI"],
     ["FVG", "Liquidity Sweep"],
     ["CHoCH", "Displacement"],
     ["Entry"],
@@ -527,6 +527,7 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ activeTab = 'backtest' }) => 
         ];
 
         const genericSectionOrder = [
+            "Market Context",
             "Structure & POI",
             "FVG",
             "Liquidity Sweep",
@@ -634,6 +635,7 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ activeTab = 'backtest' }) => 
     const nodeSections = useMemo(() => {
         const sectionByTitle = new Map(strategySections.map((section) => [section.title, section]));
         const orderedTitles = [
+            "Market Context",
             "Structure & POI",
             "FVG",
             "Liquidity Sweep",
@@ -655,6 +657,10 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ activeTab = 'backtest' }) => 
 
     const nodeSectionMeta = useMemo(() => {
         const explicitMeta: Record<string, { accentColor: string; toggleKey?: string; summaryKeys: string[] }> = {
+            "Market Context": {
+                accentColor: '#4fc3f7',
+                summaryKeys: ["enable_structure_filter", "use_ote_filter", "use_min_pullback_filter"],
+            },
             "Structure & POI": {
                 accentColor: '#4fc3f7',
                 summaryKeys: ["enable_structure_filter", "use_ote_filter", "use_min_pullback_filter"],
@@ -713,7 +719,7 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ activeTab = 'backtest' }) => 
                 accentColor: meta.accentColor,
                 statusLabel: isEnabled ? 'active' : 'disabled',
                 isDimmed: !isEnabled,
-                dependencyChips: section.title === "Structure & POI"
+                dependencyChips: section.title === "Structure & POI" || section.title === "Market Context"
                     ? [
                         strategyConfig["use_ote_filter"] === false ? "OTE inputs locked" : "",
                         strategyConfig["use_min_pullback_filter"] === false ? "Pullback inputs locked" : "",
@@ -1302,7 +1308,7 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ activeTab = 'backtest' }) => 
                                         width: '100%',
                                     }}
                                 >
-                                    {renderNodeSection("Structure & POI")}
+                                    {renderNodeSection("Market Context") ?? renderNodeSection("Structure & POI")}
                                 </Box>
                                 <Box
                                     sx={{

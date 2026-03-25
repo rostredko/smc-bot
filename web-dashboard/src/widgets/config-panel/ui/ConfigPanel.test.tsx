@@ -167,4 +167,78 @@ describe('ConfigPanel', () => {
         expect(screen.getByText('Advanced Strategy Parameters')).toBeInTheDocument();
         expect(screen.getByTestId('strategy-field-use_pinbar_quality_filter')).toHaveTextContent('Use Pinbar Quality Filter');
     });
+
+    it('renders Market Context before FVG for fvg_sweep_choch_strategy layouts', () => {
+        useConfigContextMock.mockReturnValue({
+            strategies: [{
+                name: 'fvg_sweep_choch_strategy',
+                display_name: 'FVG Sweep CHoCH',
+                description: '',
+                config_schema: {
+                    pivot_span: { type: 'number', default: 2, section: 'Market Context' },
+                    enable_structure_filter: { type: 'boolean', default: true, section: 'Market Context' },
+                    enable_fvg: { type: 'boolean', default: true, section: 'FVG' },
+                    fvg_min_atr_mult: { type: 'number', default: 0.2, section: 'FVG' },
+                },
+            }],
+            selectedStrategy: 'fvg_sweep_choch_strategy',
+            config: {
+                initial_capital: 10000,
+                risk_per_trade: 1.5,
+                max_drawdown: 20,
+                leverage: 10,
+                symbol: 'BTC/USDT',
+                timeframes: ['1h', '15m'],
+                exchange: 'binance',
+                exchange_type: 'future',
+                execution_mode: 'paper',
+                start_date: '2025-01-01',
+                end_date: '2025-12-31',
+                strategy: 'fvg_sweep_choch_strategy',
+                strategy_config: {},
+                trailing_stop_distance: 0,
+                breakeven_trigger_r: 0.7,
+                dynamic_position_sizing: true,
+                position_cap_adverse: 0.5,
+            },
+            strategyConfig: {
+                pivot_span: 2,
+                enable_structure_filter: true,
+                enable_fvg: true,
+                fvg_min_atr_mult: 0.2,
+            },
+            errors: {},
+            isRunning: false,
+            isLiveRunning: false,
+            isLiveStopping: false,
+            isConfigDisabled: false,
+            loadDialogOpen: false,
+            savedConfigs: [],
+            topSymbols: ['BTC/USDT'],
+            loadedTemplateName: null,
+            handleStrategyChange: vi.fn(),
+            handleConfigChange: vi.fn(),
+            handleStrategyConfigChange: vi.fn(),
+            startBacktest: vi.fn(),
+            stopBacktest: vi.fn(),
+            startLiveTrading: vi.fn(),
+            stopLiveTrading: vi.fn(),
+            resetDashboard: vi.fn(),
+            resetStrategySettings: vi.fn(),
+            handleOpenLoadDialog: vi.fn(),
+            setLoadDialogOpen: vi.fn(),
+            handleLoadConfig: vi.fn(),
+            handleDeleteConfig: vi.fn(),
+            handleReorderConfigs: vi.fn(),
+        });
+
+        render(<ConfigPanel />);
+
+        const marketContext = screen.getByText('Market Context');
+        const fvg = screen.getByText('FVG');
+
+        expect(screen.getByTestId('strategy-field-pivot_span')).toBeInTheDocument();
+        expect(screen.getAllByText('Market Context')).toHaveLength(1);
+        expect(marketContext.compareDocumentPosition(fvg) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
 });
