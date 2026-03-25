@@ -73,6 +73,7 @@ smc-bot/
 ├── strategies/
 │   ├── base_strategy.py
 │   ├── bt_price_action.py
+│   ├── fvg_sweep_choch_strategy.py
 │   ├── fast_test_strategy.py
 │   ├── market_structure.py
 │   └── helpers/

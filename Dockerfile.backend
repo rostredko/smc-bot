@@ -22,6 +22,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY engine/ engine/
 COPY strategies/ strategies/
 COPY db/ db/
+COPY tests/ tests/
 COPY web-dashboard/ web-dashboard/
 COPY main.py .
 

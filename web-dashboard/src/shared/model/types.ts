@@ -23,6 +23,8 @@ export interface BacktestConfig {
     breakeven_trigger_r: number;
     dynamic_position_sizing: boolean;
     position_cap_adverse: number;
+    detailed_signals?: boolean;
+    market_analysis?: boolean;
     maker_fee_bps?: number;
     taker_fee_bps?: number;
     fee_source?: string;
@@ -30,6 +32,9 @@ export interface BacktestConfig {
     opt_params?: Record<string, number[]>;
     opt_timeframes?: { primary: string[]; secondary: string[] };
     opt_target_metric?: 'sharpe_ratio' | 'profit_factor';
+    wf_train_months?: number;
+    wf_test_months?: number;
+    wf_step_months?: number;
 }
 
 export interface BacktestStatus {
@@ -90,5 +95,10 @@ export const DEFAULT_CONFIG: BacktestConfig = {
     trailing_stop_distance: 0.04,
     breakeven_trigger_r: 1.5,
     dynamic_position_sizing: true,
-    position_cap_adverse: 0.5
+    position_cap_adverse: 0.5,
+    detailed_signals: true,
+    market_analysis: true,
+    wf_train_months: 6,
+    wf_test_months: 1,
+    wf_step_months: 1,
 };

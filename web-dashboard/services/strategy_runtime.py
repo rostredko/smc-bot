@@ -19,6 +19,11 @@ _LEGACY_ALIASES = {
 }
 _CAMEL_TO_SNAKE_RE_1 = re.compile(r"(.)([A-Z][a-z]+)")
 _CAMEL_TO_SNAKE_RE_2 = re.compile(r"([a-z0-9])([A-Z])")
+_LEGACY_PARAM_MAPPING = {
+    "use_premium_discount_filter": "use_ote_filter",
+    "premium_discount_threshold": "ote_min_retracement",
+    "ote_threshold": "ote_min_retracement",
+}
 
 
 def _camel_to_snake(value: str) -> str:
@@ -137,8 +142,25 @@ def build_runtime_strategy_config(config: Dict[str, Any]) -> Dict[str, Any]:
     Runtime controls intentionally override same keys from strategy_config.
     """
     st_config = dict(config.get("strategy_config", {}) or {})
+    
+    # Legacy migration: rename old keys to new OTE keys
+    for old_key, new_key in _LEGACY_PARAM_MAPPING.items():
+        if old_key in st_config and new_key not in st_config:
+            st_config[new_key] = st_config.pop(old_key)
+        elif old_key in st_config:
+            st_config.pop(old_key) # prefer new key if both present
+
     st_config["trailing_stop_distance"] = config.get("trailing_stop_distance", 0.0)
-    st_config["breakeven_trigger_r"] = config.get("breakeven_trigger_r", 0.0)
+    breakeven_trigger_r = config.get("breakeven_trigger_r", 0.0)
+    if "use_breakeven_sl" in st_config or "breakeven_sl" in st_config:
+        if bool(st_config.get("use_breakeven_sl", False)):
+            try:
+                breakeven_trigger_r = float(st_config.get("breakeven_sl", breakeven_trigger_r or 1.0))
+            except (TypeError, ValueError):
+                breakeven_trigger_r = 1.0
+        else:
+            breakeven_trigger_r = 0.0
+    st_config["breakeven_trigger_r"] = breakeven_trigger_r
     st_config["risk_per_trade"] = config.get("risk_per_trade", 1.0)
     st_config["leverage"] = config.get("leverage", 1.0)
     st_config["dynamic_position_sizing"] = config.get("dynamic_position_sizing", True)
@@ -146,6 +168,8 @@ def build_runtime_strategy_config(config: Dict[str, Any]) -> Dict[str, Any]:
     st_config["position_cap_adverse"] = config.get("position_cap_adverse", 0.5)
     st_config["funding_rate_per_8h"] = config.get("funding_rate_per_8h", 0.0)
     st_config["funding_interval_hours"] = config.get("funding_interval_hours", 8)
+    st_config["detailed_signals"] = config.get("detailed_signals", True)
+    st_config["market_analysis"] = config.get("market_analysis", True)
     return st_config
 
 

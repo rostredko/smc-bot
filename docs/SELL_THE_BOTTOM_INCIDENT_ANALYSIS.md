@@ -53,7 +53,9 @@
 
 **Recommendation:** Short only in Premium (upper 50% of 4H High–Low range).
 
-**Code:** `use_premium_discount_filter` defaults to **False**. `_passes_premium_discount_filter('short')`: `entry_price > equilibrium`. Enabling would block Short in Discount.
+**Code:** `use_premium_discount_filter` defaults to **False**. When enabled, we compute HTF equilibrium as `mid(SH, SL)` and reject:
+- Long entries with `entry_price > equilibrium` (price is in premium)
+- Short entries with `entry_price < equilibrium` (price is in discount)
 
 ---
 

@@ -451,13 +451,20 @@ def get_strategy_config_schema(strategy_name: str):
 
             "risk_reward_ratio": {"type": "number", "default": 2.0},
             "sl_buffer_atr": {"type": "number", "default": 1.5},
+            "use_opposing_level_tp": {"type": "boolean", "default": False},
             "poi_zone_upper_atr_mult": {"type": "number", "default": 0.3},
             "poi_zone_lower_atr_mult": {"type": "number", "default": 0.2},
             "use_premium_discount_filter": {"type": "boolean", "default": False},
+            "use_ote_filter": {"type": "boolean", "default": False, "label": "Use OTE Filter", "section": "Market Context"},
+            "ote_min_retracement": {"type": "number", "default": 0.62, "label": "OTE Min Retracement (0.62)", "section": "Market Context"},
+            "ote_max_retracement": {"type": "number", "default": 0.79, "label": "OTE Max Retracement (0.79)", "section": "Market Context"},
+            "use_structure_filter": {"type": "boolean", "default": True},
             "use_space_to_target_filter": {"type": "boolean", "default": False},
             "space_to_target_min_rr": {"type": "number", "default": 1.0},
             "use_choch_displacement_filter": {"type": "boolean", "default": False},
             "choch_displacement_atr_mult": {"type": "number", "default": 1.5},
+            "use_ltf_choch_trigger": {"type": "boolean", "default": True},
+            "ltf_choch_entry_window_bars": {"type": "number", "default": 6},
             "require_choch_fvg": {"type": "boolean", "default": False},
 
             "pattern_hammer": {"type": "boolean", "default": True},
@@ -476,6 +483,47 @@ def get_strategy_config_schema(strategy_name: str):
             "force_signal_every_n_bars": {"type": "number", "default": 1},
             "max_hold_bars": {"type": "number", "default": 1},
             "stop_after_n_trades": {"type": "number", "default": 0},
+        },
+        "fvg_sweep_choch_strategy": {
+            "pivot_span": {"type": "number", "default": 2, "section": "Market Context"},
+            "enable_structure_filter": {"type": "boolean", "default": True, "section": "Market Context"},
+            "use_ote_filter": {"type": "boolean", "default": False, "label": "OTE-фильтр", "section": "Market Context"},
+            "ote_min_retracement": {"type": "number", "default": 0.62, "label": "OTE min retracement", "section": "Market Context"},
+            "ote_max_retracement": {"type": "number", "default": 0.79, "label": "OTE max retracement", "section": "Market Context"},
+            "use_min_pullback_filter": {"type": "boolean", "default": True, "label": "Use Min Pullback Filter", "section": "Market Context"},
+            "min_pullback_atr_mult": {"type": "number", "default": 1.0, "label": "Min Pullback ATR Mult", "section": "Market Context"},
+
+            "enable_fvg": {"type": "boolean", "default": True, "section": "FVG"},
+            "fvg_min_atr_mult": {"type": "number", "default": 0.2, "section": "FVG"},
+            "fvg_max_age_bars": {"type": "number", "default": 40, "section": "FVG"},
+            "use_midpoint": {"type": "boolean", "default": False, "section": "FVG"},
+
+            "enable_sweep": {"type": "boolean", "default": True, "section": "Liquidity Sweep"},
+            "sweep_min_atr_mult": {"type": "number", "default": 0.15, "section": "Liquidity Sweep"},
+
+            "enable_choch": {"type": "boolean", "default": True, "section": "CHoCH"},
+            "choch_mode": {"type": "string", "default": "fast", "options": ["fast", "confirmed"], "section": "CHoCH"},
+            "choch_entry_window_bars": {"type": "number", "default": 6, "section": "CHoCH"},
+            "choch_max_pullaway_mult": {"type": "number", "default": 1.5, "section": "CHoCH"},
+            "displacement_required": {"type": "boolean", "default": True, "section": "CHoCH"},
+
+            "enable_displacement": {"type": "boolean", "default": True, "section": "Displacement"},
+            "displacement_atr_mult": {"type": "number", "default": 1.0, "section": "Displacement"},
+            "displacement_close_threshold": {"type": "number", "default": 0.7, "section": "Displacement"},
+
+            "entry_type": {"type": "string", "default": "market", "options": ["market", "limit"], "section": "Entry"},
+            "limit_mode": {"type": "string", "default": "choch_level", "options": ["choch_level", "fvg_midpoint"], "section": "Entry"},
+
+            "sl_buffer_mult": {"type": "number", "default": 0.2, "section": "Stop Loss"},
+            "use_breakeven_sl": {"type": "boolean", "default": False, "section": "Stop Loss"},
+            "breakeven_sl": {"type": "number", "default": 1.0, "section": "Stop Loss"},
+
+            "tp_mode": {"type": "string", "default": "liquidity", "options": ["liquidity", "rr"], "section": "Take Profit"},
+            "risk_reward_ratio": {"type": "number", "default": 2.0, "section": "Take Profit"},
+            "partial_tp": {"type": "boolean", "default": False, "section": "Take Profit"},
+
+            "atr_period": {"type": "number", "default": 14, "section": "Risk"},
+            "min_rr_filter": {"type": "number", "default": 1.5, "section": "Risk"},
         }
     }
     
@@ -549,13 +597,15 @@ def _config_to_flat(config: Dict[str, Any]) -> Dict[str, Any]:
         "end_date": period.get("end_date", config.get("end_date", "2023-12-31")),
         "strategy": strategy_name,
         "strategy_config": strategy_config,
-        "trailing_stop_distance": config.get("trailing_stop_distance", 0.04),
-        "breakeven_trigger_r": config.get("breakeven_trigger_r", 1.5),
+        "trailing_stop_distance": config.get("trailing_stop_distance", 0.0),
+        "breakeven_trigger_r": config.get("breakeven_trigger_r", 1.0),
         "dynamic_position_sizing": config.get("dynamic_position_sizing", True),
         "position_cap_adverse": config.get("position_cap_adverse", 0.5),
         "slippage_bps": config.get("slippage_bps", 0.0),
         "funding_rate_per_8h": config.get("funding_rate_per_8h", 0.0),
         "funding_interval_hours": config.get("funding_interval_hours", 8),
+        "detailed_signals": config.get("detailed_signals", True),
+        "market_analysis": config.get("market_analysis", True),
     }
     if "maker_fee_bps" in config:
         flat["maker_fee_bps"] = config.get("maker_fee_bps")
@@ -572,12 +622,21 @@ def _config_to_flat(config: Dict[str, Any]) -> Dict[str, Any]:
     return _normalize_exchange_fields(flat)
 
 
+def _is_nested_config_format(config: Dict[str, Any]) -> bool:
+    if not isinstance(config, dict):
+        return False
+    has_account = isinstance(config.get("account"), dict)
+    has_period = isinstance(config.get("period"), dict)
+    has_nested_strategy = isinstance(config.get("strategy"), dict)
+    return has_account or has_period or has_nested_strategy
+
+
 @app.get("/config")
 async def get_config():
     """Get current configuration in flat format for frontend."""
     config = AppConfigRepository().get()
     if config:
-        return _config_to_flat(config)
+        return _config_to_flat(config) if _is_nested_config_format(config) else config
     return {}
 
 
@@ -616,6 +675,8 @@ async def update_config(config: Dict[str, Any]):
         "slippage_bps",
         "funding_rate_per_8h",
         "funding_interval_hours",
+        "detailed_signals",
+        "market_analysis",
     ):
         if key in config:
             existing_config[key] = config[key]
@@ -700,8 +761,9 @@ async def get_user_config(name: str):
     if data is None:
         raise HTTPException(status_code=404, detail="Configuration not found")
     
-    # Flatten it if it's in the nested format
-    if "trading" in data or "account" in data or "period" in data:
+    # Flatten only true legacy nested configs. Flat templates may still carry
+    # auxiliary nested fields like `trading` and must be returned as-is.
+    if _is_nested_config_format(data):
         return _config_to_flat(data)
     return data
 
@@ -1360,9 +1422,9 @@ async def run_backtest_task(run_id: str, config: Dict[str, Any]):
             'funding_interval_hours': config.get('funding_interval_hours', 8),
             'log_level': config.get('log_level', DEFAULT_APP_LOG_LEVEL),
             'live_output_log_level': config.get('live_output_log_level', DEFAULT_LIVE_OUTPUT_LOG_LEVEL),
-            'detailed_signals': True,
+            'detailed_signals': config.get('detailed_signals', True),
             'detailed_trades': True,
-            'market_analysis': True,
+            'market_analysis': config.get('market_analysis', True),
             'save_results': True,
             'run_mode': config.get('run_mode', 'single'),
             'opt_params': config.get('opt_params') or {},

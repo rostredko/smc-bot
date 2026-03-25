@@ -56,9 +56,11 @@ describe('BacktestHistoryList', () => {
             loadUserConfigs: vi.fn(),
             isLiveRunning: false,
             isLiveStopping: false,
+            isRunning: false,
         });
         useResultsContextMock.mockReturnValue({
             backtestStatus: null,
+            results: null,
         });
     });
 
@@ -73,6 +75,7 @@ describe('BacktestHistoryList', () => {
             loadUserConfigs: vi.fn(),
             isLiveRunning: true,
             isLiveStopping: false,
+            isRunning: false,
         });
         rerender(<BacktestHistoryList />);
 
@@ -84,12 +87,38 @@ describe('BacktestHistoryList', () => {
             loadUserConfigs: vi.fn(),
             isLiveRunning: false,
             isLiveStopping: false,
+            isRunning: false,
         });
         rerender(<BacktestHistoryList />);
 
         await waitFor(() => {
             expect(fetchBacktestHistoryMock).toHaveBeenCalledTimes(2);
         });
+    });
+
+    it('refreshes history when completed results arrive for the active backtest', async () => {
+        const { rerender } = render(<BacktestHistoryList />);
+
+        await waitFor(() => {
+            expect(fetchBacktestHistoryMock).toHaveBeenCalledTimes(1);
+        });
+
+        useResultsContextMock.mockReturnValue({
+            backtestStatus: {
+                run_id: 'run-42',
+                status: 'completed',
+            },
+            results: {
+                run_id: 'run-42',
+                total_pnl: 123,
+            },
+        });
+
+        rerender(<BacktestHistoryList />);
+
+        await waitFor(() => {
+            expect(fetchBacktestHistoryMock).toHaveBeenCalledTimes(2);
+        }, { timeout: 2000 });
     });
 
     it('does not duplicate trailing stop and breakeven fields across detail sections', async () => {

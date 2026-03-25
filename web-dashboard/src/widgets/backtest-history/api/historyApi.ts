@@ -5,7 +5,7 @@ export const fetchBacktestHistory = async (page: number, pageSize: number = 10, 
     if (sortField && sortDirection) {
         url += `&sort_field=${sortField}&sort_direction=${sortDirection}`;
     }
-    const response = await fetch(url);
+    const response = await fetch(url, { cache: 'no-store' });
     if (!response.ok) {
         throw new Error(`Failed to fetch history: HTTP ${response.status}`);
     }

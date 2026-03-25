@@ -40,6 +40,8 @@ class BacktestConfig(BaseModel):
     opt_params: Optional[Dict[str, Any]] = None  # e.g. {"risk_reward_ratio": [1.5, 2.0, 2.5]}
     opt_timeframes: Optional[Dict[str, list]] = None  # {"primary": ["4h","1h"], "secondary": ["15m","5m"]}
     opt_target_metric: str = "sharpe_ratio"  # "sharpe_ratio" | "profit_factor"
+    detailed_signals: bool = True
+    market_analysis: bool = True
 
 
 class BacktestRequest(BaseModel):

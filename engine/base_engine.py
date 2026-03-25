@@ -83,12 +83,49 @@ class BaseEngine(ABC):
         pass
 
     def add_strategy(self, strategy_class, **kwargs):
-        """Add a strategy to Cerebro."""
-        self.cerebro.addstrategy(strategy_class, **kwargs)
+        """Add a strategy to Cerebro, filtering out invalid params."""
+        filtered_kwargs = self._filter_strategy_params(strategy_class, kwargs)
+        self.cerebro.addstrategy(strategy_class, **filtered_kwargs)
 
     def add_opt_strategy(self, strategy_class, **kwargs):
-        """Add a strategy for parameter optimization (grid search). kwargs may contain lists/ranges for params."""
-        self.cerebro.optstrategy(strategy_class, **kwargs)
+        """Add a strategy for parameter optimization, filtering out invalid params."""
+        filtered_kwargs = self._filter_strategy_params(strategy_class, kwargs)
+        self.cerebro.optstrategy(strategy_class, **filtered_kwargs)
+
+    def _filter_strategy_params(self, strategy_class, kwargs: Dict[str, Any]) -> Dict[str, Any]:
+        """Filter kwargs to only include keys present in strategy_class.params."""
+        if not hasattr(strategy_class, 'params'):
+            return kwargs
+        
+        valid_keys = set()
+        params = strategy_class.params
+        
+        # Case 1: Params is a tuple of tuples/lists (standard Backtrader strategy definition)
+        if isinstance(params, (list, tuple)):
+            for item in params:
+                if isinstance(item, (list, tuple)) and len(item) >= 1:
+                    valid_keys.add(item[0])
+        # Case 2: Params is already an instantiated Params object (less common for class-level check)
+        elif hasattr(params, '_getitems'):
+            for k, _ in params._getitems():
+                valid_keys.add(k)
+        # Case 3: Simple attribute access (fallback)
+        else:
+            valid_keys = {attr for attr in dir(params) if not attr.startswith('_')}
+
+        # Always allow some standard Backtrader internal params if they happen to be passed
+        # though usually they aren't part of st_config.
+        
+        filtered = {k: v for k, v in kwargs.items() if k in valid_keys}
+        
+        # Log if we filtered anything out for debugging
+        filtered_out = set(kwargs.keys()) - set(filtered.keys())
+        if filtered_out:
+            # We use a late import or just rely on self.config['log_level'] if we had a real logger
+            # For now, we'll just let it be silent or use the engine logger if available
+            pass
+            
+        return filtered
 
     def run(self):
         """Run the engine. runonce=True enables vectorized indicators (~2-3x faster)."""

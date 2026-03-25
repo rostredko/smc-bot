@@ -347,6 +347,32 @@ def test_bt_price_action_schema_defaults_match_runtime_defaults():
     assert schema["require_choch_fvg"]["default"] is False
 
 
+def test_fvg_sweep_choch_schema_defaults_match_runtime_defaults():
+    schema = get_strategy_config_schema("fvg_sweep_choch_strategy")
+    assert schema["pivot_span"]["default"] == 2
+    assert schema["use_ote_filter"]["default"] is False
+    assert schema["ote_min_retracement"]["default"] == 0.62
+    assert schema["ote_max_retracement"]["default"] == 0.79
+    assert schema["use_min_pullback_filter"]["default"] is True
+    assert schema["min_pullback_atr_mult"]["default"] == 1.0
+    assert schema["enable_fvg"]["default"] is True
+    assert schema["fvg_min_atr_mult"]["default"] == 0.2
+    assert schema["fvg_max_age_bars"]["default"] == 40
+    assert schema["enable_sweep"]["default"] is True
+    assert schema["sweep_min_atr_mult"]["default"] == 0.15
+    assert schema["choch_mode"]["default"] == "fast"
+    assert schema["displacement_required"]["default"] is True
+    assert schema["enable_displacement"]["default"] is True
+    assert schema["entry_type"]["default"] == "market"
+    assert schema["limit_mode"]["default"] == "choch_level"
+    assert schema["sl_buffer_mult"]["default"] == 0.2
+    assert schema["use_breakeven_sl"]["default"] is False
+    assert schema["breakeven_sl"]["default"] == 1.0
+    assert schema["tp_mode"]["default"] == "liquidity"
+    assert schema["risk_reward_ratio"]["default"] == 2.0
+    assert schema["min_rr_filter"]["default"] == 1.5
+
+
 def test_clear_ohlcv_cache_endpoint_clears_mongo_cache():
     db = get_database()
     col = db["ohlcv_cache"]

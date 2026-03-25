@@ -82,7 +82,7 @@ def test_list_dashboard_strategies_returns_only_public_runtime_strategies():
     strategies = list_dashboard_strategies()
     names = [strategy["name"] for strategy in strategies]
 
-    assert names == ["bt_price_action", "fast_test_strategy"]
+    assert names == ["bt_price_action", "fast_test_strategy", "fvg_sweep_choch_strategy"]
     assert "price_action_strategy" not in names
     assert "market_structure" not in names
 

@@ -1,5 +1,5 @@
 import { memo } from 'react';
-import { Grid, Box, TextField, FormControlLabel, Switch, Tooltip as MuiTooltip, Typography } from '@mui/material';
+import { Grid, Box, TextField, FormControlLabel, Switch, Tooltip as MuiTooltip, Typography, MenuItem } from '@mui/material';
 
 interface StrategyFieldProps {
     fieldKey: string;
@@ -12,16 +12,24 @@ interface StrategyFieldProps {
     description?: string;
     compact?: boolean;
     error?: string;
+    dependencyText?: string;
+    isDependent?: boolean;
 }
 
-const StrategyField = memo(({ fieldKey, schema, value, label, tooltip, isDisabled, onChange, description, compact, error }: StrategyFieldProps) => {
+const StrategyField = memo(({ fieldKey, schema, value, label, tooltip, isDisabled, onChange, description, compact, error, dependencyText, isDependent }: StrategyFieldProps) => {
     const isBoolean = schema?.type === "boolean" || typeof value === "boolean" || value === "true" || value === "false";
+    const hasOptions = Array.isArray(schema?.options) && schema.options.length > 0;
     const gridMd = isBoolean ? (compact ? 6 : 12) : 6;
 
     return (
         <Grid item xs={12} md={gridMd}>
             <MuiTooltip title={tooltip} arrow placement="top">
-                <Box>
+                <Box
+                    sx={{
+                        opacity: isDependent ? 0.6 : 1,
+                        transition: 'opacity 150ms ease',
+                    }}
+                >
                     {isBoolean ? (
                         <Box>
                             <FormControlLabel
@@ -39,9 +47,15 @@ const StrategyField = memo(({ fieldKey, schema, value, label, tooltip, isDisable
                                     {description}
                                 </Typography>
                             )}
+                            {dependencyText && (
+                                <Typography variant="caption" display="block" sx={{ color: 'text.disabled', mt: 0.25, pl: 7 }}>
+                                    {dependencyText}
+                                </Typography>
+                            )}
                         </Box>
                     ) : (
                         <TextField
+                            select={hasOptions}
                             label={label}
                             type={schema?.type === "number" ? "number" : "text"}
                             value={value !== undefined ? value : (schema?.default || "")}
@@ -51,9 +65,15 @@ const StrategyField = memo(({ fieldKey, schema, value, label, tooltip, isDisable
                             }}
                             disabled={isDisabled}
                             error={!!error}
-                            helperText={error}
+                            helperText={error || dependencyText}
                             fullWidth
-                        />
+                        >
+                            {hasOptions ? schema.options.map((option: string) => (
+                                <MenuItem key={option} value={option}>
+                                    {option}
+                                </MenuItem>
+                            )) : null}
+                        </TextField>
                     )}
                 </Box>
             </MuiTooltip>

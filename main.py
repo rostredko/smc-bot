@@ -22,6 +22,7 @@ from engine.bt_live_engine import BTLiveEngine
 from engine.execution_settings import DEFAULT_EXECUTION_MODE, apply_execution_settings
 from strategies.bt_price_action import PriceActionStrategy
 from strategies.fast_test_strategy import FastTestStrategy
+from strategies.fvg_sweep_choch_strategy import FvgSweepChochStrategy
 from services.strategy_runtime import build_runtime_strategy_config
 
 # Bootstrap logging for CLI usage
@@ -33,6 +34,7 @@ _CLI_STRATEGY_CLASS_MAP = {
     "bt_price_action": PriceActionStrategy,
     "price_action_strategy": PriceActionStrategy,
     "fast_test_strategy": FastTestStrategy,
+    "fvg_sweep_choch_strategy": FvgSweepChochStrategy,
 }
 
 

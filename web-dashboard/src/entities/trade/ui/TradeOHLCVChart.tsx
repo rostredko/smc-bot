@@ -443,6 +443,61 @@ const TradeOHLCVChart: React.FC<TradeOHLCVChartProps> = ({
                 });
             }
 
+            // OTE Zone Rendering
+            const entryInd = trade?.entry_context?.indicators_at_entry ?? {};
+            const oteL = entryInd.OTE_Low;
+            const oteH = entryInd.OTE_High;
+
+            if (oteL != null && oteH != null) {
+                const low = Number(oteL);
+                const high = Number(oteH);
+                shapes.push({
+                    type: 'rect',
+                    xref: 'x',
+                    yref: 'y',
+                    x0: xMin,
+                    x1: xMax,
+                    y0: low,
+                    y1: high,
+                    fillcolor: 'rgba(33, 150, 243, 0.15)',
+                    line: { width: 0 },
+                    layer: 'below',
+                });
+                
+                // Boundaries for OTE zone
+                shapes.push({
+                    type: 'line', xref: 'x', yref: 'y',
+                    x0: xMin, x1: xMax, y0: low, y1: low,
+                    line: { color: 'rgba(33, 150, 243, 0.4)', width: 1, dash: 'dot' }
+                });
+                shapes.push({
+                    type: 'line', xref: 'x', yref: 'y',
+                    x0: xMin, x1: xMax, y0: high, y1: high,
+                    line: { color: 'rgba(33, 150, 243, 0.4)', width: 1, dash: 'dot' }
+                });
+
+                annotations.push({
+                    x: xMin, y: high,
+                    xref: 'x', yref: 'y',
+                    text: `OTE High ($${high.toFixed(2)})`,
+                    showarrow: false,
+                    xanchor: 'left',
+                    yanchor: 'bottom',
+                    font: { color: 'rgba(144, 202, 249, 0.8)', size: 10 },
+                    bgcolor: 'rgba(0,0,0,0.5)',
+                });
+                annotations.push({
+                    x: xMin, y: low,
+                    xref: 'x', yref: 'y',
+                    text: `OTE Low ($${low.toFixed(2)})`,
+                    showarrow: false,
+                    xanchor: 'left',
+                    yanchor: 'top',
+                    font: { color: 'rgba(144, 202, 249, 0.8)', size: 10 },
+                    bgcolor: 'rgba(0,0,0,0.5)',
+                });
+            }
+
             const entryIsoTime = toIso(trade.entry_time);
             const exitIsoTime = toIso(trade.exit_time);
 

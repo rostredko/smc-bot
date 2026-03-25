@@ -99,7 +99,9 @@ class PriceActionStrategy(BaseStrategy):
         ('ltf_choch_entry_window_bars', 6),
         ('ltf_choch_arm_timeout_bars', 24),
         ('ltf_choch_max_pullaway_atr_mult', 1.5),
-        ('use_premium_discount_filter', False),
+        ('use_ote_filter', False),
+        ('ote_min_retracement', 0.62),
+        ('ote_max_retracement', 0.79),
         ('use_space_to_target_filter', False),
         ('space_to_target_min_rr', 1.0),
         ('use_choch_displacement_filter', False),
@@ -129,6 +131,8 @@ class PriceActionStrategy(BaseStrategy):
         ('pattern_bullish_engulfing', True),
         ('pattern_bearish_engulfing', True),
         ('force_signal_every_n_bars', 0),
+        ('detailed_signals', True),
+        ('market_analysis', True),
     )
 
     @staticmethod
@@ -401,18 +405,18 @@ class PriceActionStrategy(BaseStrategy):
                     else:
                         self._enter_short("Force-Test SHORT")
             return
-
+            
         if self._is_bullish_pinbar():
-            if self._check_filters_long():
+            if self._check_filters_long("Bullish Pinbar"):
                 self._enter_long("Bullish Pinbar")
         elif self._is_bearish_pinbar():
-            if self._check_filters_short():
+            if self._check_filters_short("Bearish Pinbar"):
                 self._enter_short("Bearish Pinbar")
         elif self._is_bullish_engulfing():
-            if self._check_filters_long():
+            if self._check_filters_long("Bullish Engulfing"):
                 self._enter_long("Bullish Engulfing")
         elif self._is_bearish_engulfing():
-            if self._check_filters_short():
+            if self._check_filters_short("Bearish Engulfing"):
                 self._enter_short("Bearish Engulfing")
 
     def _build_entry_context(self, reason, direction):
@@ -422,6 +426,8 @@ class PriceActionStrategy(BaseStrategy):
         atr_htf_val = self._to_valid_float(self.atr_htf[0])
         if atr_htf_val is not None:
             indicators[self._scoped_indicator_key('ATR', scope='htf')] = round(atr_htf_val, 4)
+
+        show_analysis = getattr(self.params, 'market_analysis', True)
 
         if self._bool_param('use_structure_filter', True):
             structure = self._get_structure_state()
@@ -439,78 +445,78 @@ class PriceActionStrategy(BaseStrategy):
             if space_metrics is not None:
                 indicators['HTF_Space_R'] = round(space_metrics['available_rr'], 2)
 
-            if direction == 'long':
-                zone = self._get_poi_zone_long()
-                if zone is not None:
-                    zone_low, zone_high = zone
-                    indicators['POI_Low'] = round(zone_low, 2)
-                    indicators['POI_High'] = round(zone_high, 2)
-                    why_parts.append(f"Structure: Bullish (state={structure}), POI [{zone_low:.2f}, {zone_high:.2f}]")
+            # OTE Check
+            ote_min = getattr(self.params, 'ote_min_retracement', 0.62)
+            ote_max = getattr(self.params, 'ote_max_retracement', 0.79)
+            ote_passed = self._passes_ote_filter(direction)
+
+            if sh_level is not None and sl_level is not None:
+                htf_range = sh_level - sl_level
+                if direction == 'long':
+                    indicators['OTE_Low'] = round(sh_level - htf_range * ote_max, 2)
+                    indicators['OTE_High'] = round(sh_level - htf_range * ote_min, 2)
                 else:
-                    why_parts.append(f"Structure: Bullish (state={structure})")
-                if self._bool_param('use_ltf_choch_trigger', True):
-                    trigger_age = len(self.data_ltf) - self._long_choch_trigger_bar if self._long_choch_trigger_bar > 0 else None
-                    if trigger_age is not None:
-                        body_atr_ratio, has_fvg = self._get_choch_trigger_quality('long')
-                        indicators['LTF_CHOCH_Age_Bars'] = trigger_age
-                        indicators['LTF_CHOCH_Trigger_Price'] = round(self._long_choch_trigger_price, 2) if self._long_choch_trigger_price is not None else None
-                        if body_atr_ratio is not None:
-                            indicators['LTF_CHOCH_Body_ATR'] = round(body_atr_ratio, 2)
-                        if has_fvg is not None:
-                            indicators['LTF_CHOCH_FVG'] = has_fvg
+                    indicators['OTE_Low'] = round(sl_level + htf_range * ote_min, 2)
+                    indicators['OTE_High'] = round(sl_level + htf_range * ote_max, 2)
+                
+            if show_analysis:
+                if ote_passed:
+                    why_parts.append(f"OTE Zone Check: Price reached OTE Threshold ({ote_min})")
+                elif self._bool_param('use_ote_filter', False):
+                    why_parts.append(f"OTE Zone Check: Price NOT in OTE Zone (min {ote_min} retracement)")
+                
+                if direction == 'long':
+                    zone = self._get_poi_zone_long()
+                    if zone is not None:
+                        zone_low, zone_high = zone
+                        indicators['POI_Low'] = round(zone_low, 2)
+                        indicators['POI_High'] = round(zone_high, 2)
+                        why_parts.append(f"Structure: Bullish (state={structure}), POI [{zone_low:.2f}, {zone_high:.2f}]")
+                    else:
+                        why_parts.append(f"Structure: Bullish (state={structure})")
+                else:
+                    zone = self._get_poi_zone_short()
+                    if zone is not None:
+                        zone_low, zone_high = zone
+                        indicators['POI_Low'] = round(zone_low, 2)
+                        indicators['POI_High'] = round(zone_high, 2)
+                        why_parts.append(f"Structure: Bearish (state={structure}), POI [{zone_low:.2f}, {zone_high:.2f}]")
+                    else:
+                        why_parts.append(f"Structure: Bearish (state={structure})")
+
+            if self._bool_param('use_ltf_choch_trigger', True):
+                trigger_age = len(self.data_ltf) - self._long_choch_trigger_bar if direction == 'long' else len(self.data_ltf) - self._short_choch_trigger_bar
+                if trigger_age > 0:
+                    body_atr_ratio, has_fvg = self._get_choch_trigger_quality(direction)
+                    indicators['LTF_CHOCH_Age_Bars'] = trigger_age
+                    if show_analysis:
                         why_parts.append(f"{self._ltf_timeframe_label} CHoCH confirmed {trigger_age} bar(s) ago")
                         if body_atr_ratio is not None:
                             why_parts.append(f"{self._ltf_timeframe_label} CHoCH displacement: body {body_atr_ratio:.2f}x ATR")
                         if has_fvg is True:
-                            why_parts.append(f"{self._ltf_timeframe_label} CHoCH left a bullish FVG")
-                if self._bool_param('use_premium_discount_filter', False) and equilibrium is not None:
-                    why_parts.append(f"Premium/Discount: entry {self.close_line[0]:.2f} is below EQ {equilibrium:.2f} (discount)")
+                            why_parts.append(f"{self._ltf_timeframe_label} CHoCH left a {'bullish' if direction == 'long' else 'bearish'} FVG")
+
+            if show_analysis:
+                if self._bool_param('use_ote_filter', False) and ote_passed:
+                    ote_val = ote_min
+                    if direction == 'long':
+                        why_parts.append(f"OTE Filter: entry {self.close_line[0]:.2f} is in deep discount (>{ote_val} retracement)")
+                    else:
+                        why_parts.append(f"OTE Filter: entry {self.close_line[0]:.2f} is in deep premium (>{ote_val} retracement)")
                 if self._bool_param('use_space_to_target_filter', False) and space_metrics is not None:
-                    why_parts.append(
-                        f"Space to target: {space_metrics['available_rr']:.2f}R available before "
-                        f"{self._scoped_indicator_key('SH_Level', scope='htf')}"
-                    )
-            else:
-                zone = self._get_poi_zone_short()
-                if zone is not None:
-                    zone_low, zone_high = zone
-                    indicators['POI_Low'] = round(zone_low, 2)
-                    indicators['POI_High'] = round(zone_high, 2)
-                    why_parts.append(f"Structure: Bearish (state={structure}), POI [{zone_low:.2f}, {zone_high:.2f}]")
-                else:
-                    why_parts.append(f"Structure: Bearish (state={structure})")
-                if self._bool_param('use_ltf_choch_trigger', True):
-                    trigger_age = len(self.data_ltf) - self._short_choch_trigger_bar if self._short_choch_trigger_bar > 0 else None
-                    if trigger_age is not None:
-                        body_atr_ratio, has_fvg = self._get_choch_trigger_quality('short')
-                        indicators['LTF_CHOCH_Age_Bars'] = trigger_age
-                        indicators['LTF_CHOCH_Trigger_Price'] = round(self._short_choch_trigger_price, 2) if self._short_choch_trigger_price is not None else None
-                        if body_atr_ratio is not None:
-                            indicators['LTF_CHOCH_Body_ATR'] = round(body_atr_ratio, 2)
-                        if has_fvg is not None:
-                            indicators['LTF_CHOCH_FVG'] = has_fvg
-                        why_parts.append(f"{self._ltf_timeframe_label} CHoCH confirmed {trigger_age} bar(s) ago")
-                        if body_atr_ratio is not None:
-                            why_parts.append(f"{self._ltf_timeframe_label} CHoCH displacement: body {body_atr_ratio:.2f}x ATR")
-                        if has_fvg is True:
-                            why_parts.append(f"{self._ltf_timeframe_label} CHoCH left a bearish FVG")
-                if self._bool_param('use_premium_discount_filter', False) and equilibrium is not None:
-                    why_parts.append(f"Premium/Discount: entry {self.close_line[0]:.2f} is above EQ {equilibrium:.2f} (premium)")
-                if self._bool_param('use_space_to_target_filter', False) and space_metrics is not None:
-                    why_parts.append(
-                        f"Space to target: {space_metrics['available_rr']:.2f}R available before "
-                        f"{self._scoped_indicator_key('SL_Level', scope='htf')}"
-                    )
+                    level_name = self._scoped_indicator_key('SH_Level' if direction == 'long' else 'SL_Level', scope='htf')
+                    why_parts.append(f"Space to target: {space_metrics['available_rr']:.2f}R available before {level_name}")
 
         if self._is_ema_filter_enabled():
             ema_val = self.ema_htf[0]
             indicators[f'EMA_{self.params.trend_ema_period}'] = round(ema_val, 2)
-            if direction == 'long':
-                why_parts.append(f"EMA filter: HTF close above EMA{self.params.trend_ema_period} (${ema_val:,.2f})")
-            else:
-                why_parts.append(f"EMA filter: HTF close below EMA{self.params.trend_ema_period} (${ema_val:,.2f})")
+            if show_analysis:
+                if direction == 'long':
+                    why_parts.append(f"EMA filter: HTF close above EMA{self.params.trend_ema_period} (${ema_val:,.2f})")
+                else:
+                    why_parts.append(f"EMA filter: HTF close below EMA{self.params.trend_ema_period} (${ema_val:,.2f})")
 
-        if self._bool_param('use_rsi_filter', False):
+        if self._bool_param('use_rsi_filter', False) and show_analysis:
             rsi_val = self.rsi[0]
             indicators['RSI'] = round(rsi_val, 1)
             if direction == 'long':
@@ -518,17 +524,7 @@ class PriceActionStrategy(BaseStrategy):
             else:
                 why_parts.append(f"RSI filter: {rsi_val:.1f} > oversold ({self.params.rsi_oversold})")
 
-        if self._bool_param('use_rsi_momentum', False):
-            rsi_val = self.rsi[0]
-            if 'RSI' not in indicators:
-                indicators['RSI'] = round(rsi_val, 1)
-            if direction == 'long':
-                why_parts.append(f"RSI momentum: {rsi_val:.1f} ≥ {self.params.rsi_momentum_threshold}")
-            else:
-                bearish_thresh = 100 - self.params.rsi_momentum_threshold
-                why_parts.append(f"RSI momentum: {rsi_val:.1f} ≤ {bearish_thresh}")
-
-        if self._bool_param('use_adx_filter', False):
+        if self._bool_param('use_adx_filter', False) and show_analysis:
             adx_val = self.adx[0]
             indicators['ADX'] = round(adx_val, 1)
             why_parts.append(f"ADX: {adx_val:.1f} ≥ {self.params.adx_threshold} (trend strength)")
@@ -553,6 +549,8 @@ class PriceActionStrategy(BaseStrategy):
         indicators = {}
         indicators['ATR'] = round(self.atr[0], 4)
 
+        show_analysis = getattr(self.params, 'market_analysis', True)
+
         if self._bool_param('use_structure_filter', True):
             structure = self._get_structure_state()
             indicators['Structure'] = structure
@@ -562,20 +560,24 @@ class PriceActionStrategy(BaseStrategy):
                 indicators[self._scoped_indicator_key('SH_Level', scope='htf')] = round(sh_level, 2)
             if sl_level is not None:
                 indicators[self._scoped_indicator_key('SL_Level', scope='htf')] = round(sl_level, 2)
-            why_parts.append(f"Structure (HTF): state={structure}")
+            if show_analysis:
+                why_parts.append(f"Structure (HTF): state={structure}")
 
         if self._is_ema_filter_enabled():
             ema_val = self.ema_htf[0]
             indicators[f'EMA_{self.params.trend_ema_period}'] = round(ema_val, 2)
-            why_parts.append(f"EMA (HTF): EMA{self.params.trend_ema_period} at ${ema_val:,.2f}")
+            if show_analysis:
+                why_parts.append(f"EMA (HTF): EMA{self.params.trend_ema_period} at ${ema_val:,.2f}")
 
-        if self._bool_param('use_rsi_filter', False) or self._bool_param('use_rsi_momentum', False):
+        if (self._bool_param('use_rsi_filter', False) or self._bool_param('use_rsi_momentum', False)):
             indicators['RSI'] = round(self.rsi[0], 1)
-            why_parts.append(f"RSI at exit: {self.rsi[0]:.1f}")
+            if show_analysis:
+                why_parts.append(f"RSI at exit: {self.rsi[0]:.1f}")
 
         if self._bool_param('use_adx_filter', False):
             indicators['ADX'] = round(self.adx[0], 1)
-            why_parts.append(f"ADX at exit: {self.adx[0]:.1f}")
+            if show_analysis:
+                why_parts.append(f"ADX at exit: {self.adx[0]:.1f}")
 
         return {
             'why_exit': why_parts,
@@ -755,20 +757,27 @@ class PriceActionStrategy(BaseStrategy):
             return None
         return (sh_level + sl_level) / 2.0
 
-    def _passes_premium_discount_filter(self, direction: str) -> bool:
+    def _passes_ote_filter(self, direction: str) -> bool:
         if not self._bool_param('use_structure_filter', True):
             return True
-        if not self._bool_param('use_premium_discount_filter', False):
+        if not self._bool_param('use_ote_filter', False):
             return True
 
-        equilibrium = self._get_htf_equilibrium()
-        if equilibrium is None:
+        sh_level = self._to_valid_float(self.ms_htf.sh_level[0])
+        sl_level = self._to_valid_float(self.ms_htf.sl_level[0])
+        if sh_level is None or sl_level is None or sh_level <= sl_level:
             return False
 
+        htf_range = sh_level - sl_level
+        ote_threshold = getattr(self.params, 'ote_min_retracement', 0.62)
         entry_price = self.close_line[0]
+
         if direction == 'long':
-            return entry_price < equilibrium
-        return entry_price > equilibrium
+            # Buy only if price is in deep discount: Entry <= High - (Range * Threshold)
+            return entry_price <= (sh_level - htf_range * ote_threshold)
+        else:
+            # Sell only if price is in deep premium: Entry >= Low + (Range * Threshold)
+            return entry_price >= (sl_level + htf_range * ote_threshold)
 
     def _get_space_to_target_metrics(self, direction: str, entry_price: float):
         if direction == 'long':
@@ -1211,77 +1220,123 @@ class PriceActionStrategy(BaseStrategy):
     def _is_bearish_engulfing(self):
         return self._bool_param('pattern_bearish_engulfing', True) and self.cdl_engulfing[0] == -100 and self._has_significant_range() and self._passes_engulfing_quality('short')
 
-    def _check_filters_long(self):
+    def _check_filters_long(self, pattern_name="Pattern"):
         if self.position or self.order:
             return False
 
+        verbose = getattr(self.params, 'detailed_signals', True)
+
         if self._bool_param('use_structure_filter', True):
             if self._get_structure_state() != 1:
+                if verbose: logger.info(f"Rejected {pattern_name}: Structure not bullish")
                 return False
             if self._bool_param('use_ltf_choch_trigger', True):
                 if not self._has_valid_ltf_choch_trigger('long'):
+                    if verbose: logger.info(f"Rejected {pattern_name}: Invalid LTF CHoCH Trigger")
                     return False
             elif not self._bar_intersects_zone(self._get_poi_zone_long()):
+                if verbose: logger.info(f"Rejected {pattern_name}: Does not intersect generic POI zone")
                 return False
-            if not self._passes_premium_discount_filter('long'):
+            if not self._passes_ote_filter('long'):
+                if verbose: logger.info(f"Rejected {pattern_name}: Failed OTE Filter (price not deep enough)")
                 return False
             if not self._passes_space_to_target_filter('long'):
+                if verbose: logger.info(f"Rejected {pattern_name}: Insufficient space to target (closer than min RR)")
                 return False
+
+        if self._bool_param('use_premium_discount_filter', False):
+            equilibrium = self._get_htf_equilibrium()
+            if equilibrium is not None:
+                entry_price = self._to_valid_float(self.close_line[0])
+                if entry_price is not None and entry_price > equilibrium:
+                    if verbose:
+                        logger.info(
+                            f"Rejected {pattern_name}: Long entry above HTF equilibrium "
+                            f"(entry={entry_price:.2f} > eq={equilibrium:.2f})"
+                        )
+                    return False
 
         if self._is_ema_filter_enabled():
             htf_close = self._to_valid_float(self.data_htf.close[0])
             ema_val = self._to_valid_float(self.ema_htf[0])
             if htf_close is None or ema_val is None or htf_close < ema_val:
+                if verbose: logger.info(f"Rejected {pattern_name}: HTF close below EMA")
                 return False
 
         if self._bool_param('use_rsi_filter', False):
             if self.rsi[0] > self.params.rsi_overbought:
+                if verbose: logger.info(f"Rejected {pattern_name}: RSI Overbought")
                 return False
 
         if self._bool_param('use_rsi_momentum', False):
             if self.rsi[0] < self.params.rsi_momentum_threshold:
+                if verbose: logger.info(f"Rejected {pattern_name}: RSI Momentum below threshold")
                 return False
 
         if self._bool_param('use_adx_filter', False):
             if self.adx[0] < self.params.adx_threshold:
+                if verbose: logger.info(f"Rejected {pattern_name}: ADX below threshold (weak trend)")
                 return False
 
         return True
 
-    def _check_filters_short(self):
+    def _check_filters_short(self, pattern_name="Pattern"):
         if self.position or self.order:
             return False
+            
+        verbose = getattr(self.params, 'detailed_signals', True)
 
         if self._bool_param('use_structure_filter', True):
             if self._get_structure_state() != -1:
+                if verbose: logger.info(f"Rejected {pattern_name}: Structure not bearish")
                 return False
             if self._bool_param('use_ltf_choch_trigger', True):
                 if not self._has_valid_ltf_choch_trigger('short'):
+                    if verbose: logger.info(f"Rejected {pattern_name}: Invalid LTF CHoCH Trigger")
                     return False
             elif not self._bar_intersects_zone(self._get_poi_zone_short()):
+                if verbose: logger.info(f"Rejected {pattern_name}: Does not intersect generic POI zone")
                 return False
-            if not self._passes_premium_discount_filter('short'):
+            if not self._passes_ote_filter('short'):
+                if verbose: logger.info(f"Rejected {pattern_name}: Failed OTE Filter (price not high enough)")
                 return False
             if not self._passes_space_to_target_filter('short'):
+                if verbose: logger.info(f"Rejected {pattern_name}: Insufficient space to target (closer than min RR)")
                 return False
+
+        if self._bool_param('use_premium_discount_filter', False):
+            equilibrium = self._get_htf_equilibrium()
+            if equilibrium is not None:
+                entry_price = self._to_valid_float(self.close_line[0])
+                if entry_price is not None and entry_price < equilibrium:
+                    if verbose:
+                        logger.info(
+                            f"Rejected {pattern_name}: Short entry below HTF equilibrium "
+                            f"(entry={entry_price:.2f} < eq={equilibrium:.2f})"
+                        )
+                    return False
 
         if self._is_ema_filter_enabled():
             htf_close = self._to_valid_float(self.data_htf.close[0])
             ema_val = self._to_valid_float(self.ema_htf[0])
             if htf_close is None or ema_val is None or htf_close > ema_val:
+                if verbose: logger.info(f"Rejected {pattern_name}: HTF close above EMA")
                 return False
 
         if self._bool_param('use_rsi_filter', False):
             if self.rsi[0] < self.params.rsi_oversold:
+                if verbose: logger.info(f"Rejected {pattern_name}: RSI Oversold")
                 return False
 
         if self._bool_param('use_rsi_momentum', False):
             bearish_threshold = 100 - self.params.rsi_momentum_threshold
             if self.rsi[0] > bearish_threshold:
+                if verbose: logger.info(f"Rejected {pattern_name}: RSI Momentum above threshold")
                 return False
 
         if self._bool_param('use_adx_filter', False):
             if self.adx[0] < self.params.adx_threshold:
+                if verbose: logger.info(f"Rejected {pattern_name}: ADX below threshold (weak trend)")
                 return False
 
         return True

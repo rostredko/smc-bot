@@ -65,9 +65,13 @@ const formatLiveDuration = (mins: number | null | undefined): string => {
     return remainingHours > 0 ? `${days}d ${remainingHours}h` : `${days}d`;
 };
 
+const getLoadedTemplateName = (item: BacktestSummary) => {
+    return item.loaded_template_name ?? item.configuration?.loaded_template_name ?? null;
+};
+
 const BacktestHistoryList: React.FC = () => {
     const { loadUserConfigs, isLiveRunning, isLiveStopping, isRunning } = useConfigContext();
-    const { backtestStatus } = useResultsContext();
+    const { backtestStatus, results } = useResultsContext();
     const [history, setHistory] = useState<BacktestSummary[]>([]);
     const [openRows, setOpenRows] = useState<Record<string, boolean>>({});
     const [page, setPage] = useState(1);
@@ -86,6 +90,7 @@ const BacktestHistoryList: React.FC = () => {
     const lastHistorySyncRunRef = useRef<string>('');
     const prevLiveBusyRef = useRef<boolean>(false);
     const prevBacktestRunRef = useRef<boolean>(false);
+    const lastResultsSyncRunRef = useRef<string>('');
 
     const loadData = useCallback(async (currentPage: number = 1, field?: string, direction?: 'asc' | 'desc') => {
         setLoading(true);
@@ -149,6 +154,27 @@ const BacktestHistoryList: React.FC = () => {
             clearTimeout(t2);
         };
     }, [isRunning, page, loadData]);
+
+    useEffect(() => {
+        if (!results) return;
+
+        const runId = backtestStatus?.run_id ?? (results as { run_id?: string })?.run_id;
+        const status = backtestStatus?.status;
+        if (!runId || (status !== 'completed' && status !== 'cancelled')) return;
+
+        if (lastResultsSyncRunRef.current === runId) return;
+        lastResultsSyncRunRef.current = runId;
+
+        if (page !== 1) {
+            setPage(1);
+        }
+        const t1 = setTimeout(() => loadData(1), 100);
+        const t2 = setTimeout(() => loadData(1), 1200);
+        return () => {
+            clearTimeout(t1);
+            clearTimeout(t2);
+        };
+    }, [results, backtestStatus?.run_id, backtestStatus?.status, page, loadData]);
 
     useEffect(() => {
         const isLiveBusy = isLiveRunning || isLiveStopping;
@@ -445,6 +471,15 @@ const BacktestHistoryList: React.FC = () => {
                                                         <span style={{ wordBreak: 'break-word' }}>{item.is_optimization_batch ? `${item.strategy} (${item.variants_count ?? 0} variants)` : item.strategy}</span>
                                                         {item.is_live && <Chip label="LIVE" size="small" color="secondary" sx={{ height: 20, fontSize: '0.65rem', flexShrink: 0 }} />}
                                                         {item.is_optimization_batch && <Chip label="OPTIMIZE" size="small" color="info" sx={{ height: 20, fontSize: '0.65rem', flexShrink: 0 }} />}
+                                                        {getLoadedTemplateName(item) && (
+                                                            <Chip
+                                                                label={getLoadedTemplateName(item)}
+                                                                size="small"
+                                                                variant="outlined"
+                                                                color="primary"
+                                                                sx={{ height: 20, fontSize: '0.65rem', flexShrink: 0, maxWidth: '100%' }}
+                                                            />
+                                                        )}
                                                     </Box>
                                                 </TableCell>
                                                 <TableCell>
@@ -487,10 +522,10 @@ const BacktestHistoryList: React.FC = () => {
                                                         onExited={() => setExpandedForChart((p) => ({ ...p, [item.filename]: false }))}
                                                     >
                                                         <Box sx={{ margin: 2 }}>
-                                                            {(item.loaded_template_name ?? getConfigValue(item.configuration, 'loaded_template_name')) && (
+                                                            {getLoadedTemplateName(item) && (
                                                                 <Box sx={{ mb: 2 }}>
                                                                     <Chip
-                                                                        label={`Template: ${item.loaded_template_name ?? getConfigValue(item.configuration, 'loaded_template_name')}`}
+                                                                        label={getLoadedTemplateName(item)}
                                                                         size="small"
                                                                         variant="outlined"
                                                                         color="primary"

@@ -52,7 +52,7 @@ class TestAPI(unittest.TestCase):
         strategies = response.json()["strategies"]
         names = [strategy["name"] for strategy in strategies]
 
-        self.assertEqual(names, ["bt_price_action", "fast_test_strategy"])
+        self.assertEqual(names, ["bt_price_action", "fast_test_strategy", "fvg_sweep_choch_strategy"])
         self.assertNotIn("market_structure", names)
 
     def test_live_config_endpoints(self):

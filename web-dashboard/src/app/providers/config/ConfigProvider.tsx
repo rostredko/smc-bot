@@ -229,12 +229,16 @@ export const ConfigProvider: React.FC<{ children: React.ReactNode }> = ({ childr
                     ? data.strategy.config
                     : data.strategy_config;
 
-                setConfig(prev => ({
-                    ...prev,
+                const normalizedLoadedConfig: BacktestConfig = {
+                    ...DEFAULT_CONFIG,
                     ...data,
-                    strategy: strategyName,
-                    strategy_config: strategyConfigToLoad
-                }));
+                    strategy: strategyName || "",
+                    strategy_config: strategyConfigToLoad ?? {},
+                };
+
+                setConfig(normalizedLoadedConfig);
+                setSelectedVariantForLive(null);
+                setErrors({});
 
                 if (strategyName) {
                     setSelectedStrategy(strategyName);

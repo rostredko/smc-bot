@@ -1,4 +1,4 @@
-import React, { useMemo, useEffect } from 'react';
+import React, { useMemo, useEffect, useState, useCallback } from 'react';
 import {
     DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, useSensors,
 } from '@dnd-kit/core';
@@ -25,6 +25,7 @@ import { useConfigContext } from '../../../app/providers/config/ConfigProvider';
 import { useResultsContext } from '../../../app/providers/results/ResultsProvider';
 import { useConsoleContext } from '../../../app/providers/console/ConsoleProvider';
 import { TOOLTIP_HINTS } from '../../../shared/const/tooltips';
+import type { Strategy } from '../../../shared/model/types';
 import StrategyField from '../../../shared/ui/StrategyField/StrategyField';
 
 /** 3 numeric params for Optimize mode. */
@@ -105,6 +106,329 @@ interface ConfigPanelProps {
     activeTab?: 'backtest' | 'live';
 }
 
+type StrategyEditorView = 'form' | 'nodes';
+
+interface StrategyNodeCardProps {
+    title: string;
+    keys: string[];
+    selectedStrategyDef: Strategy | undefined;
+    strategyConfig: Record<string, any>;
+    config: Record<string, any>;
+    configDisabled: boolean;
+    errors: Record<string, string | undefined>;
+    handleStrategyConfigChange: (key: string, value: any) => void;
+    handleConfigChange: (key: string, value: any) => void;
+    formatStrategyLabel: (key: string) => string;
+    accentColor: string;
+    statusLabel: string;
+    isDimmed: boolean;
+    dependencyChips?: string[];
+    dependencyMessage?: string;
+}
+
+interface FieldDependencyState {
+    isDisabled: boolean;
+    dependencyText?: string;
+}
+
+const getStrategyFieldDependencyState = (strategyConfig: Record<string, any>, key: string): FieldDependencyState => {
+    if (["ote_min_retracement", "ote_max_retracement"].includes(key) && strategyConfig["use_ote_filter"] === false) {
+        return { isDisabled: true, dependencyText: "Enabled by Use OTE Filter" };
+    }
+    if (key === "min_pullback_atr_mult" && strategyConfig["use_min_pullback_filter"] === false) {
+        return { isDisabled: true, dependencyText: "Enabled by Use Min Pullback Filter" };
+    }
+    if (["choch_mode", "choch_entry_window_bars", "choch_max_pullaway_mult", "displacement_required"].includes(key) && strategyConfig["enable_choch"] === false) {
+        return { isDisabled: true, dependencyText: "Enabled by Enable CHoCH" };
+    }
+    if (["displacement_atr_mult", "displacement_close_threshold"].includes(key) && strategyConfig["enable_displacement"] === false) {
+        return { isDisabled: true, dependencyText: "Enabled by Enable Displacement" };
+    }
+    if (key === "limit_mode" && strategyConfig["entry_type"] !== "limit") {
+        return { isDisabled: true, dependencyText: "Available when Entry Type = limit" };
+    }
+    if (key === "breakeven_sl" && strategyConfig["use_breakeven_sl"] === false) {
+        return { isDisabled: true, dependencyText: "Enabled by Breakeven Stop" };
+    }
+    return { isDisabled: false };
+};
+
+const getNodeDependencySummary = (title: string, strategyConfig: Record<string, any>): string | undefined => {
+    if (title === "Structure & POI") {
+        const messages = [
+            strategyConfig["use_ote_filter"] === false ? "OTE retracement inputs stay locked until Use OTE Filter is enabled." : null,
+            strategyConfig["use_min_pullback_filter"] === false ? "Min Pullback threshold stays locked until Use Min Pullback Filter is enabled." : null,
+        ].filter((message): message is string => Boolean(message));
+        return messages.length > 0 ? messages.join(" ") : undefined;
+    }
+    if (title === "CHoCH" && strategyConfig["enable_choch"] === false) {
+        return "CHoCH mode, window, and pullaway controls stay locked until Enable CHoCH is turned on.";
+    }
+    if (title === "Displacement" && strategyConfig["enable_displacement"] === false) {
+        return "Displacement thresholds stay locked until Enable Displacement is turned on.";
+    }
+    if (title === "Entry" && strategyConfig["entry_type"] !== "limit") {
+        return "Limit Mode only becomes editable when Entry Type is switched to limit.";
+    }
+    if (title === "Stop Loss" && strategyConfig["use_breakeven_sl"] === false) {
+        return "Breakeven price stays locked until Breakeven Stop is enabled.";
+    }
+    return undefined;
+};
+
+const StrategyNodeCard: React.FC<StrategyNodeCardProps> = ({
+    title,
+    keys,
+    selectedStrategyDef,
+    strategyConfig,
+    config,
+    configDisabled,
+    errors,
+    handleStrategyConfigChange,
+    handleConfigChange,
+    formatStrategyLabel,
+    accentColor,
+    statusLabel,
+    isDimmed,
+    dependencyChips = [],
+    dependencyMessage,
+}) => {
+    const visibleKeys = keys.filter((key) => selectedStrategyDef?.config_schema?.[key]);
+    if (visibleKeys.length === 0) return null;
+
+    return (
+        <Card
+            variant="outlined"
+            sx={{
+                minHeight: 180,
+                borderRadius: 3,
+                borderColor: isDimmed ? 'rgba(255,255,255,0.08)' : 'rgba(255,255,255,0.12)',
+                background: `linear-gradient(180deg, ${isDimmed ? 'rgba(255,255,255,0.015)' : 'rgba(255,255,255,0.03)'} 0%, rgba(255,255,255,0.01) 100%)`,
+                boxShadow: isDimmed ? '0 10px 24px rgba(0,0,0,0.12)' : '0 18px 40px rgba(0,0,0,0.18)',
+                opacity: isDimmed ? 0.68 : 1,
+                transition: 'opacity 160ms ease, transform 160ms ease, box-shadow 160ms ease',
+                position: 'relative',
+                overflow: 'hidden',
+                '&::before': {
+                    content: '""',
+                    position: 'absolute',
+                    left: 0,
+                    top: 0,
+                    bottom: 0,
+                    width: 4,
+                    bgcolor: accentColor,
+                    opacity: isDimmed ? 0.28 : 0.9,
+                },
+                '&:hover': {
+                    transform: 'translateY(-2px)',
+                    boxShadow: isDimmed ? '0 12px 28px rgba(0,0,0,0.14)' : '0 22px 48px rgba(0,0,0,0.22)',
+                },
+            }}
+        >
+            <CardHeader
+                title={
+                    <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 1 }}>
+                        <Typography variant="h6" sx={{ fontWeight: 700 }}>
+                            {title}
+                        </Typography>
+                        <Chip
+                            size="small"
+                            label={statusLabel}
+                            sx={{
+                                bgcolor: `${accentColor}1f`,
+                                color: accentColor,
+                                fontWeight: 700,
+                                border: `1px solid ${accentColor}44`,
+                            }}
+                        />
+                    </Box>
+                }
+                subheader={`${visibleKeys.length} parameter${visibleKeys.length === 1 ? '' : 's'}`}
+                sx={{
+                    pb: 0.5,
+                    '& .MuiCardHeader-title': { fontWeight: 700 },
+                    '& .MuiCardHeader-subheader': { mt: 0.5 },
+                }}
+            />
+            <CardContent sx={{ pt: 1.25 }}>
+                {dependencyChips.length > 0 && (
+                    <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75, mb: 1.5 }}>
+                        {dependencyChips.map((chip) => (
+                            <Chip
+                                key={`${title}-${chip}`}
+                                size="small"
+                                label={chip}
+                                variant="outlined"
+                                sx={{
+                                    height: 22,
+                                    fontSize: '0.72rem',
+                                    color: 'text.secondary',
+                                    borderColor: 'rgba(255,255,255,0.15)',
+                                }}
+                            />
+                        ))}
+                    </Box>
+                )}
+                {dependencyMessage && (
+                    <Box
+                        sx={{
+                            mb: 1.75,
+                            px: 1.25,
+                            py: 1,
+                            borderRadius: 2,
+                            bgcolor: 'rgba(255,255,255,0.03)',
+                            border: '1px dashed rgba(255,255,255,0.14)',
+                        }}
+                    >
+                        <Typography variant="caption" sx={{ color: 'text.secondary', lineHeight: 1.6 }}>
+                            {dependencyMessage}
+                        </Typography>
+                    </Box>
+                )}
+                <Grid container spacing={1.5}>
+                    {visibleKeys.map((key) => {
+                        const schema = selectedStrategyDef?.config_schema?.[key];
+                        if (!schema) return null;
+
+                        let isDisabled = configDisabled;
+                        if (!isDisabled) {
+                            if (["rsi_period", "rsi_overbought", "rsi_oversold"].includes(key) && strategyConfig["use_rsi_filter"] === false) {
+                                isDisabled = true;
+                            }
+                            if (["rsi_momentum_threshold"].includes(key) && strategyConfig["use_rsi_momentum"] === false) {
+                                isDisabled = true;
+                            }
+                            if (key === "trend_ema_period" && strategyConfig["use_trend_filter"] === false) {
+                                isDisabled = true;
+                            }
+                            if (["adx_period", "adx_threshold"].includes(key) && strategyConfig["use_adx_filter"] === false) {
+                                isDisabled = true;
+                            }
+                            if (key === "breakeven_sl" && strategyConfig["use_breakeven_sl"] === false) {
+                                isDisabled = true;
+                            }
+                        }
+
+                        const dependencyState = getStrategyFieldDependencyState(strategyConfig, key);
+                        const effectiveDisabled = isDisabled || dependencyState.isDisabled;
+
+                        return (
+                            <StrategyField
+                                key={`${title}-${key}`}
+                                fieldKey={key}
+                                schema={schema}
+                                value={strategyConfig[key]}
+                                label={formatStrategyLabel(key)}
+                                tooltip={TOOLTIP_HINTS[key] || "No description available"}
+                                isDisabled={effectiveDisabled}
+                                onChange={handleStrategyConfigChange}
+                                error={errors[key]}
+                                dependencyText={dependencyState.dependencyText}
+                                isDependent={dependencyState.isDisabled}
+                            />
+                        );
+                    })}
+                    {title === "Risk & Reward" && (
+                        <Grid item xs={12} md={6}>
+                            <MuiTooltip title={TOOLTIP_HINTS["breakeven_trigger_r"] || "Move stop to breakeven at this R-multiple"} arrow placement="top">
+                                <TextField
+                                    label="Breakeven Trigger (R)"
+                                    type="number"
+                                    value={isNaN(config.breakeven_trigger_r) ? "" : config.breakeven_trigger_r}
+                                    onChange={e => handleConfigChange("breakeven_trigger_r", parseFloat(e.target.value))}
+                                    disabled={configDisabled}
+                                    fullWidth
+                                />
+                            </MuiTooltip>
+                        </Grid>
+                    )}
+                </Grid>
+            </CardContent>
+        </Card>
+    );
+};
+
+const CoreStrategyNodeCard: React.FC<{
+    selectedStrategyDef: Strategy | undefined;
+    strategyConfig: Record<string, any>;
+    nodeSectionMeta: Array<{ isDimmed: boolean; title: string }>;
+}> = ({ selectedStrategyDef, strategyConfig, nodeSectionMeta }) => {
+    const activeModules = nodeSectionMeta.filter((section) => !section.isDimmed).length;
+    const dependencyModules = [
+        strategyConfig["use_ote_filter"] === false ? "OTE off" : null,
+        strategyConfig["use_min_pullback_filter"] === false ? "Min Pullback off" : null,
+        strategyConfig["enable_choch"] === false ? "CHoCH off" : null,
+        strategyConfig["enable_displacement"] === false ? "Displacement off" : null,
+    ].filter((item): item is string => Boolean(item));
+
+    return (
+        <Card
+            variant="outlined"
+            sx={{
+                minHeight: 220,
+                borderRadius: 4,
+                borderColor: 'rgba(33, 150, 243, 0.28)',
+                background: 'radial-gradient(circle at top, rgba(33, 150, 243, 0.14), rgba(255,255,255,0.02) 55%)',
+                boxShadow: '0 22px 54px rgba(0,0,0,0.22)',
+            }}
+        >
+            <CardHeader
+                title={
+                    <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 1 }}>
+                        <Typography variant="h5" sx={{ fontWeight: 800 }}>
+                            {selectedStrategyDef?.display_name ?? "Core Strategy"}
+                        </Typography>
+                        <Chip
+                            size="small"
+                            label="core"
+                            sx={{
+                                bgcolor: 'rgba(33, 150, 243, 0.18)',
+                                color: '#1976d2',
+                                fontWeight: 800,
+                                border: '1px solid rgba(33, 150, 243, 0.32)',
+                            }}
+                        />
+                    </Box>
+                }
+                subheader="Main strategy node. Attached modules around it shape entry quality, risk, and exits."
+            />
+            <CardContent sx={{ pt: 0 }}>
+                <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1, mb: 2 }}>
+                    <Chip size="small" label={`Entry: ${strategyConfig["entry_type"] ?? "market"}`} />
+                    <Chip size="small" label={`TP: ${strategyConfig["tp_mode"] ?? "rr"}`} />
+                    <Chip size="small" label={`CHoCH: ${strategyConfig["choch_mode"] ?? "fast"}`} />
+                    <Chip size="small" label={`Active Modules: ${activeModules}`} />
+                </Box>
+                {dependencyModules.length > 0 && (
+                    <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75 }}>
+                        {dependencyModules.map((label) => (
+                            <Chip
+                                key={label}
+                                size="small"
+                                label={label}
+                                variant="outlined"
+                                sx={{
+                                    color: 'text.secondary',
+                                    borderColor: 'rgba(255,255,255,0.18)',
+                                }}
+                            />
+                        ))}
+                    </Box>
+                )}
+            </CardContent>
+        </Card>
+    );
+};
+
+const NODE_LAYOUT_ROWS = [
+    ["Structure & POI"],
+    ["FVG", "Liquidity Sweep"],
+    ["CHoCH", "Displacement"],
+    ["Entry"],
+    ["Stop Loss", "Take Profit"],
+    ["Risk"],
+] as const;
+
 const ConfigPanel: React.FC<ConfigPanelProps> = ({ activeTab = 'backtest' }) => {
     const {
         strategies, selectedStrategy, config, strategyConfig,
@@ -132,6 +456,7 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ activeTab = 'backtest' }) => 
 
     const { backtestStatus, setBacktestStatus, setResults } = useResultsContext();
     const { setConsoleOutput } = useConsoleContext();
+    const [editorView, setEditorView] = useState<StrategyEditorView>('form');
 
     const configDisabled = isConfigDisabled || isRunning || isLiveRunning;
     const liveExchangeValue = config.exchange || "binance";
@@ -149,31 +474,93 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ activeTab = 'backtest' }) => 
         // eslint-disable-next-line react-hooks/exhaustive-deps -- only run when mode switches to optimize
     }, [config.run_mode]);
 
-    const strategySections: Array<{ title: string; keys: string[] }> = [
-        {
-            title: "Filters",
-            keys: [
-                "use_rsi_filter", "rsi_period", "rsi_overbought", "rsi_oversold",
-                "use_rsi_momentum", "rsi_momentum_threshold",
-                "use_adx_filter", "adx_period", "adx_threshold",
-                "use_trend_filter", "trend_ema_period",
-            ]
-        },
-        {
-            title: "Patterns",
-            keys: [
-                "pattern_hammer", "pattern_inverted_hammer",
-                "pattern_shooting_star", "pattern_hanging_man",
-                "pattern_bullish_engulfing", "pattern_bearish_engulfing"
-            ]
-        },
-    ];
+    const selectedStrategyDef = useMemo(
+        () => strategies.find(s => s.name === selectedStrategy),
+        [strategies, selectedStrategy]
+    );
 
-    const structurePoiKeys = [
-        "poi_zone_upper_atr_mult",
-        "poi_zone_lower_atr_mult",
-        "use_premium_discount_filter",
-    ];
+    const strategySections: Array<{ title: string; keys: string[] }> = useMemo(() => {
+        const defaultStrategySections: Array<{ title: string; keys: string[] }> = [
+            {
+                title: "LTF CHoCH",
+                keys: [
+                    "use_ltf_choch_trigger",
+                    "ltf_choch_entry_window_bars",
+                    "use_choch_displacement_filter",
+                    "choch_displacement_atr_mult",
+                    "min_range_factor",
+                    "max_body_to_range",
+                    "min_wick_to_range",
+                    "require_choch_fvg"
+                ]
+            },
+            {
+                title: "Risk & Reward",
+                keys: [
+                    "risk_reward_ratio",
+                    "use_space_to_target_filter",
+                    "space_to_target_min_rr",
+                    "use_opposing_level_tp",
+                    "sl_buffer_atr"
+                ]
+            },
+            {
+                title: "Structure & POI",
+                keys: [
+                    "use_ote_filter",
+                    "ote_min_retracement",
+                    "ote_max_retracement",
+                    "use_premium_discount_filter",
+                    "poi_zone_upper_atr_mult",
+                    "poi_zone_lower_atr_mult",
+                    "use_structure_filter"
+                ]
+            },
+            {
+                title: "Patterns",
+                keys: [
+                    "pattern_hammer", "pattern_inverted_hammer",
+                    "pattern_shooting_star", "pattern_hanging_man",
+                    "pattern_bullish_engulfing", "pattern_bearish_engulfing"
+                ]
+            },
+        ];
+
+        const genericSectionOrder = [
+            "Structure & POI",
+            "FVG",
+            "Liquidity Sweep",
+            "CHoCH",
+            "Displacement",
+            "Entry",
+            "Stop Loss",
+            "Take Profit",
+            "Risk",
+        ];
+
+        if (!selectedStrategyDef) return [];
+        if (selectedStrategyDef.name === "bt_price_action") {
+            return defaultStrategySections;
+        }
+
+        const schema = selectedStrategyDef.config_schema ?? {};
+        const grouped = new Map<string, string[]>();
+        Object.entries(schema).forEach(([key, fieldSchema]: [string, any]) => {
+            const section = typeof fieldSchema?.section === "string" ? fieldSchema.section : "Strategy";
+            const bucket = grouped.get(section) ?? [];
+            bucket.push(key);
+            grouped.set(section, bucket);
+        });
+
+        const orderedTitles = [
+            ...genericSectionOrder.filter((title) => grouped.has(title)),
+            ...Array.from(grouped.keys()).filter((title) => !genericSectionOrder.includes(title)),
+        ];
+
+        return orderedTitles.map((title) => ({ title, keys: grouped.get(title) ?? [] }));
+    }, [selectedStrategyDef]);
+
+    const structurePoiKeys: string[] = [];
 
     const PATTERN_LABELS: Record<string, string> = {
         pattern_hammer: "Hammer (Bullish Pinbar)",
@@ -182,32 +569,40 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ activeTab = 'backtest' }) => 
         pattern_hanging_man: "Hanging Man (Bearish Pinbar)",
         pattern_bullish_engulfing: "Bullish Engulfing",
         pattern_bearish_engulfing: "Bearish Engulfing",
+        use_ote_filter: "Use OTE Filter",
+        ote_min_retracement: "OTE Retracement Threshold",
+        ote_max_retracement: "OTE Max Retracement",
+        use_trend_filter: "Use Trend Filter",
+        trend_ema_period: "Trend EMA Period",
+        poi_zone_upper_atr_mult: "POI Upper ATR Multiplier",
+        poi_zone_lower_atr_mult: "POI Lower ATR Multiplier",
     };
 
     const PATTERN_DESCRIPTIONS: Record<string, string> = {
         pattern_hammer: "Small body with long lower wick at bottom of downtrend; bullish reversal.",
         pattern_inverted_hammer: "Small body with long upper wick at bottom of downtrend; bullish reversal.",
-        pattern_shooting_star: "Small body with long upper wick at top of uptrend; bearish reversal.",
+        pattern_shooting_star: "Shooting Star (Bearish Pinbar)",
         pattern_hanging_man: "Small body with long lower wick at top of uptrend; bearish reversal.",
         pattern_bullish_engulfing: "Second candle fully engulfs the first; bullish reversal.",
         pattern_bearish_engulfing: "Second candle fully engulfs the first; bearish reversal.",
     };
 
-    const generalStrategyKeys = [
-        "risk_reward_ratio", "sl_buffer_atr", "atr_period",
-        "min_range_factor", "min_wick_to_range", "max_body_to_range",
-    ];
+    const generalStrategyKeys: string[] = useMemo(() => {
+        if (!selectedStrategyDef) return [];
+        if (selectedStrategyDef.name === "bt_price_action") return [];
 
-    const formatStrategyLabel = (key: string) => {
+        return Object.entries(selectedStrategyDef.config_schema ?? {})
+            .filter(([, fieldSchema]: [string, any]) => !fieldSchema?.section)
+            .map(([key]) => key);
+    }, [selectedStrategyDef]);
+
+    const formatStrategyLabel = useCallback((key: string) => {
+        const schemaLabel = selectedStrategyDef?.config_schema?.[key]?.label;
+        if (typeof schemaLabel === "string" && schemaLabel.trim()) return schemaLabel;
         if (key === "poi_zone_upper_atr_mult") return "POI Upper ATR Multiplier";
         if (key === "poi_zone_lower_atr_mult") return "POI Lower ATR Multiplier";
         return key.replace(/_/g, " ").replace(/\b\w/g, (l: string) => l.toUpperCase());
-    };
-
-    const selectedStrategyDef = useMemo(
-        () => strategies.find(s => s.name === selectedStrategy),
-        [strategies, selectedStrategy]
-    );
+    }, [selectedStrategyDef]);
 
     const renderedSchemaKeys = (() => {
         const keys = new Set<string>(generalStrategyKeys);
@@ -218,8 +613,170 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ activeTab = 'backtest' }) => 
 
     const advancedStrategyKeys = (() => {
         const schema = selectedStrategyDef?.config_schema ?? {};
-        return Object.keys(schema).filter((k) => !renderedSchemaKeys.has(k));
+        if (selectedStrategyDef?.name !== "bt_price_action") {
+            return [];
+        }
+        const allowedAdvancedKeys = new Set([
+            "use_pinbar_quality_filter",
+            "pinbar_min_wick_to_body_ratio",
+            "pinbar_max_opposite_wick_to_range",
+            "pinbar_close_near_extreme_threshold",
+            "use_engulfing_quality_filter",
+            "engulfing_min_body_to_range",
+            "engulfing_min_body_to_atr",
+            "engulfing_min_body_engulf_ratio",
+            "engulfing_max_opposite_wick_to_range",
+            "engulfing_require_close_through_prev_extreme"
+        ]);
+        return Object.keys(schema).filter((k) => allowedAdvancedKeys.has(k) && !renderedSchemaKeys.has(k));
     })();
+
+    const nodeSections = useMemo(() => {
+        const sectionByTitle = new Map(strategySections.map((section) => [section.title, section]));
+        const orderedTitles = [
+            "Structure & POI",
+            "FVG",
+            "Liquidity Sweep",
+            "CHoCH",
+            "Displacement",
+            "Entry",
+            "Stop Loss",
+            "Take Profit",
+            "Risk",
+        ];
+
+        const orderedSections = orderedTitles
+            .map((title) => sectionByTitle.get(title))
+            .filter((section): section is { title: string; keys: string[] } => Boolean(section));
+
+        const remaining = strategySections.filter((section) => !orderedTitles.includes(section.title));
+        return [...orderedSections, ...remaining];
+    }, [strategySections]);
+
+    const nodeSectionMeta = useMemo(() => {
+        const explicitMeta: Record<string, { accentColor: string; toggleKey?: string; summaryKeys: string[] }> = {
+            "Structure & POI": {
+                accentColor: '#4fc3f7',
+                summaryKeys: ["enable_structure_filter", "use_ote_filter", "use_min_pullback_filter"],
+            },
+            "FVG": {
+                accentColor: '#81c784',
+                toggleKey: "enable_fvg",
+                summaryKeys: ["enable_fvg", "fvg_min_atr_mult", "fvg_max_age_bars"],
+            },
+            "Liquidity Sweep": {
+                accentColor: '#ffb74d',
+                toggleKey: "enable_sweep",
+                summaryKeys: ["enable_sweep", "sweep_min_atr_mult"],
+            },
+            "CHoCH": {
+                accentColor: '#ba68c8',
+                toggleKey: "enable_choch",
+                summaryKeys: ["enable_choch", "choch_mode", "choch_entry_window_bars"],
+            },
+            "Displacement": {
+                accentColor: '#ef5350',
+                toggleKey: "enable_displacement",
+                summaryKeys: ["enable_displacement", "displacement_required", "displacement_atr_mult"],
+            },
+            "Entry": {
+                accentColor: '#64b5f6',
+                summaryKeys: ["entry_type", "limit_mode"],
+            },
+            "Stop Loss": {
+                accentColor: '#90a4ae',
+                summaryKeys: ["sl_buffer_mult", "use_breakeven_sl", "breakeven_sl"],
+            },
+            "Take Profit": {
+                accentColor: '#ffd54f',
+                summaryKeys: ["tp_mode", "risk_reward_ratio", "partial_tp"],
+            },
+            "Risk": {
+                accentColor: '#4db6ac',
+                summaryKeys: ["atr_period", "min_rr_filter"],
+            },
+        };
+
+        return nodeSections.map((section) => {
+            const meta = explicitMeta[section.title] ?? {
+                accentColor: '#90caf9',
+                summaryKeys: section.keys.slice(0, 3),
+            };
+            const isToggleSection =
+                meta.toggleKey &&
+                section.keys.includes(meta.toggleKey) &&
+                selectedStrategyDef?.config_schema?.[meta.toggleKey];
+            const isEnabled = meta.toggleKey && isToggleSection ? strategyConfig[meta.toggleKey] !== false : true;
+
+            return {
+                ...section,
+                accentColor: meta.accentColor,
+                statusLabel: isEnabled ? 'active' : 'disabled',
+                isDimmed: !isEnabled,
+                dependencyChips: section.title === "Structure & POI"
+                    ? [
+                        strategyConfig["use_ote_filter"] === false ? "OTE inputs locked" : "",
+                        strategyConfig["use_min_pullback_filter"] === false ? "Pullback inputs locked" : "",
+                    ].filter(Boolean)
+                    : section.title === "CHoCH"
+                        ? [strategyConfig["enable_choch"] === false ? "CHoCH controls locked" : ""].filter(Boolean)
+                        : section.title === "Displacement"
+                            ? [strategyConfig["enable_displacement"] === false ? "Displacement controls locked" : ""].filter(Boolean)
+                            : [],
+                dependencyMessage: getNodeDependencySummary(section.title, strategyConfig),
+            };
+        });
+    }, [nodeSections, selectedStrategyDef, strategyConfig]);
+
+    const nodeSectionMetaByTitle = useMemo(
+        () => new Map(nodeSectionMeta.map((section) => [section.title, section])),
+        [nodeSectionMeta]
+    );
+
+    // `section.title` в `strategySections` типизируется как `string`, поэтому явно приводим
+    // к `Set<string>`, чтобы TypeScript не пытался сопоставлять литеральный union.
+    const explicitNodeTitles = useMemo(() => new Set<string>(NODE_LAYOUT_ROWS.flat() as string[]), []);
+
+    const remainingNodeSections = useMemo(
+        () => nodeSectionMeta.filter((section) => !explicitNodeTitles.has(section.title)),
+        [explicitNodeTitles, nodeSectionMeta]
+    );
+
+    const renderNodeSection = useCallback((title: string) => {
+        const section = nodeSectionMetaByTitle.get(title);
+        if (!section) return null;
+
+        return (
+            <StrategyNodeCard
+                key={`node-${section.title}`}
+                title={section.title}
+                keys={section.keys}
+                selectedStrategyDef={selectedStrategyDef}
+                strategyConfig={strategyConfig}
+                config={config}
+                configDisabled={configDisabled}
+                errors={errors}
+                handleStrategyConfigChange={handleStrategyConfigChange}
+                handleConfigChange={handleConfigChange}
+                formatStrategyLabel={formatStrategyLabel}
+                accentColor={section.accentColor}
+                statusLabel={section.statusLabel}
+                isDimmed={section.isDimmed}
+                dependencyChips={section.dependencyChips}
+                dependencyMessage={section.dependencyMessage}
+            />
+        );
+    }, [
+        config,
+        configDisabled,
+        errors,
+        formatStrategyLabel,
+        handleConfigChange,
+        handleStrategyConfigChange,
+        nodeSectionMetaByTitle,
+        selectedStrategyDef,
+        strategyConfig,
+    ]);
 
     return (
         <>
@@ -304,6 +861,16 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ activeTab = 'backtest' }) => 
                                     {loadedTemplateName && (
                                         <Chip label={loadedTemplateName} size="small" variant="outlined" onDelete={isRunning || isLiveRunning ? undefined : resetStrategySettings} sx={{ fontSize: '0.7rem' }} />
                                     )}
+                                    <ToggleButtonGroup
+                                        exclusive
+                                        size="small"
+                                        value={editorView}
+                                        onChange={(_, value) => value && setEditorView(value)}
+                                        sx={{ ml: { sm: 'auto' } }}
+                                    >
+                                        <ToggleButton value="form">Form</ToggleButton>
+                                        <ToggleButton value="nodes">Nodes</ToggleButton>
+                                    </ToggleButtonGroup>
                                 </Box>
 
                                 {/* Backtest Controls */}
@@ -554,8 +1121,13 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ activeTab = 'backtest' }) => 
                                     </MuiTooltip>
                                 </Grid>
                                 <Grid item xs={12} md={3}>
-                                    <MuiTooltip title={TOOLTIP_HINTS["breakeven_trigger_r"]} arrow placement="top">
-                                        <TextField label="Breakeven Trigger (R)" type="number" value={isNaN(config.breakeven_trigger_r) ? "" : config.breakeven_trigger_r} onChange={e => handleConfigChange("breakeven_trigger_r", parseFloat(e.target.value))} disabled={configDisabled} fullWidth />
+                                    <MuiTooltip title={TOOLTIP_HINTS["detailed_signals"] || "Log detailed reason for trade rejection"} arrow placement="top">
+                                        <FormControlLabel control={<Switch checked={config.detailed_signals ?? true} onChange={e => handleConfigChange("detailed_signals", e.target.checked)} disabled={configDisabled} />} label="Detailed Signals Logs" />
+                                    </MuiTooltip>
+                                </Grid>
+                                <Grid item xs={12} md={3}>
+                                    <MuiTooltip title={TOOLTIP_HINTS["market_analysis"] || "Log market HTF structure states"} arrow placement="top">
+                                        <FormControlLabel control={<Switch checked={config.market_analysis ?? true} onChange={e => handleConfigChange("market_analysis", e.target.checked)} disabled={configDisabled} />} label="Market Analysis Logs" />
                                     </MuiTooltip>
                                 </Grid>
                                 <Grid item xs={12} md={3}>
@@ -586,36 +1158,7 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ activeTab = 'backtest' }) => 
                             </Grid>
                         </AccordionDetails>
                     </Accordion>
-
-                    {structurePoiKeys.some((key) => selectedStrategyDef?.config_schema?.[key]) && (
-                        <Accordion>
-                            <AccordionSummary expandIcon={<ExpandMore />}>
-                                <Typography variant="h6">Structure & POI</Typography>
-                            </AccordionSummary>
-                            <AccordionDetails>
-                                <Grid container spacing={2}>
-                                    {structurePoiKeys.map((key) => {
-                                        const schema = selectedStrategyDef?.config_schema?.[key];
-                                        if (!schema) return null;
-                                        return (
-                                            <StrategyField
-                                                key={key}
-                                                fieldKey={key}
-                                                schema={schema}
-                                                value={strategyConfig[key]}
-                                                label={formatStrategyLabel(key)}
-                                                tooltip={TOOLTIP_HINTS[key] || "No description available"}
-                                                isDisabled={configDisabled}
-                                                onChange={handleStrategyConfigChange}
-                                            />
-                                        );
-                                    })}
-                                </Grid>
-                            </AccordionDetails>
-                        </Accordion>
-                    )}
-
-                    {strategySections.map((section) => {
+                    {editorView === 'form' && strategySections.map((section) => {
                         if (!selectedStrategyDef) return null;
 
                         const hasKeys = section.keys.some(k => selectedStrategyDef.config_schema && k in selectedStrategyDef.config_schema);
@@ -646,9 +1189,12 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ activeTab = 'backtest' }) => 
                                                 if (["adx_period", "adx_threshold"].includes(key)) {
                                                     if (strategyConfig["use_adx_filter"] === false) isDisabled = true;
                                                 }
+                                                if (key === "breakeven_sl") {
+                                                    if (strategyConfig["use_breakeven_sl"] === false) isDisabled = true;
+                                                }
                                             }
 
-                                            const label = PATTERN_LABELS[key] ?? key.replace(/_/g, " ").replace(/\b\w/g, (l: string) => l.toUpperCase());
+                                            const label = PATTERN_LABELS[key] ?? schema?.label ?? key.replace(/_/g, " ").replace(/\b\w/g, (l: string) => l.toUpperCase());
                                             const description = PATTERN_DESCRIPTIONS[key];
                                             const isPatternsSection = section.title === "Patterns";
                                             return (
@@ -662,13 +1208,19 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ activeTab = 'backtest' }) => 
                                                 />
                                             );
                                         })}
+                                        {section.title === "Risk & Reward" && (
+                                            <Grid item xs={12} sm={6} md={4}>
+                                                <MuiTooltip title={TOOLTIP_HINTS["breakeven_trigger_r"] || "Move stop to breakeven at this R-multiple"} arrow placement="top">
+                                                    <TextField label="Breakeven Trigger (R)" type="number" value={isNaN(config.breakeven_trigger_r) ? "" : config.breakeven_trigger_r} onChange={e => handleConfigChange("breakeven_trigger_r", parseFloat(e.target.value))} disabled={configDisabled} fullWidth />
+                                                </MuiTooltip>
+                                            </Grid>
+                                        )}
                                     </Grid>
                                 </AccordionDetails>
                             </Accordion>
                         );
                     })}
-
-                    {advancedStrategyKeys.length > 0 && (
+                    {editorView === 'form' && advancedStrategyKeys.length > 0 && (
                         <Accordion>
                             <AccordionSummary expandIcon={<ExpandMore />}>
                                 <Typography variant="h6">Advanced Strategy Parameters</Typography>
@@ -697,6 +1249,134 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ activeTab = 'backtest' }) => 
                                 </Grid>
                             </AccordionDetails>
                         </Accordion>
+                    )}
+                    {editorView === 'nodes' && (
+                        <Box sx={{ mt: 3, display: 'flex', flexDirection: 'column', gap: 2 }}>
+                            <Card
+                                variant="outlined"
+                                sx={{
+                                    borderRadius: 3,
+                                    borderStyle: 'dashed',
+                                    borderColor: 'rgba(33, 150, 243, 0.35)',
+                                    background: 'radial-gradient(circle at top left, rgba(33, 150, 243, 0.08), transparent 45%)',
+                                }}
+                            >
+                                <CardHeader
+                                    title="Strategy Logic"
+                                    subheader="MVP node view: current strategy modules rendered as editable blocks over the same live config."
+                                />
+                                <CardContent sx={{ pt: 0 }}>
+                                    <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1 }}>
+                                        {nodeSectionMeta.map((section) => (
+                                            <Chip
+                                                key={`summary-${section.title}`}
+                                                label={`${section.title}: ${section.statusLabel}`}
+                                                variant="outlined"
+                                                sx={{
+                                                    borderColor: `${section.accentColor}66`,
+                                                    color: section.accentColor,
+                                                    bgcolor: `${section.accentColor}10`,
+                                                }}
+                                            />
+                                        ))}
+                                    </Box>
+                                </CardContent>
+                            </Card>
+                            <Box
+                                sx={{
+                                    position: 'relative',
+                                    display: 'flex',
+                                    flexDirection: 'column',
+                                    gap: 2.5,
+                                    p: { xs: 0, sm: 1 },
+                                    borderRadius: 4,
+                                    backgroundImage: 'radial-gradient(rgba(255,255,255,0.08) 1px, transparent 1px)',
+                                    backgroundSize: '18px 18px',
+                                }}
+                            >
+                                <Box
+                                    sx={{
+                                        display: 'grid',
+                                        gridTemplateColumns: 'minmax(0, 860px)',
+                                        justifyContent: 'center',
+                                        width: '100%',
+                                    }}
+                                >
+                                    {renderNodeSection("Structure & POI")}
+                                </Box>
+                                <Box
+                                    sx={{
+                                        display: 'grid',
+                                        gridTemplateColumns: { xs: '1fr', xl: '1fr minmax(320px, 420px) 1fr' },
+                                        alignItems: 'stretch',
+                                        gap: 2,
+                                        width: '100%',
+                                    }}
+                                >
+                                    {renderNodeSection("FVG") ?? <Box />}
+                                    <CoreStrategyNodeCard
+                                        selectedStrategyDef={selectedStrategyDef}
+                                        strategyConfig={strategyConfig}
+                                        nodeSectionMeta={nodeSectionMeta}
+                                    />
+                                    {renderNodeSection("Liquidity Sweep") ?? <Box />}
+                                </Box>
+                                <Box
+                                    sx={{
+                                        display: 'grid',
+                                        gridTemplateColumns: { xs: '1fr', lg: 'repeat(2, minmax(0, 1fr))' },
+                                        gap: 2,
+                                        width: '100%',
+                                    }}
+                                >
+                                    {renderNodeSection("CHoCH")}
+                                    {renderNodeSection("Displacement")}
+                                </Box>
+                                <Box
+                                    sx={{
+                                        display: 'grid',
+                                        gridTemplateColumns: 'minmax(0, 860px)',
+                                        justifyContent: 'center',
+                                        width: '100%',
+                                    }}
+                                >
+                                    {renderNodeSection("Entry")}
+                                </Box>
+                                <Box
+                                    sx={{
+                                        display: 'grid',
+                                        gridTemplateColumns: { xs: '1fr', lg: 'repeat(2, minmax(0, 1fr))' },
+                                        gap: 2,
+                                        width: '100%',
+                                    }}
+                                >
+                                    {renderNodeSection("Stop Loss")}
+                                    {renderNodeSection("Take Profit")}
+                                </Box>
+                                <Box
+                                    sx={{
+                                        display: 'grid',
+                                        gridTemplateColumns: 'minmax(0, 860px)',
+                                        justifyContent: 'center',
+                                        width: '100%',
+                                    }}
+                                >
+                                    {renderNodeSection("Risk")}
+                                </Box>
+                                {remainingNodeSections.length > 0 && (
+                                    <Box
+                                        sx={{
+                                            display: 'grid',
+                                            gridTemplateColumns: { xs: '1fr', lg: 'repeat(2, minmax(0, 1fr))' },
+                                            gap: 2,
+                                            width: '100%',
+                                        }}
+                                    >
+                                        {remainingNodeSections.map((section) => renderNodeSection(section.title))}
+                                    </Box>
+                                )}
+                            </Box>
+                        </Box>
                     )}
                 </CardContent>
             </Card>
