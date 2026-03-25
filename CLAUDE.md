@@ -58,5 +58,5 @@ Crypto **backtesting** and **paper live** trading: Backtrader execution engine, 
 
 - [README.md](README.md) — install & commands
 - [docs/BACKTEST_RUN_MODES.md](docs/BACKTEST_RUN_MODES.md) — `single` vs `optimize`
+- [docs/TECHNICAL_DEBT_REPORT.md](docs/TECHNICAL_DEBT_REPORT.md) — current debt register and safe refactor order
 - [AGENTS.md](AGENTS.md) — Cursor-oriented index
-

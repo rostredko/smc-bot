@@ -418,4 +418,5 @@ Frontend checks:
 - **[CLAUDE.md](CLAUDE.md)** — primary agent onboarding (WHAT/WHY/HOW, verification, progressive links).
 - **[AGENTS.md](AGENTS.md)** — short index for Cursor-style agents.
 - **[agent_docs/](agent_docs/)** — task-specific deep dives (Docker, tests, API pointers).
+- **[docs/TECHNICAL_DEBT_REPORT.md](docs/TECHNICAL_DEBT_REPORT.md)** — current debt register and recommended refactor order.
 - **[docs/](docs/)** — product/behavior notes (e.g. [docs/BACKTEST_RUN_MODES.md](docs/BACKTEST_RUN_MODES.md)); [docs/plans/](docs/plans/) for optional design notes.
