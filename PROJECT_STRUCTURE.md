@@ -17,17 +17,19 @@ If you need quick onboarding only, use [README.md](README.md).
 Primary local/dev runtime is Docker Compose:
 - `mongo` (`mongo:7`) on `27017`
 - `backend` (`Dockerfile.backend`) on `8000`
-- `frontend` (`Dockerfile.frontend`) on `5173`
+- `frontend` (`Dockerfile.frontend`): host port **`5174`** maps to container **`5173`**
 
 Files:
 - `docker-compose.yml`: base services and named volumes (`mongo_data`, `data_cache`)
 - `docker-compose.override.yml`: intentionally no-op; keeps plain `docker compose up` stable and avoids broken Desktop bind-mount behavior
-- `docker-compose.dev.yml`: optional Docker watch/hot-reload overlay
+- `docker-compose.dev.yml`: optional Docker watch/hot-reload overlay (use `up --build --watch` for hot reload)
 
 ## 3. Repository Map
 
 ```text
 smc-bot/
+├── CLAUDE.md
+├── AGENTS.md
 ├── main.py
 ├── VERSION
 ├── Dockerfile.backend
@@ -36,6 +38,15 @@ smc-bot/
 ├── docker-compose.override.yml
 ├── deps/
 │   └── requirements.txt
+├── agent_docs/
+│   ├── building_and_docker.md
+│   ├── running_tests.md
+│   └── api_and_architecture.md
+├── tools/
+│   ├── install_hooks.sh
+│   ├── release_notes/generate_release_notes.py
+│   ├── seed_backtest_optimize_config.py
+│   └── seed_bearish_optimize_and_run.py
 ├── db/
 │   ├── connection.py
 │   └── repositories/
@@ -53,6 +64,9 @@ smc-bot/
 │   ├── execution_settings.py
 │   ├── live_ws_client.py
 │   ├── live_data_feed.py
+│   ├── optimize_context.py
+│   ├── timeframe_utils.py
+│   ├── utils.py
 │   ├── trade_metrics.py
 │   ├── trade_narrator.py
 │   └── logger.py
@@ -66,6 +80,7 @@ smc-bot/
 ├── web-dashboard/
 │   ├── server.py
 │   ├── api/
+│   │   ├── __init__.py
 │   │   ├── models.py
 │   │   ├── state.py
 │   │   └── logging_handlers.py
@@ -143,6 +158,15 @@ Recent structure changes:
   - normalized metrics output
   - forced final close synthesis for open positions at the end of backtests
   - `run_backtest_optimize(strategy_class, opt_kwargs, opt_target_metric)` — Backtrader optstrategy with Cartesian product fallback for params
+
+- `timeframe_utils.py`
+  - `timeframe_to_minutes()`, `ordered_timeframes()` — stable LTF-first ordering so `data0=LTF`, `data1=HTF`
+
+- `utils.py`
+  - `safe_float()` — defensive float parsing for metrics/helpers
+
+- `optimize_context.py`
+  - thread-safe flags for optimization progress logging (`set_opt_progress_logging`, combo counters, `OptComboLogFilter`)
 
 - `bt_live_engine.py`
   - warm-up from REST (`fetch_recent_bars`)
@@ -266,6 +290,7 @@ Recent structure changes:
 - `POST /backtest/start`
 - `GET /backtest/status/{run_id}`
 - `GET /backtest/results/{run_id}`
+- `POST /backtest/active/stop` — request stop of the active backtest
 - `DELETE /backtest/{run_id}`
 
 ### 5.5 Results and History
@@ -387,6 +412,10 @@ Frontend checks:
 - lint via ESLint
 - build via Vite/TypeScript
 
-## 10. Docs
+## 10. Docs & agent onboarding
 
-Use this file as source-of-truth for code structure.
+- **[PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md)** (this file) — source of truth for repository layout, API, and data flow.
+- **[CLAUDE.md](CLAUDE.md)** — primary agent onboarding (WHAT/WHY/HOW, verification, progressive links).
+- **[AGENTS.md](AGENTS.md)** — short index for Cursor-style agents.
+- **[agent_docs/](agent_docs/)** — task-specific deep dives (Docker, tests, API pointers).
+- **[docs/](docs/)** — product/behavior notes (e.g. [docs/BACKTEST_RUN_MODES.md](docs/BACKTEST_RUN_MODES.md)); [docs/plans/](docs/plans/) for optional design notes.

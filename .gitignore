@@ -33,7 +33,6 @@ pnpm-debug.log*
 .idea/
 .vscode/
 .cursor/
-docs/
 *.iml
 
 # --- Data & Results ---
