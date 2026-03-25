@@ -2,525 +2,764 @@
 
 Current snapshot: 2026-03-25
 
-This document records the current technical debt in `smc-bot` based on repository docs, code inspection, and a small verification slice. It is intentionally pragmatic: the goal is not to justify a rewrite, but to identify the highest-risk seams, explain why they are risky, and define a safe order for improvement.
+This document is the current technical debt register and execution roadmap for `smc-bot`. It is intentionally implementation-oriented: it records the main debt items, explains the underlying architectural causes, and lays out a safe five-phase plan to reduce risk without breaking working behavior.
+
+This is not a rewrite proposal. The recommended path is controlled extraction, tighter boundaries, and stronger verification.
 
 ## 1. Executive summary
 
-The project is functional and has several good architectural decisions already in place:
-- shared market-structure math is centralized in [`strategies/market_structure.py`](../strategies/market_structure.py)
-- multi-timeframe feed ordering is centralized in [`engine/timeframe_utils.py`](../engine/timeframe_utils.py)
-- API/storage payload shaping was already extracted into [`web-dashboard/services/result_mapper.py`](../web-dashboard/services/result_mapper.py)
-- runtime strategy resolution was already extracted into [`web-dashboard/services/strategy_runtime.py`](../web-dashboard/services/strategy_runtime.py)
-- backend regression coverage exists in critical areas under [`tests/`](../tests)
+`smc-bot` already has several sound core decisions:
+- shared market-structure logic is centralized in [`strategies/market_structure.py`](../strategies/market_structure.py)
+- multi-timeframe ordering is centralized in [`engine/timeframe_utils.py`](../engine/timeframe_utils.py)
+- runtime strategy discovery and result mapping have already been extracted into [`web-dashboard/services/strategy_runtime.py`](../web-dashboard/services/strategy_runtime.py) and [`web-dashboard/services/result_mapper.py`](../web-dashboard/services/result_mapper.py)
+- the system has meaningful backend regression coverage under [`tests/`](../tests)
 
-The highest current debt is not one specific bug. It is change amplification: a few large modules own too many responsibilities, and several runtime rules are duplicated across layers. That makes the system harder to change safely than it needs to be.
+The main debt is not “bad code” in the abstract. The main debt is that several critical runtime seams are still too implicit:
+- HTTP transport, orchestration, lifecycle, and analytics are overly concentrated in [`web-dashboard/server.py`](../web-dashboard/server.py)
+- in-process globals are still the runtime source of truth
+- config normalization and runtime translation are duplicated across API and CLI paths
+- strategy and lifecycle logic are still too embedded in large framework-bound classes
+- frontend side effects are concentrated in a few broad providers
+- local verification is less reproducible than CI because the toolchain is not pinned tightly enough
 
-Current top priorities:
-1. Reduce backend orchestration concentration in [`web-dashboard/server.py`](../web-dashboard/server.py)
-2. Replace process-global runtime state with an explicit runtime registry abstraction
-3. Unify configuration normalization and runtime config building across API and CLI paths
-4. Decompose oversized trading-strategy logic into smaller pure units
-5. Reduce frontend provider concentration and side-effect sprawl
+The safest program is:
+1. Add guardrails and characterization tests first
+2. Extract shared translation and runtime seams second
+3. Move orchestration out of the HTTP layer third
+4. Decompose domain and persistence logic fourth
+5. Finish with frontend boundary cleanup and full-stack hardening
 
-## 2. Assessment method
+## 2. Current baseline
 
-This report is based on:
-- primary onboarding docs: [`../CLAUDE.md`](../CLAUDE.md), [`../PROJECT_STRUCTURE.md`](../PROJECT_STRUCTURE.md)
-- architecture and workflow docs under [`../agent_docs/`](../agent_docs)
-- direct code inspection of the main runtime files
-- targeted backend verification
+### 2.1 Code hotspots
+
+Current module sizes in the main hotspot areas:
+
+| Module | Current size | Why it matters |
+|--------|--------------|----------------|
+| [`web-dashboard/server.py`](../web-dashboard/server.py) | 2476 lines | Concentrates routes, orchestration, lifecycle, OHLCV, cache, and chart enrichment |
+| [`strategies/bt_price_action.py`](../strategies/bt_price_action.py) | 1287 lines | Concentrates signal logic, filters, SL/TP logic, trigger state, and metadata shaping |
+| [`engine/bt_backtest_engine.py`](../engine/bt_backtest_engine.py) | 546 lines | Owns data loading, analyzers, metrics normalization, optimization, and forced close behavior |
+| [`web-dashboard/src/app/providers/config/ConfigProvider.tsx`](../web-dashboard/src/app/providers/config/ConfigProvider.tsx) | 541 lines | Concentrates config loading, validation, persistence, and command side effects |
+| [`strategies/base_strategy.py`](../strategies/base_strategy.py) | 436 lines | Concentrates order lifecycle, OCO, trailing, funding, and drawdown logic |
+| [`engine/bt_live_engine.py`](../engine/bt_live_engine.py) | 232 lines | Lifecycle and threading surface for live-paper execution |
+| [`web-dashboard/src/app/providers/BacktestProvider.tsx`](../web-dashboard/src/app/providers/BacktestProvider.tsx) | 193 lines | App-level orchestration and runtime restore/polling |
+
+These sizes do not automatically mean the files are wrong. They do mean they have become the most expensive places to change safely.
+
+### 2.2 Test surface
+
+Current test inventory:
+
+| Area | Count | Notes |
+|------|-------|-------|
+| Backend test files | 35 | Includes engine, API, lifecycle, mapping, repository, and strategy tests |
+| Frontend test files | 11 | Covers providers, config/history/results widgets, and shared utilities |
 
 Verification performed while preparing this report:
 - `./.venv/bin/python -m pytest -q tests/test_strategy_runtime_service.py tests/test_result_mapper_service.py tests/test_api.py`
 - result: `20 passed`
 
-Frontend verification was attempted but blocked by local toolchain drift:
-- repository and CI expect Node 18+
-- current local runtime was Node 14
+Frontend verification was attempted but blocked by local runtime drift:
+- repo and CI expect Node 18+
+- local runtime was Node 14
 - Vitest failed before app tests ran
 
-That toolchain mismatch is itself listed below as debt.
+That mismatch is tracked below as debt because it reduces trust in local validation.
 
-## 3. Priority scale
+### 2.3 Existing constraints that must remain stable
 
-- `P1`: should be addressed before or during the next non-trivial architecture work in the affected area
-- `P2`: important, but can follow once P1 seams are stabilized
-- `P3`: watchlist / developer-experience debt; lower immediate product risk, but still worth fixing
+The following behavior should be preserved during debt reduction:
+- paper-live remains the safe default; no silent path to real-money execution
+- API contracts remain backward-compatible unless explicitly versioned
+- multi-timeframe feed ordering stays LTF-first
+- shared market-structure math remains a single source of truth
+- old persisted results remain readable
+- route URLs and dashboard behavior stay stable during extraction phases
 
-## 4. Debt register
+## 3. Refactor guardrails
 
-### TD-01. Oversized API and orchestration hub
+The debt program should follow these rules:
 
-- Priority: `P1`
-- Area: backend architecture
-- Primary files:
-  - [`web-dashboard/server.py`](../web-dashboard/server.py)
-  - [`web-dashboard/api/state.py`](../web-dashboard/api/state.py)
-  - [`web-dashboard/services/result_mapper.py`](../web-dashboard/services/result_mapper.py)
-  - [`web-dashboard/services/strategy_runtime.py`](../web-dashboard/services/strategy_runtime.py)
+1. Characterize before refactor.
+   Add or tighten tests around current behavior before moving responsibilities.
+2. Extract seams before changing semantics.
+   Move code behind interfaces or service modules first; behavior changes come later if still needed.
+3. Preserve contracts by default.
+   HTTP shapes, persistence shapes, and strategy semantics should not drift accidentally.
+4. Keep phase scope narrow.
+   Each phase should be deployable independently.
+5. Avoid “cleanup” edits outside the active seam.
+   Large opportunistic rewrites will create more risk than they remove.
 
-### Symptoms
+## 4. Debt register summary
 
-[`web-dashboard/server.py`](../web-dashboard/server.py) is the FastAPI entrypoint, but it also owns:
-- app lifespan and startup/shutdown
-- config CRUD
-- backtest/live lifecycle
-- websocket broadcasting
-- runtime state restoration
-- optimization validation and heartbeat logic
-- OHLCV caching
-- indicator computation
-- chart enrichment for trade details
+| ID | Priority | Debt item | Main evidence | Target end state | Planned phase |
+|----|----------|-----------|---------------|------------------|---------------|
+| `TD-01` | `P1` | Backend orchestration is over-concentrated | [`web-dashboard/server.py`](../web-dashboard/server.py) owns routes, lifecycle, OHLCV, and helpers | `server.py` becomes composition/routing layer, orchestration moves into services/runners | Phase 3 |
+| `TD-02` | `P1` | Runtime state is process-global and mutable | [`web-dashboard/api/state.py`](../web-dashboard/api/state.py) globals are runtime truth | explicit runtime registry abstraction with narrow API | Phase 2 |
+| `TD-03` | `P1` | Config normalization is duplicated across entrypoints | [`main.py`](../main.py), [`web-dashboard/server.py`](../web-dashboard/server.py), [`engine/execution_settings.py`](../engine/execution_settings.py) | one canonical translation path from request/config -> runtime -> strategy kwargs | Phase 2 |
+| `TD-04` | `P1` | Lifecycle ownership is too implicit | background tasks, executor calls, WS handlers, and thread cleanup are spread across modules | explicit runner lifecycle with stable states and cleanup ownership | Phase 3 |
+| `TD-05` | `P1` | Trading logic is concentrated in oversized framework-bound classes | [`strategies/bt_price_action.py`](../strategies/bt_price_action.py), [`strategies/base_strategy.py`](../strategies/base_strategy.py) | smaller pure helpers and lifecycle helpers under thin Backtrader adapters | Phase 4 |
+| `TD-06` | `P2` | OHLCV, cache, indicators, and chart enrichment are mixed into the HTTP layer | [`web-dashboard/server.py`](../web-dashboard/server.py), [`engine/data_loader.py`](../engine/data_loader.py) | dedicated analytics/query services with no FastAPI dependency | Phase 3 |
+| `TD-07` | `P2` | Persistence schema is tightly coupled to response schema | [`db/repositories/backtest_repository.py`](../db/repositories/backtest_repository.py), [`web-dashboard/services/result_mapper.py`](../web-dashboard/services/result_mapper.py) | schema-versioned persistence and explicit storage-to-response mapping | Phase 4 |
+| `TD-08` | `P2` | Frontend providers own too much side-effect logic | [`web-dashboard/src/app/providers/config/ConfigProvider.tsx`](../web-dashboard/src/app/providers/config/ConfigProvider.tsx), [`web-dashboard/src/app/providers/BacktestProvider.tsx`](../web-dashboard/src/app/providers/BacktestProvider.tsx) | smaller hooks/modules and narrower provider contracts | Phase 5 |
+| `TD-09` | `P2` | Strategy discovery hides import failures | [`web-dashboard/services/strategy_runtime.py`](../web-dashboard/services/strategy_runtime.py) silently skips import errors | structured diagnostics with non-crashing failure visibility | Phase 1 |
+| `TD-10` | `P3` | Toolchain and verification are not pinned tightly enough | local Node drift vs CI; Python command ambiguity | reproducible local verification path aligned with CI | Phase 1 and Phase 5 |
+| `TD-11` | `P3` | Docs had historical reviews but no current execution register | historical reports existed, but no current roadmap | this file becomes the maintained source for debt status and order of work | Phase 1 |
 
-This is the main backend hotspot. The file is large enough that unrelated changes can easily collide conceptually.
+## 5. Root-cause analysis by cluster
 
-### Why it matters
+### 5.1 Boundary erosion around the backend HTTP layer
 
-- Small behavior changes become high-blast-radius edits.
-- Route handlers are harder to unit test because they own orchestration details directly.
-- Operational code and business logic are coupled in the same file.
-- Future changes are more likely to create regressions in cancellation, cleanup, or persistence.
+The backend already has the beginnings of layer separation:
+- request/response models in [`web-dashboard/api/models.py`](../web-dashboard/api/models.py)
+- runtime strategy logic in [`web-dashboard/services/strategy_runtime.py`](../web-dashboard/services/strategy_runtime.py)
+- result mapping in [`web-dashboard/services/result_mapper.py`](../web-dashboard/services/result_mapper.py)
 
-### Recommended remediation
+The problem is that these extracted services coexist with a still-overloaded HTTP entrypoint. As a result:
+- route handlers still know too much about lifecycle internals
+- helper functions stay in the route file because no dedicated seam exists yet
+- cleanup paths are distributed instead of being owned by a run coordinator
 
-Do not rewrite the backend. Extract responsibilities incrementally:
+This is why `server.py` is the first major backend refactor target.
 
-1. Introduce service modules for:
-   - run coordination
-   - live runner lifecycle
-   - backtest runner lifecycle
-   - OHLCV and chart-data computation
-2. Keep [`web-dashboard/server.py`](../web-dashboard/server.py) as a composition root and route layer.
-3. Move heavyweight helper functions out first, then move route orchestration second.
+### 5.2 Runtime ownership is implicit instead of explicit
 
-### Safe first step
+The project currently assumes a single-process in-memory runtime. That is acceptable for local development, but the ownership model is weak:
+- state is stored in globals
+- mutation happens from multiple route/task call sites
+- lifecycle transitions are conventions rather than a dedicated state machine or registry abstraction
 
-Extract OHLCV/chart-data logic from [`web-dashboard/server.py`](../web-dashboard/server.py) into a dedicated service module without changing API contracts.
+This makes the system harder to reason about even before any scaling concerns.
 
-### TD-02. Process-global runtime state is the source of truth
+### 5.3 Domain logic is still too embedded in framework objects
 
-- Priority: `P1`
-- Area: runtime and operability
-- Primary files:
-  - [`web-dashboard/api/state.py`](../web-dashboard/api/state.py)
-  - [`web-dashboard/server.py`](../web-dashboard/server.py)
+Backtrader strategies are the runtime integration point, but too much actual business logic still lives directly inside the strategy classes:
+- signal evaluation
+- trigger windows
+- stop/target calculation
+- trailing/breakeven rules
+- funding application
 
-### Symptoms
+That reduces the amount of logic that can be tested as pure functions and increases regression risk for any non-trivial strategy change.
 
-Runtime state is stored in module-level mutable globals:
-- `running_backtests`
-- `live_trading_state`
-- `active_connections`
-- `active_console_state`
+### 5.4 Storage and API concerns are too close together
 
-For a single-process local app this is workable, but it bakes in assumptions about process model, startup order, and cleanup semantics.
+Persisted result documents are intentionally convenient for the dashboard, but the convenience comes with coupling:
+- backfills happen during read paths
+- response-facing fields influence persistence shape
+- optimization and live/backtest documents reuse broad overlapping structures with flags and special cases
 
-### Why it matters
+That is manageable now, but it will become expensive once the project needs cleaner migrations or more result types.
 
-- Scaling to multiple workers is unsafe without redesign.
-- Hot reload / restart behavior depends on implicit process memory.
-- Concurrency bugs become harder to reason about because the state shape is informal and mutable from multiple call sites.
-- Runtime coordination is harder to mock in tests.
+### 5.5 Frontend state ownership is too broad
 
-### Recommended remediation
+The frontend is not in crisis, but it is drifting toward “provider as application service layer”:
+- `ConfigProvider` owns multiple unrelated concerns
+- `BacktestProvider` orchestrates restore and polling behavior
+- UI state and transport state are co-located
 
-Create an explicit runtime registry abstraction:
-- start with an in-memory implementation
-- keep the public operations narrow: create run, update status, request stop, append console line, snapshot runtime
-- isolate locking inside that abstraction
+That structure is workable for a single page, but it makes future UI changes more coupled than necessary.
 
-If the app ever needs multi-process runtime state, a Redis-backed adapter can be added later without rewriting route handlers.
+### 5.6 Verification depends too much on local environment luck
 
-### Safe first step
+The repository already documents the expected runtime, but local validation is still too easy to misconfigure:
+- CI is authoritative
+- Docker is reliable
+- host-level local execution is not pinned tightly enough
 
-Wrap existing globals behind a `RuntimeRegistry` class and update routes/services to call the abstraction first, without changing storage behavior yet.
+That leads to noisy failures and weaker confidence in developer-side checks.
 
-### TD-03. Configuration normalization is duplicated across entrypoints
+## 6. Phase dependency map
 
-- Priority: `P1`
-- Area: contracts and runtime consistency
-- Primary files:
-  - [`web-dashboard/server.py`](../web-dashboard/server.py)
-  - [`main.py`](../main.py)
-  - [`web-dashboard/api/models.py`](../web-dashboard/api/models.py)
-  - [`engine/execution_settings.py`](../engine/execution_settings.py)
-  - [`web-dashboard/services/strategy_runtime.py`](../web-dashboard/services/strategy_runtime.py)
+The five phases below are ordered by dependency, not by convenience.
 
-### Symptoms
+| Phase | Main purpose | Depends on | Unlocks |
+|-------|--------------|------------|---------|
+| Phase 1 | Guardrails, observability, and baseline stabilization | none | safer refactors in all later phases |
+| Phase 2 | Canonical runtime seams for config and state | Phase 1 characterization tests | safe extraction of orchestration out of `server.py` |
+| Phase 3 | Backend orchestration extraction | Phases 1-2 | thinner HTTP layer, explicit runners, reusable OHLCV services |
+| Phase 4 | Domain decomposition and persistence hardening | Phases 1-3 | lower regression risk in strategy changes and safer storage evolution |
+| Phase 5 | Frontend boundary cleanup and full-stack hardening | Phases 1-4 | more maintainable UI state flow and reproducible end-to-end verification |
 
-The project currently has multiple places that normalize or rebuild runtime config:
-- API-side live/backtest normalization in [`web-dashboard/server.py`](../web-dashboard/server.py)
-- CLI-side normalization in [`main.py`](../main.py)
-- fee/execution defaults in [`engine/execution_settings.py`](../engine/execution_settings.py)
-- runtime strategy merge rules in [`web-dashboard/services/strategy_runtime.py`](../web-dashboard/services/strategy_runtime.py)
+### Recommended sequencing rule
 
-Each piece is individually understandable, but together they create drift risk.
+Do not start Phase 3 before Phase 2 is complete. Without a runtime registry seam and config translation seam, orchestration extraction will simply move complexity around instead of reducing it.
 
-### Why it matters
+## 7. Five-phase implementation plan
 
-- API and CLI can diverge subtly in defaults or accepted shapes.
-- Live and backtest code paths can interpret the same config differently.
-- Adding a new config field becomes error-prone because there is no single canonical translation path.
-- Regression tests have to defend the same behavior in more than one place.
+## Phase 1. Guardrails and baseline stabilization
 
-### Recommended remediation
+### Objective
 
-Create one canonical translator layer:
-- external request shape -> normalized app config
-- normalized app config -> engine config
-- normalized app config -> strategy kwargs
+Create the safety net that later refactors depend on:
+- better diagnostics
+- tighter verification expectations
+- tests that characterize the current behavior of critical seams
 
-Keep execution-mode and fee logic in [`engine/execution_settings.py`](../engine/execution_settings.py), but move request-shape translation into a single module shared by API and CLI.
+### Debt items addressed
 
-### Safe first step
+- `TD-09` strategy discovery hides import failures
+- `TD-10` toolchain and verification drift
+- `TD-11` missing current-state debt governance
+- enables safe work on `TD-01` to `TD-08`
 
-Extract current normalization code into one shared backend module and add characterization tests that assert API and CLI produce the same normalized output for the same input.
+### Why this phase comes first
 
-### TD-04. Trading logic is concentrated in very large strategy classes
+The current code already works. The highest short-term risk is not “bad design”; it is accidental behavior drift during refactoring. That is why Phase 1 focuses on characterization and observability rather than architecture changes.
 
-- Priority: `P1`
-- Area: domain logic and regression risk
-- Primary files:
-  - [`strategies/bt_price_action.py`](../strategies/bt_price_action.py)
-  - [`strategies/base_strategy.py`](../strategies/base_strategy.py)
-  - [`strategies/helpers/risk_manager.py`](../strategies/helpers/risk_manager.py)
+### In scope
 
-### Symptoms
+- make strategy import failures visible without crashing the dashboard
+- pin and document the local verification toolchain
+- add characterization tests for lifecycle, config translation, and key API behavior
+- establish this debt report as the maintained source of prioritization
 
-[`strategies/bt_price_action.py`](../strategies/bt_price_action.py) owns:
-- HTF/LTF market-structure interpretation
-- pattern detection
-- filter decisions
-- SL/TP logic
-- entry arming/trigger windows
-- narrative and metadata shaping
+### Explicit non-goals
 
-[`strategies/base_strategy.py`](../strategies/base_strategy.py) owns:
-- order lifecycle
-- OCO cleanup
-- trailing stop and breakeven updates
-- funding cashflow handling
-- drawdown stop behavior
+- no route extraction yet
+- no runtime registry yet
+- no strategy refactor yet
 
-These are critical files with high behavioral density.
+### Implementation workstreams
 
-### Why it matters
+#### Workstream A. Strategy discovery diagnostics
 
-- A small feature change can impact signal generation, risk, and order lifecycle at once.
-- Pure logic is harder to test in isolation because much of it lives inside Backtrader strategy methods.
-- Reading and reviewing the strategy requires carrying too much context at once.
+Target files:
+- [`web-dashboard/services/strategy_runtime.py`](../web-dashboard/services/strategy_runtime.py)
+- [`tests/test_strategy_runtime_service.py`](../tests/test_strategy_runtime_service.py)
 
-### Recommended remediation
+Planned changes:
+1. Replace silent import skipping with structured logging that includes module name and exception summary.
+2. Keep discovery resilient: a broken strategy should not take down `/strategies`.
+3. Add tests that assert failure visibility and non-crashing behavior.
 
-Decompose behavior into smaller units while preserving existing strategy behavior:
-- pure signal evaluators
-- pure structure/POI decision helpers
-- pure stop/target builders
-- trade lifecycle helpers for funding, trailing, breakeven, orphan cleanup
+Expected outcome:
+- broken strategy modules become diagnosable immediately
+- dashboard resilience is preserved
 
-The Backtrader strategy class should remain the adapter that wires those pieces together, not the place where all rules live directly.
+#### Workstream B. Local toolchain reproducibility
 
-### Safe first step
+Target files:
+- [`README.md`](../README.md)
+- [`agent_docs/running_tests.md`](../agent_docs/running_tests.md)
+- [`web-dashboard/package.json`](../web-dashboard/package.json)
+- optionally `.nvmrc` or equivalent runtime pin
 
-Extract pure helper functions from [`strategies/bt_price_action.py`](../strategies/bt_price_action.py) first, backed by characterization tests using current known-good behavior.
+Planned changes:
+1. Pin Node runtime expectations explicitly for local development.
+2. Document the canonical Python invocation through the project venv.
+3. Add a repo-level verification shortcut or documented canonical check sequence.
 
-### TD-05. Async/thread/process lifecycle is more complex than the API surface suggests
+Expected outcome:
+- a developer can reproduce the CI-aligned local validation path with minimal ambiguity
 
-- Priority: `P1`
-- Area: runtime lifecycle and cleanup
-- Primary files:
-  - [`web-dashboard/server.py`](../web-dashboard/server.py)
-  - [`engine/bt_live_engine.py`](../engine/bt_live_engine.py)
-  - [`engine/bt_backtest_engine.py`](../engine/bt_backtest_engine.py)
-  - [`engine/logger.py`](../engine/logger.py)
+#### Workstream C. Characterization tests
 
-### Symptoms
+Target tests to add or extend:
+- [`tests/test_api.py`](../tests/test_api.py)
+- [`tests/test_live_api_controls.py`](../tests/test_live_api_controls.py)
+- [`tests/test_strategy_runtime_service.py`](../tests/test_strategy_runtime_service.py)
+- new `tests/test_runtime_contracts.py` or similar
 
-The runtime uses a combination of:
-- FastAPI background tasks
-- `asyncio` tasks
-- `run_in_executor`
-- threads and join/stop flows inside live engine code
-- websocket log broadcasting
-- manual attach/detach of run log handlers
+Planned coverage:
+1. config normalization parity expectations
+2. start/stop lifecycle behavior for live and backtest entrypoints
+3. runtime state restore payload shape
+4. strategy discovery behavior under import failure
 
-This is manageable today, but it is easy for cleanup paths to become inconsistent.
+### Validation plan
 
-### Why it matters
+Required:
+- backend targeted tests pass
+- local frontend test command is runnable under the pinned Node version
+- manual smoke: `/strategies`, `/api/runtime/state`, start/stop endpoints still behave as before
 
-- Cancellation bugs are usually intermittent and hard to reproduce.
-- Failure to detach handlers or clear runtime state can create ghost sessions or duplicated logs.
-- Live/backtest lifecycle bugs tend to appear only under stop/restart/error paths, not happy paths.
+### Exit criteria
 
-### Recommended remediation
+- strategy discovery import failures are visible in logs or diagnostics
+- local verification steps are documented and reproducible
+- characterization tests exist for the seams that later phases will move
 
-Define an explicit run lifecycle model:
-- `created`
-- `starting`
-- `running`
-- `stop_requested`
-- `stopping`
-- `completed`
-- `failed`
-- `cancelled`
+### Rollback strategy
 
-Move cleanup into reusable runner objects so each run type has one owner for start/stop/finalize logic.
+Phase 1 is low-risk. If it causes noise or instability, revert diagnostics or tooling changes independently; do not block the roadmap on optional DX improvements.
 
-### Safe first step
+## Phase 2. Canonical runtime seams for config and state
 
-Add a lifecycle-oriented integration test suite for stop/failure/restart behavior before extracting the runner implementation.
+### Objective
 
-### TD-06. OHLCV API mixes transport, caching, compute, and chart enrichment
+Introduce the backend seams that the current architecture is missing:
+- one canonical config translation path
+- one runtime registry abstraction for mutable process state
 
-- Priority: `P2`
-- Area: performance and separation of concerns
-- Primary files:
-  - [`web-dashboard/server.py`](../web-dashboard/server.py)
-  - [`engine/data_loader.py`](../engine/data_loader.py)
-  - [`strategies/market_structure.py`](../strategies/market_structure.py)
+### Debt items addressed
 
-### Symptoms
+- `TD-02` process-global runtime state
+- `TD-03` duplicated configuration normalization
 
-The OHLCV area in [`web-dashboard/server.py`](../web-dashboard/server.py) handles:
-- request parsing
-- in-memory cache
-- Mongo cache clearing
-- indicator parameter normalization
-- TA-Lib computation
-- HTF/LTF structure alignment
-- per-trade chart-data enrichment
+### Why this phase comes second
 
-The single-source-of-truth intent is good, but the compute path is too embedded in the HTTP layer.
+Without these seams, any attempt to decompose [`web-dashboard/server.py`](../web-dashboard/server.py) will keep leaking state and translation logic into the extracted modules.
 
-### Why it matters
+### In scope
 
-- Performance work is harder because the boundary between cache, compute, and response formatting is blurry.
-- Large helper functions are difficult to reuse outside the endpoint that created them.
-- Future chart or analytics features are likely to duplicate pieces of this logic unless extraction happens first.
+- create a runtime registry abstraction with an in-memory implementation
+- create a shared config translation module used by API and CLI
+- replace direct mutation patterns with narrow method calls
+- preserve all public HTTP and CLI contracts
 
-### Recommended remediation
+### Explicit non-goals
 
-Split this area into:
-- cache adapter
-- OHLCV query service
-- indicator/market-structure compute service
-- chart-data enrichment service
+- no route decomposition yet
+- no storage schema change yet
+- no strategy semantics changes
 
-Keep shared market-structure math in [`strategies/market_structure.py`](../strategies/market_structure.py); that part should remain the shared source of truth.
+### Implementation workstreams
 
-### Safe first step
+#### Workstream A. Runtime registry abstraction
 
-Extract read-only compute helpers to a service module with no FastAPI imports.
+Target files:
+- new backend module, for example `web-dashboard/services/runtime_registry.py`
+- [`web-dashboard/api/state.py`](../web-dashboard/api/state.py)
+- [`web-dashboard/server.py`](../web-dashboard/server.py)
 
-### TD-07. Strategy discovery hides import failures
+Planned changes:
+1. Define narrow operations:
+   - create/update/remove backtest runtime
+   - start/update/stop live runtime
+   - append/reset console output
+   - snapshot active runtime state
+2. Move locking and mutation into the registry implementation.
+3. Keep initial storage in memory so behavior remains unchanged.
+4. Replace direct global writes in route/task code with registry calls.
 
-- Priority: `P2`
-- Area: extensibility and diagnostics
-- Primary file:
-  - [`web-dashboard/services/strategy_runtime.py`](../web-dashboard/services/strategy_runtime.py)
+Expected outcome:
+- state ownership becomes explicit
+- later orchestration extraction can depend on a stable interface instead of globals
 
-### Symptoms
+#### Workstream B. Config translation unification
 
-Strategy discovery catches `Exception` and silently skips modules that fail to import.
+Target files:
+- new backend module, for example `web-dashboard/services/runtime_config.py`
+- [`main.py`](../main.py)
+- [`web-dashboard/server.py`](../web-dashboard/server.py)
+- [`engine/execution_settings.py`](../engine/execution_settings.py)
+- [`web-dashboard/services/strategy_runtime.py`](../web-dashboard/services/strategy_runtime.py)
 
-That keeps the dashboard resilient, but it also hides a class of breakages: a strategy can disappear from the UI without any obvious signal to the developer.
+Planned changes:
+1. Separate three concepts clearly:
+   - external request/config shape
+   - normalized runtime config
+   - strategy kwargs
+2. Move request-shape translation into one shared module.
+3. Keep exchange/fee normalization in [`engine/execution_settings.py`](../engine/execution_settings.py).
+4. Update API and CLI paths to call the same translator.
+5. Add parity tests for API-style and CLI-style inputs.
 
-### Why it matters
+Expected outcome:
+- new config fields have one authoritative translation path
+- CLI and API stop drifting in defaults and shape handling
 
-- New strategy development becomes harder to debug.
-- Broken imports can ship unnoticed if no one checks logs or strategy lists carefully.
-- Silent failure is the wrong default for developer-facing discovery logic.
+### Suggested new tests
 
-### Recommended remediation
+- `tests/test_runtime_registry.py`
+- `tests/test_runtime_config_translation.py`
+- expand [`tests/test_main_cli_backtest.py`](../tests/test_main_cli_backtest.py)
+- expand [`tests/test_api.py`](../tests/test_api.py)
 
-Keep the dashboard from crashing, but surface the failure:
-- log import errors with module name and traceback
-- expose diagnostic metadata in a debug-only endpoint or admin log
-- optionally show a partial warning when a configured strategy cannot be resolved cleanly
+### Validation plan
 
-### Safe first step
+Required:
+- existing API tests still pass
+- new parity tests prove CLI/API normalization consistency
+- runtime snapshot and stop behavior stay unchanged from the client perspective
 
-Replace silent `continue` behavior with structured logging and test that import failures are visible.
+### Exit criteria
 
-### TD-08. Frontend provider layer concentrates too much state and side-effect logic
+- route/task code no longer needs to mutate runtime globals directly
+- API and CLI use the same translation seam for normalization
+- lifecycle state can be inspected through one registry abstraction
 
-- Priority: `P2`
-- Area: frontend maintainability
-- Primary files:
-  - [`web-dashboard/src/app/providers/config/ConfigProvider.tsx`](../web-dashboard/src/app/providers/config/ConfigProvider.tsx)
-  - [`web-dashboard/src/app/providers/BacktestProvider.tsx`](../web-dashboard/src/app/providers/BacktestProvider.tsx)
-  - [`web-dashboard/src/app/providers/results/ResultsProvider.tsx`](../web-dashboard/src/app/providers/results/ResultsProvider.tsx)
-  - [`web-dashboard/src/app/providers/console/ConsoleProvider.tsx`](../web-dashboard/src/app/providers/console/ConsoleProvider.tsx)
+### Rollback strategy
 
-### Symptoms
+Keep the first registry implementation in-memory and internal. If problems appear, revert call-site migration while preserving the characterization tests added in Phase 1.
 
-The provider split is better than a single global context, but `ConfigProvider` still owns many responsibilities:
-- config loading
-- strategy loading
-- validation
-- template CRUD and reorder
-- run start/stop actions
-- live status actions
-- active tab and selected optimization variant
+## Phase 3. Backend orchestration extraction
 
-`BacktestProvider` also contains app-level orchestration for runtime restoration and polling.
+### Objective
 
-### Why it matters
+Reduce [`web-dashboard/server.py`](../web-dashboard/server.py) from an orchestration hub into a thinner transport/composition layer.
 
-- The provider layer mixes domain intent, side effects, and UI state.
-- UI behavior becomes harder to test because components depend on broad provider contracts.
-- New dashboard features are likely to add more code to the same providers instead of to focused hooks/services.
+### Debt items addressed
 
-### Recommended remediation
+- `TD-01` oversized backend orchestration hub
+- `TD-04` implicit lifecycle ownership
+- `TD-06` OHLCV/chart-data logic mixed into HTTP layer
 
-Refactor toward smaller focused hooks and command-style modules:
-- config loading hook
-- template management hook
-- backtest command hook
-- live command hook
-- runtime restoration hook
+### Why this phase comes after Phase 2
 
-This does not require a new state library immediately. The first goal is narrower responsibility boundaries.
+Once config translation and runtime state are explicit seams, orchestration can be moved safely without smuggling globals and ad-hoc normalization into each new module.
 
-### Safe first step
+### In scope
 
-Extract API-calling logic from `ConfigProvider` into dedicated modules/hooks while keeping the current public provider API stable.
+- extract backtest and live runner/coordinator services
+- centralize lifecycle transitions
+- extract OHLCV/query/chart enrichment services out of the route file
+- keep all route paths and response contracts stable
 
-### TD-09. Persistence schema is tightly coupled to API response shape
+### Explicit non-goals
 
-- Priority: `P2`
-- Area: storage evolution and backward compatibility
-- Primary files:
-  - [`db/repositories/backtest_repository.py`](../db/repositories/backtest_repository.py)
-  - [`web-dashboard/services/result_mapper.py`](../web-dashboard/services/result_mapper.py)
-  - [`web-dashboard/server.py`](../web-dashboard/server.py)
+- no persistence schema versioning yet
+- no strategy behavior refactor yet
+- no frontend architectural change yet
 
-### Symptoms
+### Implementation workstreams
 
-Saved documents look very close to what the API returns to the frontend. This is simple and convenient, but it couples storage shape to presentation needs.
+#### Workstream A. Backtest and live coordinators
 
-Examples:
-- list/history projections depend on fields that are also display-facing
-- normalization/backfill logic is performed during result retrieval
-- optimization and live/backtest payloads share broad document structure with special-case flags
+Target files:
+- [`web-dashboard/server.py`](../web-dashboard/server.py)
+- [`engine/bt_backtest_engine.py`](../engine/bt_backtest_engine.py)
+- [`engine/bt_live_engine.py`](../engine/bt_live_engine.py)
+- new modules such as:
+  - `web-dashboard/services/backtest_runner.py`
+  - `web-dashboard/services/live_runner.py`
 
-### Why it matters
+Planned changes:
+1. Define runner ownership for:
+   - start
+   - progress/status updates
+   - stop request handling
+   - finalize/save/cleanup
+2. Introduce explicit lifecycle statuses and transition rules.
+3. Keep route handlers thin: validate input, call service, return response.
+4. Centralize log-handler attach/detach ownership in the runner layer.
 
-- Evolving stored data safely becomes harder over time.
-- Adding API fields can accidentally become a storage concern.
-- Backfills and migration logic can spread into route handlers and repositories.
+Expected outcome:
+- cleanup paths live in one place per run type
+- route handlers stop knowing internal lifecycle mechanics
 
-### Recommended remediation
+#### Workstream B. OHLCV and chart-data services
 
-Move toward explicit persistence versioning:
-- add a document version field
-- define stored-result schema separately from response schema
-- serialize API responses from stored documents through dedicated mappers
+Target files:
+- [`web-dashboard/server.py`](../web-dashboard/server.py)
+- [`engine/data_loader.py`](../engine/data_loader.py)
+- [`strategies/market_structure.py`](../strategies/market_structure.py)
+- new modules such as:
+  - `web-dashboard/services/ohlcv_service.py`
+  - `web-dashboard/services/chart_data_service.py`
 
-### Safe first step
+Planned changes:
+1. Extract cache access into a dedicated adapter or helper module.
+2. Extract indicator computation and market-structure shaping into pure service functions.
+3. Extract trade chart-data enrichment into a dedicated service that can be tested without FastAPI.
+4. Keep shared market-structure math in [`strategies/market_structure.py`](../strategies/market_structure.py).
 
-Introduce a `schema_version` field in persisted result documents and keep the current schema otherwise unchanged.
+Expected outcome:
+- HTTP layer stops owning analytics-heavy helper logic
+- compute and cache boundaries become explicit
 
-### TD-10. Local developer toolchain is not pinned tightly enough
+### Suggested new tests
 
-- Priority: `P3`
-- Area: developer experience and verification reliability
-- Primary files:
-  - [`README.md`](../README.md)
-  - [`agent_docs/running_tests.md`](../agent_docs/running_tests.md)
-  - [`.github/workflows/ci.yml`](../.github/workflows/ci.yml)
-  - [`web-dashboard/package.json`](../web-dashboard/package.json)
+- `tests/test_backtest_runner.py`
+- `tests/test_live_runner.py`
+- `tests/test_ohlcv_service.py`
+- expand [`tests/test_live_api_controls.py`](../tests/test_live_api_controls.py)
+- expand [`tests/test_result_backfill.py`](../tests/test_result_backfill.py)
 
-### Symptoms
+### Validation plan
 
-The repository docs and CI clearly expect modern runtimes, but local execution can still drift:
-- frontend expects Node 18+
-- CI uses Node 18
-- local Node 14 caused Vitest to fail before app tests executed
-- backend verification is documented with `python -m pytest`, but local environments may not expose `python` without using the project venv
+Required:
+- lifecycle start/stop/fail/restart behavior remains stable
+- OHLCV endpoint returns the same contract as before
+- runtime restore still works after page reload
 
-### Why it matters
+Manual smoke checks:
+- start backtest
+- cancel active backtest
+- start live paper session
+- stop live paper session
+- fetch OHLCV with indicators
+- inspect history/results after completion
 
-- Developers can get false-negative failures caused by tooling, not code.
-- Verification becomes less trustworthy.
-- Onboarding friction increases.
+### Exit criteria
 
-### Recommended remediation
+- [`web-dashboard/server.py`](../web-dashboard/server.py) no longer owns the core execution lifecycle logic directly
+- OHLCV/chart-data code is testable outside the route module
+- lifecycle cleanup is centralized in runner services
 
-Pin or automate the local toolchain:
-- add `.nvmrc` or Volta config for Node
-- document the canonical Python entrypoint more explicitly
-- prefer one repo-level verification script for common checks
-- keep Docker verification as the fallback path when local host tooling drifts
+### Rollback strategy
 
-### Safe first step
+Do not extract all routes at once. Migrate one vertical slice at a time:
+1. one backtest path
+2. one live path
+3. one OHLCV path
 
-Add explicit local runtime pins for Node and document the project venv as the default Python command path for local verification.
+If a slice regresses, revert only that slice while preserving the new seam interfaces.
 
-### TD-11. Documentation set contains historical analyses but no single current debt register
+## Phase 4. Domain decomposition and persistence hardening
 
-- Priority: `P3`
-- Area: architecture communication
-- Primary files:
-  - [`docs/ENGINE_REVIEW.md`](ENGINE_REVIEW.md)
-  - [`docs/ENGINE_STRATEGY_REVIEW_2026.md`](ENGINE_STRATEGY_REVIEW_2026.md)
-  - [`docs/BT_PRICE_ACTION_AUDIT_20260307.md`](BT_PRICE_ACTION_AUDIT_20260307.md)
+### Objective
 
-### Symptoms
+Reduce change risk in the most business-critical logic:
+- strategy decision flow
+- order lifecycle helpers
+- persisted result shape evolution
 
-The repository already has useful historical reviews and incident reports, but before this document there was no single current-state debt register that answered:
-- what is still debt now
-- what is already fixed
-- what should be prioritized first
+### Debt items addressed
 
-### Why it matters
+- `TD-05` oversized domain/framework classes
+- `TD-07` persistence tightly coupled to response shape
 
-- Historical docs are useful context, but they are not the same thing as a current execution plan.
-- Future contributors can misread old issues as still-open issues.
+### Why this phase comes after backend extraction
 
-### Recommended remediation
+Domain refactors are safer once orchestration and transport code are already cleaner. Otherwise domain changes and transport changes will overlap in the same diff and become hard to isolate.
 
-Keep historical docs for incident context, but use this file as the current debt register and update it when major debt items are resolved or reprioritized.
+### In scope
 
-### Safe first step
+- extract pure helper modules from strategy logic
+- extract lifecycle helpers from base strategy where practical
+- introduce persistence schema versioning
+- keep old stored documents readable
 
-Link this report from onboarding docs and update it after any non-trivial refactor affecting the listed areas.
+### Explicit non-goals
 
-## 5. Recommended execution order
+- no signal logic redesign
+- no strategy performance optimization project
+- no real-trading rollout
 
-The safest order is incremental:
+### Implementation workstreams
 
-### Phase 1. Guardrails and observability
+#### Workstream A. Strategy logic extraction
 
-- make strategy import failures visible
-- pin local toolchain expectations
-- keep this report current
-- add lifecycle regression tests for stop/failure/restart paths
+Target files:
+- [`strategies/bt_price_action.py`](../strategies/bt_price_action.py)
+- [`strategies/base_strategy.py`](../strategies/base_strategy.py)
+- new helper modules under `strategies/helpers/`
 
-### Phase 2. Backend boundary cleanup
+Planned changes:
+1. Identify pure decision points that do not require direct Backtrader mutation.
+2. Extract them into pure helpers in the following order:
+   - structure/POI evaluation helpers
+   - signal and filter decision helpers
+   - stop/target calculation helpers
+   - trailing and breakeven calculation helpers
+3. Keep Backtrader strategy classes as adapters that call these helpers.
+4. Preserve outputs and semantics through characterization tests.
 
-- extract config translation into one shared module
-- wrap runtime globals in a registry abstraction
-- move OHLCV/chart services out of [`web-dashboard/server.py`](../web-dashboard/server.py)
+Expected outcome:
+- critical trading behavior becomes more testable
+- strategy changes stop requiring giant review surfaces
 
-### Phase 3. Runtime orchestration extraction
+#### Workstream B. Persistence versioning and mapping
 
-- introduce dedicated runner/coordinator services for backtest and live flows
-- keep route signatures and HTTP contracts stable
-- reduce [`web-dashboard/server.py`](../web-dashboard/server.py) to routing/composition
+Target files:
+- [`db/repositories/backtest_repository.py`](../db/repositories/backtest_repository.py)
+- [`web-dashboard/services/result_mapper.py`](../web-dashboard/services/result_mapper.py)
+- [`web-dashboard/server.py`](../web-dashboard/server.py)
 
-### Phase 4. Domain and frontend decomposition
+Planned changes:
+1. Introduce `schema_version` for persisted result documents.
+2. Separate storage representation from response representation conceptually.
+3. Keep legacy backfill behavior, but move it behind version-aware mapping code.
+4. Avoid breaking old documents already stored in Mongo.
 
-- extract pure helpers from strategy code
-- split frontend provider responsibilities into smaller hooks/modules
-- add storage versioning once service boundaries are cleaner
+Expected outcome:
+- stored documents can evolve more safely
+- API fields stop directly dictating persistence layout
 
-## 6. What should not be rewritten
+### Suggested new tests
 
-The following decisions are currently useful and should be preserved unless there is a strong reason to change them:
+- expand [`tests/test_price_action_extended.py`](../tests/test_price_action_extended.py)
+- expand [`tests/test_base_strategy_notify_order.py`](../tests/test_base_strategy_notify_order.py)
+- expand [`tests/test_result_mapper_service.py`](../tests/test_result_mapper_service.py)
+- expand [`tests/test_optimize_save_single_parity.py`](../tests/test_optimize_save_single_parity.py)
+- add `tests/test_persistence_schema_versioning.py`
+
+### Validation plan
+
+Required:
+- strategy characterization tests still pass
+- optimize/save parity still holds
+- old persisted result docs still load correctly
+- new persisted docs include schema version
+
+Manual smoke checks:
+- load old history item
+- save new backtest result
+- save live-paper result
+- open trade details and verify expected fields still exist
+
+### Exit criteria
+
+- core strategy decisions are testable in smaller pure units
+- persisted result format has explicit versioning
+- backward-compatible document loading is proven by tests
+
+### Rollback strategy
+
+Keep extracted helper modules additive at first. The first refactor step should route existing code through helpers without changing control flow. Only after tests prove parity should dead inline code be removed.
+
+## Phase 5. Frontend boundary cleanup and full-stack hardening
+
+### Objective
+
+Complete the debt program by making the dashboard easier to change and the full-stack verification path easier to trust.
+
+### Debt items addressed
+
+- `TD-08` oversized frontend provider responsibilities
+- completes `TD-10` local verification reproducibility
+- reinforces `TD-11` debt-governance discipline
+
+### Why this phase comes last
+
+The frontend consumes the backend contracts. It is safer to clean up frontend boundaries after the backend seams and persistence rules have stabilized.
+
+### In scope
+
+- split broad provider responsibilities into narrower hooks or modules
+- isolate API command code from provider state
+- tighten frontend verification and runtime pinning
+- add full-stack smoke guidance aligned with the new backend boundaries
+
+### Explicit non-goals
+
+- no new state-management library by default
+- no redesign of dashboard UX
+- no component-library migration
+
+### Implementation workstreams
+
+#### Workstream A. Provider decomposition
+
+Target files:
+- [`web-dashboard/src/app/providers/config/ConfigProvider.tsx`](../web-dashboard/src/app/providers/config/ConfigProvider.tsx)
+- [`web-dashboard/src/app/providers/BacktestProvider.tsx`](../web-dashboard/src/app/providers/BacktestProvider.tsx)
+- [`web-dashboard/src/app/providers/results/ResultsProvider.tsx`](../web-dashboard/src/app/providers/results/ResultsProvider.tsx)
+- [`web-dashboard/src/app/providers/console/ConsoleProvider.tsx`](../web-dashboard/src/app/providers/console/ConsoleProvider.tsx)
+
+Planned changes:
+1. Extract API commands into focused modules or hooks:
+   - config load/save
+   - template CRUD/reorder
+   - backtest commands
+   - live commands
+   - runtime restore
+2. Keep provider public APIs stable initially.
+3. Shrink providers into state containers and orchestration wrappers, not transport layers.
+
+Expected outcome:
+- frontend changes affect smaller files and narrower contracts
+- provider tests become simpler and more targeted
+
+#### Workstream B. Full-stack verification hardening
+
+Target files:
+- [`README.md`](../README.md)
+- [`agent_docs/running_tests.md`](../agent_docs/running_tests.md)
+- frontend test/build scripts if needed
+
+Planned changes:
+1. Finalize local toolchain pinning if not completed in Phase 1.
+2. Document a canonical full-stack verification sequence:
+   - backend tests
+   - frontend tests/lint/build
+   - docker/dev runtime smoke path
+3. Add or document one repeatable smoke checklist for dashboard runtime behaviors.
+
+Expected outcome:
+- frontend verification is reproducible
+- full-stack smoke testing is consistent across contributors
+
+### Suggested new tests
+
+- expand [`web-dashboard/src/app/providers/BacktestProvider.test.tsx`](../web-dashboard/src/app/providers/BacktestProvider.test.tsx)
+- expand [`web-dashboard/src/app/providers/config/ConfigProvider.test.tsx`](../web-dashboard/src/app/providers/config/ConfigProvider.test.tsx)
+- expand [`web-dashboard/src/widgets/results-panel/ui/ResultsPanel.test.tsx`](../web-dashboard/src/widgets/results-panel/ui/ResultsPanel.test.tsx)
+- expand [`web-dashboard/src/widgets/backtest-history/ui/BacktestHistoryList.test.tsx`](../web-dashboard/src/widgets/backtest-history/ui/BacktestHistoryList.test.tsx)
+
+### Validation plan
+
+Required:
+- frontend unit tests pass under the pinned Node version
+- `npm run lint` passes
+- `npm run build` passes
+- dashboard still restores runtime state, logs, and results as before
+
+Manual smoke checks:
+- load dashboard
+- switch between backtest/live tabs
+- restore active runtime after page reload
+- open history and result details
+- verify console reconnect behavior
+
+### Exit criteria
+
+- provider modules have narrower responsibilities
+- frontend verification is reproducible on the documented runtime
+- dashboard behavior remains stable under the post-refactor backend contracts
+
+### Rollback strategy
+
+Keep provider API contracts stable while extracting hooks/modules. If a frontend refactor regresses behavior, revert the hook extraction without undoing earlier backend debt reduction phases.
+
+## 8. Cross-phase verification matrix
+
+Each phase should finish with both targeted and regression checks.
+
+| Layer | Minimum verification after phase work |
+|-------|--------------------------------------|
+| Backend services | targeted pytest modules for the changed seam |
+| API contracts | existing API regression tests plus new characterization tests |
+| Engine/strategy logic | strategy and metrics parity tests where relevant |
+| Frontend | targeted Vitest tests for touched providers/widgets |
+| Build integrity | frontend build and backend import sanity |
+| Runtime smoke | start/stop/reload behavior for backtest and live-paper |
+
+Recommended recurring commands:
+- backend targeted tests via `./.venv/bin/python -m pytest -q ...`
+- full backend suite from repo root
+- frontend tests/lint/build from [`web-dashboard/`](../web-dashboard)
+- Docker smoke path when host toolchains are questionable
+
+## 9. Suggested execution model
+
+### If one engineer is doing the work
+
+Follow the phases strictly in order. Do not overlap Phase 3 and Phase 4.
+
+### If a small team is doing the work
+
+Allowed parallelism:
+- during Phase 1: toolchain pinning can run in parallel with characterization tests
+- during Phase 2: runtime registry and config translation can be developed in parallel if they converge before route migration
+- during Phase 5: frontend provider decomposition and documentation hardening can run in parallel
+
+Not recommended in parallel:
+- Phase 3 orchestration extraction and Phase 4 domain decomposition
+- backend contract changes and frontend provider changes without a stable contract checkpoint
+
+## 10. Definition of success
+
+This debt program is successful when all of the following are true:
+- `server.py` is no longer the primary home of orchestration logic
+- runtime state has an explicit ownership abstraction
+- API and CLI use the same config translation seam
+- trading logic is more testable as pure units than it is today
+- persistence format can evolve without coupling every change to API response shape
+- frontend provider changes no longer require editing one or two giant modules
+- local validation is aligned with CI and reproducible
+
+## 11. What should not be rewritten
+
+The following decisions are currently valuable and should be preserved unless there is a strong, tested reason to change them:
 - shared market-structure logic in [`strategies/market_structure.py`](../strategies/market_structure.py)
-- LTF-first feed ordering in [`engine/timeframe_utils.py`](../engine/timeframe_utils.py)
+- LTF-first timeframe ordering in [`engine/timeframe_utils.py`](../engine/timeframe_utils.py)
 - service extraction already done in [`web-dashboard/services/result_mapper.py`](../web-dashboard/services/result_mapper.py) and [`web-dashboard/services/strategy_runtime.py`](../web-dashboard/services/strategy_runtime.py)
-- the existing regression-heavy backend test surface in [`tests/`](../tests)
+- the current regression-heavy backend test surface in [`tests/`](../tests)
+- the safety posture that live mode remains paper-only by default
 
-The right path here is controlled extraction, not a full rewrite.
+The right strategy for this codebase is not “rewrite the platform”. The right strategy is to keep the working core, tighten the seams, and make the next change cheaper and safer than the last one.

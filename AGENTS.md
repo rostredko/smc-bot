@@ -12,3 +12,5 @@ Use **[CLAUDE.md](CLAUDE.md)** as the primary onboarding file for coding agents 
 | Current technical debt and refactor priorities | [docs/TECHNICAL_DEBT_REPORT.md](docs/TECHNICAL_DEBT_REPORT.md) |
 
 **Rules of engagement:** match existing patterns in the touched layer; run linters/tests rather than hand-auditing style; keep diffs minimal and scoped to the request. Editor-specific rules may appear under `.cursor/rules` in your environment—follow them when present.
+
+**Commit policy:** coding agents must not create, amend, or rewrite commits in this repository. Prepare patches, run verification, and leave all commits to the human user.

@@ -29,6 +29,7 @@ Crypto **backtesting** and **paper live** trading: Backtrader execution engine, 
   - [agent_docs/api_and_architecture.md](agent_docs/api_and_architecture.md)
 3. **Do not restate linter policy**—use **Ruff** (`pyproject.toml`) and **ESLint** in `web-dashboard/`. Fix issues with tools, not prose.
 4. **Verify before claiming done:** from repo root: `python -m pytest -q` (set `PYTHONPATH=.` if needed); frontend: `cd web-dashboard && npm run test -- --run && npm run lint && npm run build`.
+5. **Commit policy:** agents must not create, amend, or rewrite commits. Prepare changes and verification, but leave every commit to the user.
 
 ## Runtime & ports (local)
 
