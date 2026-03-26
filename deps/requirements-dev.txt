@@ -1,0 +1,2 @@
+# Dev-only: Ruff (not installed in Docker runtime images)
+ruff>=0.8.0,<1

@@ -450,7 +450,7 @@ class DataLoader:
 
     def _fetch_ohlcv_with_file_cache(self, symbol: str, timeframe: str, start_date: str, end_date: str) -> pd.DataFrame:
         """Legacy exact-range CSV cache fallback when DB cache is unavailable."""
-        self._log_operational(f"Using file cache (MongoDB OHLCV cache unavailable)")
+        self._log_operational("Using file cache (MongoDB OHLCV cache unavailable)")
         cache_file = self._get_cache_file(symbol, timeframe, start_date, end_date)
         if os.path.exists(cache_file):
             file_age_days = (time.time() - os.path.getmtime(cache_file)) / (24 * 3600)

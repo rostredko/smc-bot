@@ -47,7 +47,7 @@ Optional Docker-based dev mode without bind mounts (avoids fakeowner/import issu
 docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build --watch
 ```
 
-Or: `./scripts/dev.sh`
+Optional: `./scripts/dev.sh` if you keep a local helper — the `scripts/` directory is gitignored and not part of the clone.
 
 - backend runs `uvicorn --reload`
 - watch syncs changed files into containers; Vite and uvicorn hot-reload
@@ -66,7 +66,7 @@ Setup:
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install -r deps/requirements.txt
+pip install -r deps/requirements.txt -r deps/requirements-dev.txt
 cp .env.example .env
 ```
 
@@ -84,6 +84,8 @@ cd web-dashboard
 npm install
 npm run dev -- --host 0.0.0.0
 ```
+
+Dashboard in this mode is usually `http://localhost:5173` (Vite default). Compose maps **`5174`** on the host to avoid clashing with other dev servers.
 
 ## Main Commands
 

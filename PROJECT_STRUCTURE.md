@@ -37,16 +37,17 @@ smc-bot/
 ├── docker-compose.yml
 ├── docker-compose.override.yml
 ├── deps/
-│   └── requirements.txt
+│   ├── requirements.txt
+│   └── requirements-dev.txt
 ├── agent_docs/
 │   ├── building_and_docker.md
+│   ├── development_workflow.md
 │   ├── running_tests.md
 │   └── api_and_architecture.md
+├── pyproject.toml
 ├── tools/
 │   ├── install_hooks.sh
-│   ├── release_notes/generate_release_notes.py
-│   ├── seed_backtest_optimize_config.py
-│   └── seed_bearish_optimize_and_run.py
+│   └── release_notes/generate_release_notes.py
 ├── db/
 │   ├── connection.py
 │   └── repositories/
@@ -251,7 +252,7 @@ Recent structure changes:
 - `connection.py`
   - Mongo bootstrap (`MONGODB_URI`, `MONGODB_DB`)
   - `USE_MONGOMOCK` support for tests
-  - indexes initialization (`backtests`)
+  - indexes initialization for `backtests` and `ohlcv_cache` (see §8)
 
 - `repositories/backtest_repository.py`
   - save/get/list/delete backtest and live run docs
@@ -340,7 +341,7 @@ Frontend follows a layered folder split close to Feature-Sliced style.
   - reusable trade-level UI (`TradeAnalysisChart`, `TradeOHLCVChart`)
 
 - `shared/`
-  - API constants (`API_BASE`)
+  - API base URL (`shared/api/config.ts` → `API_BASE`)
   - validation
   - shared types
   - reusable UI bits
@@ -392,6 +393,9 @@ Build/runtime notes:
   - `_id="default"` for backtest config
   - `_id="live"` for live config
 
+- `ohlcv_cache`
+  - persisted OHLCV bars used by `DataLoader` (and related API caching paths); indexed by exchange, market type, symbol, timeframe, timestamp; `cached_at` for housekeeping
+
 ## 9. Testing Matrix
 
 Backend tests are under `tests/` and include:
@@ -418,6 +422,6 @@ Frontend checks:
 - **[PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md)** (this file) — source of truth for repository layout, API, and data flow.
 - **[CLAUDE.md](CLAUDE.md)** — primary agent onboarding (WHAT/WHY/HOW, verification, progressive links).
 - **[AGENTS.md](AGENTS.md)** — short index for Cursor-style agents.
-- **[agent_docs/](agent_docs/)** — task-specific deep dives (Docker, tests, API pointers).
+- **[agent_docs/](agent_docs/)** — task-specific deep dives (Docker, tests, API, development workflow).
 - **[docs/TECHNICAL_DEBT_REPORT.md](docs/TECHNICAL_DEBT_REPORT.md)** — current debt register and recommended refactor order.
 - **[docs/](docs/)** — product/behavior notes (e.g. [docs/BACKTEST_RUN_MODES.md](docs/BACKTEST_RUN_MODES.md)); [docs/plans/](docs/plans/) for optional design notes.

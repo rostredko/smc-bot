@@ -12,6 +12,8 @@ __pycache__/
 *.pytest_cache/
 .venv/
 venv/
+.ruff-ci-venv/
+.ci-verify/
 .env
 .env.*
 !.env.example

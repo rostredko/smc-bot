@@ -29,8 +29,10 @@ npm run build
 
 ## CI
 
-GitHub Actions: [.github/workflows/ci.yml](../.github/workflows/ci.yml) — frontend lint+build (Node 18), backend pytest (Python 3.10).
+GitHub Actions: [.github/workflows/ci.yml](../.github/workflows/ci.yml) — frontend lint+build (Node 18), backend Ruff + pytest (Python 3.10).
 
 ## Ruff (Python)
 
-Config: [pyproject.toml](../pyproject.toml). Run `ruff check .` / `ruff format .` if installed—do not duplicate rule lists in prose.
+Install with dev deps: `pip install -r deps/requirements-dev.txt` (or `-r deps/requirements.txt -r deps/requirements-dev.txt`).
+
+Config: [pyproject.toml](../pyproject.toml). From repo root: `ruff check .` / `ruff format .` — do not duplicate rule lists in prose.
