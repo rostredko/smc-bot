@@ -5,7 +5,8 @@
       "WebFetch(domain:developers.openai.com)",
       "WebFetch(domain:agents.md)",
       "WebFetch(domain:github.com)",
-      "WebFetch(domain:www.aihero.dev)"
+      "WebFetch(domain:www.aihero.dev)",
+      "Bash(./.venv/bin/python -m pytest -q tests/test_api.py tests/test_strategy_runtime_service.py tests/test_result_mapper_service.py)"
     ]
   }
 }

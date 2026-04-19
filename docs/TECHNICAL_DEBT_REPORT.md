@@ -1,8 +1,10 @@
 # Technical Debt Report
 
-Current snapshot: 2026-03-26 (engine layer review added)
+Current snapshot: 2026-04-19 (full audit refresh; prior engine review 2026-03-26)
 
 This document is the current technical debt register and execution roadmap for `smc-bot`. It is intentionally implementation-oriented: it records the main debt items, explains the underlying architectural causes, and lays out a safe five-phase plan to reduce risk without breaking working behavior.
+
+Since the previous snapshot (2026-03-26) no Phase 1 or later remediation work has landed. Most debt items are unchanged, several hotspots have grown, and a few new findings have been added (see `TD-23`, `TD-24`, `TD-25` and the refresh notes in section 5.7). Per-item status is summarized in section 12.
 
 This is not a rewrite proposal. The recommended path is controlled extraction, tighter boundaries, and stronger verification.
 
@@ -35,18 +37,25 @@ The safest program is:
 
 Current module sizes in the main hotspot areas:
 
-| Module | Current size | Why it matters |
-|--------|--------------|----------------|
-| [`web-dashboard/server.py`](../web-dashboard/server.py) | 2476 lines | Concentrates routes, orchestration, lifecycle, OHLCV, cache, and chart enrichment |
-| [`strategies/bt_price_action.py`](../strategies/bt_price_action.py) | 1287 lines | Concentrates signal logic, filters, SL/TP logic, trigger state, and metadata shaping |
-| [`engine/bt_backtest_engine.py`](../engine/bt_backtest_engine.py) | 547 lines | Owns data loading, analyzers, metrics normalization, optimization, and forced close behavior |
-| [`engine/data_loader.py`](../engine/data_loader.py) | 650 lines | Mixes exchange client, CSV/DB cache strategy, rate limiting, and data transformation |
-| [`web-dashboard/src/app/providers/config/ConfigProvider.tsx`](../web-dashboard/src/app/providers/config/ConfigProvider.tsx) | 541 lines | Concentrates config loading, validation, persistence, and command side effects |
-| [`strategies/base_strategy.py`](../strategies/base_strategy.py) | 436 lines | Concentrates order lifecycle, OCO, trailing, funding, and drawdown logic |
-| [`engine/bt_live_engine.py`](../engine/bt_live_engine.py) | 232 lines | Lifecycle and threading surface for live-paper execution |
-| [`web-dashboard/src/app/providers/BacktestProvider.tsx`](../web-dashboard/src/app/providers/BacktestProvider.tsx) | 193 lines | App-level orchestration and runtime restore/polling |
+| Module | Current size | Δ vs 2026-03-26 | Why it matters |
+|--------|--------------|-----------------|----------------|
+| [`web-dashboard/server.py`](../web-dashboard/server.py) | 2538 lines | +62 | Concentrates routes, orchestration, lifecycle, OHLCV, cache, and chart enrichment |
+| [`strategies/bt_price_action.py`](../strategies/bt_price_action.py) | 1342 lines | +55 | Concentrates signal logic, filters, SL/TP logic, trigger state, and metadata shaping |
+| [`strategies/fvg_sweep_choch_strategy.py`](../strategies/fvg_sweep_choch_strategy.py) | 910 lines | new hotspot tracked here | A second oversized strategy repeating the same patterns as `bt_price_action.py` — folds into `TD-05` |
+| [`engine/data_loader.py`](../engine/data_loader.py) | 650 lines | 0 | Mixes exchange client, CSV/DB cache strategy, rate limiting, and data transformation |
+| [`engine/bt_backtest_engine.py`](../engine/bt_backtest_engine.py) | 547 lines | ≈0 | Owns data loading, analyzers, metrics normalization, optimization, and forced close behavior |
+| [`web-dashboard/src/app/providers/config/ConfigProvider.tsx`](../web-dashboard/src/app/providers/config/ConfigProvider.tsx) | 545 lines | +4 | Concentrates config loading, validation, persistence, and command side effects |
+| [`strategies/base_strategy.py`](../strategies/base_strategy.py) | 436 lines | 0 | Concentrates order lifecycle, OCO, trailing, funding, and drawdown logic |
+| [`engine/bt_live_engine.py`](../engine/bt_live_engine.py) | 232 lines | 0 | Lifecycle and threading surface for live-paper execution; now also duplicates analyzer setup (`TD-14`) |
+| [`web-dashboard/src/app/providers/BacktestProvider.tsx`](../web-dashboard/src/app/providers/BacktestProvider.tsx) | 193 lines | 0 | App-level orchestration and runtime restore/polling |
 
-These sizes do not automatically mean the files are wrong. They do mean they have become the most expensive places to change safely.
+These sizes do not automatically mean the files are wrong. They do mean they have become the most expensive places to change safely, and the backend orchestration and strategy hotspots have continued to grow since the previous review.
+
+Sub-hotspots inside `web-dashboard/server.py` that deserve explicit tracking under `TD-01` and the new `TD-25`:
+
+- `run_backtest_task` at `web-dashboard/server.py:1384` — single async function ≈391 lines long; owns engine construction, logging wiring, execution, persistence, and cleanup.
+- `run_live_trading_task` at `web-dashboard/server.py:1142` — single async function ≈143 lines long; owns the same concerns for live-paper runs, with its own copy of `_SignalCounter` (see `TD-24`).
+- `_build_chart_data_for_trades` at `web-dashboard/server.py:1919` — large analytics/enrichment helper embedded in the HTTP module; primary evidence for `TD-06`.
 
 ### 2.2 Test surface
 
@@ -54,12 +63,12 @@ Current test inventory:
 
 | Area | Count | Notes |
 |------|-------|-------|
-| Backend test files | 35 | Includes engine, API, lifecycle, mapping, repository, and strategy tests |
+| Backend test files | 37 | Includes engine, API, lifecycle, mapping, repository, and strategy tests (two additional files vs 2026-03-26) |
 | Frontend test files | 11 | Covers providers, config/history/results widgets, and shared utilities |
 
-Verification performed while preparing this report:
-- `./.venv/bin/python -m pytest -q tests/test_strategy_runtime_service.py tests/test_result_mapper_service.py tests/test_api.py`
-- result: `20 passed`
+Verification performed while preparing this snapshot (2026-04-19):
+- `./.venv/bin/python -m pytest -q tests/test_api.py tests/test_strategy_runtime_service.py tests/test_result_mapper_service.py`
+- result: `20 passed` (baseline regression around the seams the debt program will move)
 
 Frontend verification was attempted but blocked by local runtime drift:
 - repo and CI expect Node 18+
@@ -119,6 +128,9 @@ The debt program should follow these rules:
 | `TD-20` | `P3` | `datetime.utcfromtimestamp` is deprecated (Python 3.12+) | `engine/live_data_feed.py:63` uses `datetime.datetime.utcfromtimestamp` | replace with `datetime.fromtimestamp(ts/1000, tz=timezone.utc)` | Phase 4 |
 | `TD-21` | `P3` | Redundant MongoDB index in `DataLoader` | `engine/data_loader.py:127-146` creates a unique index and a non-unique index on the exact same fields | remove the redundant non-unique index | Phase 3 |
 | `TD-22` | `P3` | `TradeNarrator.duration_days` is a matplotlib float, not days | `engine/trade_narrator.py:27` — `duration = trade.dtclose - trade.dtopen` yields a matplotlib date number; formatted as `{duration_days:.1f} days` shows wrong values | convert via `bt.num2date` or timedelta arithmetic | Phase 4 |
+| `TD-23` | `P3` | `datetime.utcnow()` / `datetime.utcfromtimestamp` deprecated calls across the repo | `db/repositories/backtest_repository.py:51`, `db/repositories/user_config_repository.py:42,70`, `db/repositories/app_config_repository.py:31`, `strategies/bt_price_action.py:382`, `strategies/fvg_sweep_choch_strategy.py:351`, `strategies/fast_test_strategy.py:83`, `engine/live_data_feed.py:63` | replace with `datetime.now(timezone.utc)` / `datetime.fromtimestamp(ts, tz=timezone.utc)`; supersedes narrower `TD-20` scope | Phase 4 |
+| `TD-24` | `P3` | `_SignalCounter` logging handler is defined twice inside `server.py` | `web-dashboard/server.py:1167` (inside `run_live_trading_task`) and `web-dashboard/server.py:1479` (inside `run_backtest_task`) — identical class body reintroduced each call | extract once (for example to `api/logging_handlers.py`) and import from both tasks | Phase 3 |
+| `TD-25` | `P2` | Background task functions in `server.py` are themselves oversized hubs | `web-dashboard/server.py:1142` `run_live_trading_task` ≈143 lines and `web-dashboard/server.py:1384` `run_backtest_task` ≈391 lines each own engine construction, logging wiring, execution, persistence, and cleanup — the main evidence that `TD-01` is growing rather than shrinking | move logic behind the runner services introduced in Phase 3; keep task functions as thin invokers | Phase 3 |
 
 ## 5. Root-cause analysis by cluster
 
@@ -174,9 +186,15 @@ The frontend is not in crisis, but it is drifting toward “provider as applicat
 
 That structure is workable for a single page, but it makes future UI changes more coupled than necessary.
 
-### 5.7 Engine layer — detailed review (2026-03-26)
+### 5.7 Engine layer — detailed review (2026-03-26; refreshed 2026-04-19)
 
 This section records findings from a full read-through of every file under `engine/`. The engine layer is generally in better shape than the backend HTTP layer, but it has accumulated several maintainability costs that should be addressed in Phase 4 (and partly Phase 3).
+
+2026-04-19 refresh:
+- `TD-14` is now worse than originally reported — the six-line analyzer block is present in **three** places: `engine/bt_backtest_engine.py:154-161` (`run_backtest`), `engine/bt_backtest_engine.py:270-276` (`run_backtest_optimize`), and `engine/bt_live_engine.py:115-123` (`run_live`). The shared extraction should live on `BaseEngine` so all three call sites converge.
+- `TD-16` is **partially** addressed: `engine/optimize_context.py:38-52` now routes `set_current_combo` / `get_current_combo` / `clear_current_combo` through `_combo_lock`. However, `set_opt_progress_logging` at `engine/optimize_context.py:15-20` still writes `_log_opt_progress`, `_opt_total_combos`, and `_opt_combo_counter` without the lock. The underlying concern (unsafe under concurrent optimize runs) stands; keep the item open until globals become a per-run context.
+- `TD-20` is superseded in scope by `TD-23`. The specific `live_data_feed.py:63` fix remains valid, but there are now 7 deprecated `datetime.utcnow` / `utcfromtimestamp` call sites across the repo.
+- All other engine findings (`TD-12`, `TD-13`, `TD-15`, `TD-17`, `TD-18`, `TD-19`, `TD-21`, `TD-22`) remain open with identical evidence.
 
 #### `engine/utils.py` + `engine/trade_metrics.py` — duplicated `safe_float` (`TD-12`)
 
@@ -839,7 +857,41 @@ This debt program is successful when all of the following are true:
 - frontend provider changes no longer require editing one or two giant modules
 - local validation is aligned with CI and reproducible
 
-## 11. What should not be rewritten
+## 11. Status refresh (2026-04-19)
+
+Per-item status since the previous snapshot. "Open" means the evidence still applies as written in section 4 and/or 5.7. "Worse" means the evidence grew.
+
+| ID | Status | Note |
+|----|--------|------|
+| `TD-01` | Worse | `server.py` grew from 2476 → 2538 lines; `run_backtest_task` / `run_live_trading_task` are the concrete hubs (see `TD-25`) |
+| `TD-02` | Open | `web-dashboard/api/state.py:14-35` still exposes module-level mutable dicts and deques as runtime truth |
+| `TD-03` | Open | `run_backtest_task` still materializes a ~35-field `engine_config` dict inline (`web-dashboard/server.py:1397-1433`) |
+| `TD-04` | Open | Lifecycle cleanup is still spread across background tasks, WS handler, and `api/state.py` |
+| `TD-05` | Worse | `bt_price_action.py` grew from 1287 → 1342 lines; a second oversized strategy `fvg_sweep_choch_strategy.py` (910 lines) has been added with the same patterns |
+| `TD-06` | Open | `_build_chart_data_for_trades` and OHLCV cache helpers remain in `server.py` (`:1839-2260`) |
+| `TD-07` | Open | `db/repositories/backtest_repository.py` stores response-shaped documents; no `schema_version` field |
+| `TD-08` | Open | `ConfigProvider.tsx` grew marginally (541 → 545); `BacktestProvider.tsx` unchanged |
+| `TD-09` | Open | `web-dashboard/services/strategy_runtime.py:95-98` still silently `continue`s on import failure with no structured diagnostic |
+| `TD-10` | Open | No `.nvmrc`; `web-dashboard/package.json` has no `engines` field; CI pins Node 18 but local is unconstrained |
+| `TD-11` | Active | This document; being maintained as intended |
+| `TD-12` | Open | `engine/trade_metrics.py:6-10` still defines a private `_safe_float` identical to `engine/utils.py:4-8` |
+| `TD-13` | Open | `_safe_max_drawdown` still duplicated at `engine/bt_backtest_engine.py:534` and `engine/bt_live_engine.py:218` |
+| `TD-14` | Worse | Analyzer setup block now duplicated in **three** places (backtest + optimize + live) |
+| `TD-15` | Open | `engine/data_loader.py` unchanged at 650 lines |
+| `TD-16` | Partial | `_current_combo` access is now locked; `set_opt_progress_logging` writes remain unguarded |
+| `TD-17` | Open | `MockLogger`, empty `_setup_sizers`, trivial `_ordered_timeframes` wrapper, `_calculate_win_rate`, `_calculate_profit_factor` all still present |
+| `TD-18` | Open | `BaseLiveStreamClient` still raises `NotImplementedError` manually; `SUPPORTED_LIVE_EXCHANGES` still unused at the factory |
+| `TD-19` | Open | `_build_forced_final_close_record` still ~80 lines at `engine/bt_backtest_engine.py:431-511` |
+| `TD-20` | Superseded by `TD-23` | Original `live_data_feed.py:63` bug remains; broader scope now tracked under `TD-23` |
+| `TD-21` | Open | `engine/data_loader.py:127-147` still creates redundant duplicate index |
+| `TD-22` | Open | `TradeNarrator.duration_days` bug remains at `engine/trade_narrator.py:26-27` |
+| `TD-23` | New | `datetime.utcnow` / `utcfromtimestamp` deprecation — 7 call sites across repositories, strategies, and the live feed |
+| `TD-24` | New | `_SignalCounter` helper duplicated in `server.py` in two task functions |
+| `TD-25` | New | `run_backtest_task` / `run_live_trading_task` are oversized orchestration hubs; primary evidence that `TD-01` is growing |
+
+No phase-level exit criteria have been met since 2026-03-26. Phase 1 guardrail work (structured strategy discovery diagnostics, Node pin, characterization tests) is still the recommended first move before any restructuring is attempted.
+
+## 12. What should not be rewritten
 
 The following decisions are currently valuable and should be preserved unless there is a strong, tested reason to change them:
 - shared market-structure logic in [`strategies/market_structure.py`](../strategies/market_structure.py)

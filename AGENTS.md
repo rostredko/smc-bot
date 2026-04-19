@@ -92,6 +92,7 @@ Data flows **one direction only**: `engine/` → `services/` → `api/` → UI
 - No config files — strategy config loaded from MongoDB only
 - MUI v5 `sx` prop for one-off styles; `styled()` only when reused across 2+ files
 - Frontend layers (FSD): new features → `features/`; domain UI → `entities/`; API config → `shared/`
+- UI changes must follow the design system: [agent_docs/ui_design_system.md](agent_docs/ui_design_system.md)
 - Full conventions: [agent_docs/code_conventions.md](agent_docs/code_conventions.md)
 
 ## Stack
@@ -117,6 +118,7 @@ Data flows **one direction only**: `engine/` → `services/` → `api/` → UI
 | Docker, dev server, env vars | [agent_docs/building_and_docker.md](agent_docs/building_and_docker.md) |
 | Development workflow detail | [agent_docs/development_workflow.md](agent_docs/development_workflow.md) |
 | Python + React/TS conventions | [agent_docs/code_conventions.md](agent_docs/code_conventions.md) |
+| UI/UX design system, tokens, component rules | [agent_docs/ui_design_system.md](agent_docs/ui_design_system.md) |
 | Bugs, incidents, known issues | [agent_docs/troubleshooting_known_issues.md](agent_docs/troubleshooting_known_issues.md) |
 | Backtest run modes (single/optimize/live) | [docs/BACKTEST_RUN_MODES.md](docs/BACKTEST_RUN_MODES.md) |
 | Technical debt and refactor priorities | [docs/TECHNICAL_DEBT_REPORT.md](docs/TECHNICAL_DEBT_REPORT.md) |

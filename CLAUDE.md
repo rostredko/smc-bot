@@ -119,6 +119,7 @@ Update relevant docs in the same work cycle as the code change.
 | Testing expectations or commands | `agent_docs/running_tests.md` |
 | Docker, dev server, compose setup | `agent_docs/building_and_docker.md` |
 | Code style, conventions, linting rules | `agent_docs/code_conventions.md` |
+| UI/UX, design tokens, MUI/component patterns | `agent_docs/ui_design_system.md` |
 | A meaningful bug, incident, or fix | `agent_docs/troubleshooting_known_issues.md` |
 | Run modes (single/optimize/live) | `docs/BACKTEST_RUN_MODES.md` |
 | Technical debt or refactor priorities | `docs/TECHNICAL_DEBT_REPORT.md` |
@@ -150,6 +151,7 @@ For every non-trivial task:
 | `agent_docs/api_and_architecture.md` | API boundary vs services vs engine (pointers) |
 | `agent_docs/development_workflow.md` | Development workflow detail |
 | `agent_docs/code_conventions.md` | Python + React/TS style and conventions |
+| `agent_docs/ui_design_system.md` | UI/UX design system — tokens, layout, components, rules for new UI |
 | `agent_docs/troubleshooting_known_issues.md` | Failure memory, incidents, root causes |
 | `docs/plans/` | Per-task execution plans |
 | `docs/BACKTEST_RUN_MODES.md` | `single` vs `optimize` vs `live` run modes |
