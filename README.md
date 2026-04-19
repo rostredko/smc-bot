@@ -57,7 +57,7 @@ Optional: `./scripts/dev.sh` if you keep a local helper — the `scripts/` direc
 
 Prerequisites:
 - Python `3.10+` (project images use 3.11)
-- Node.js `18+` (Docker frontend uses Node 20)
+- Node.js `18+` — repo pins the expected major version in `.nvmrc`; `nvm use` will pick it up. Docker frontend still uses Node 20.
 - MongoDB `7+` (or compatible)
 - TA-Lib C library (required for indicators)
 
@@ -68,6 +68,13 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -r deps/requirements.txt -r deps/requirements-dev.txt
 cp .env.example .env
+```
+
+Canonical verification commands (match CI):
+
+```bash
+./.venv/bin/python -m pytest -q
+cd web-dashboard && nvm use && npm run lint && npm run test -- --run && npm run build
 ```
 
 Run backend:

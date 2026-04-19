@@ -2,11 +2,15 @@
 
 ## Backend (pytest)
 
-From **repository root**:
+From **repository root**, using the project venv explicitly:
 
 ```bash
-python -m pytest -q
+./.venv/bin/python -m pytest -q
 ```
+
+Plain `python -m pytest -q` also works when the venv is activated; the explicit
+`./.venv/bin/python` form is the canonical invocation and avoids ambiguity
+about which interpreter is in scope.
 
 If imports fail, ensure `PYTHONPATH` includes the repo root (CI sets `PYTHONPATH=.:$PYTHONPATH`).
 
@@ -20,12 +24,19 @@ If imports fail, ensure `PYTHONPATH` includes the repo root (CI sets `PYTHONPATH
 
 ## Frontend
 
+Node runtime is pinned to major version `18` via [`.nvmrc`](../.nvmrc). Use
+`nvm use` before running the frontend checks to match CI:
+
 ```bash
 cd web-dashboard
+nvm use
 npm run test -- --run
 npm run lint
 npm run build
 ```
+
+`web-dashboard/package.json` also declares `"engines": { "node": ">=18" }`;
+`npm install` warns on mismatch.
 
 ## CI
 
@@ -33,6 +44,27 @@ GitHub Actions: [.github/workflows/ci.yml](../.github/workflows/ci.yml) — fron
 
 ## Ruff (Python)
 
-Install with dev deps: `pip install -r deps/requirements-dev.txt` (or `-r deps/requirements.txt -r deps/requirements-dev.txt`).
+Install into the project venv so local and CI checks match:
 
-Config: [pyproject.toml](../pyproject.toml). From repo root: `ruff check .` / `ruff format .` — do not duplicate rule lists in prose.
+```bash
+./.venv/bin/pip install -r deps/requirements-dev.txt
+```
+
+Config: [pyproject.toml](../pyproject.toml). Canonical invocations from repo root:
+
+```bash
+./.venv/bin/ruff check .
+./.venv/bin/ruff format .
+```
+
+Run `ruff check .` before pushing — CI fails the backend job on any ruff violation. Do not duplicate rule lists in prose.
+
+## Canonical local verification
+
+Full CI-aligned check sequence, executed from repo root:
+
+```bash
+./.venv/bin/ruff check .
+./.venv/bin/python -m pytest -q
+cd web-dashboard && nvm use && npm run lint && npm run test -- --run && npm run build
+```

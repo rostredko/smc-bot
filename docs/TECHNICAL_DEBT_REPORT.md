@@ -1,10 +1,15 @@
 # Technical Debt Report
 
-Current snapshot: 2026-04-19 (full audit refresh; prior engine review 2026-03-26)
+Current snapshot: 2026-04-19 (full audit refresh; Phase 1 landed same day)
 
 This document is the current technical debt register and execution roadmap for `smc-bot`. It is intentionally implementation-oriented: it records the main debt items, explains the underlying architectural causes, and lays out a safe five-phase plan to reduce risk without breaking working behavior.
 
-Since the previous snapshot (2026-03-26) no Phase 1 or later remediation work has landed. Most debt items are unchanged, several hotspots have grown, and a few new findings have been added (see `TD-23`, `TD-24`, `TD-25` and the refresh notes in section 5.7). Per-item status is summarized in section 12.
+**Phase 1 status — completed 2026-04-19.** Guardrail work landed per [`docs/plans/2026-04-19-phase-1-guardrails.md`](plans/2026-04-19-phase-1-guardrails.md):
+- `TD-09` resolved — `web-dashboard/services/strategy_runtime.py` now logs a structured `WARNING` when a strategy module fails to import, and discovery stays resilient.
+- `TD-10` resolved — Node runtime pinned via `.nvmrc` (18) and `web-dashboard/package.json` `engines`; `README.md` and `agent_docs/running_tests.md` document the canonical CI-aligned verification sequence (ruff + pytest + nvm-gated frontend checks).
+- `TD-11` active — this document is being maintained as intended.
+
+Other debt items remain open. Several hotspots have grown since 2026-03-26, and new findings were added (see `TD-23`, `TD-24`, `TD-25` and the refresh notes in section 5.7). Per-item status is summarized in section 11.
 
 This is not a rewrite proposal. The recommended path is controlled extraction, tighter boundaries, and stronger verification.
 
@@ -63,19 +68,14 @@ Current test inventory:
 
 | Area | Count | Notes |
 |------|-------|-------|
-| Backend test files | 37 | Includes engine, API, lifecycle, mapping, repository, and strategy tests (two additional files vs 2026-03-26) |
+| Backend test files | 38 | Includes engine, API, lifecycle, mapping, repository, and strategy tests; Phase 1 added `tests/test_runtime_contracts.py` (characterization) and extended `tests/test_strategy_runtime_service.py` |
 | Frontend test files | 11 | Covers providers, config/history/results widgets, and shared utilities |
 
-Verification performed while preparing this snapshot (2026-04-19):
-- `./.venv/bin/python -m pytest -q tests/test_api.py tests/test_strategy_runtime_service.py tests/test_result_mapper_service.py`
-- result: `20 passed` (baseline regression around the seams the debt program will move)
+Verification performed after Phase 1 landed (2026-04-19):
+- `./.venv/bin/ruff check .` — clean
+- `./.venv/bin/python -m pytest -q` — `295 passed, 1 skipped` (full backend suite, Phase 1 tests included)
 
-Frontend verification was attempted but blocked by local runtime drift:
-- repo and CI expect Node 18+
-- local runtime was Node 14
-- Vitest failed before app tests ran
-
-That mismatch is tracked below as debt because it reduces trust in local validation.
+Frontend verification remains Node-version sensitive; `.nvmrc` + `engines` now pin the expected runtime so `cd web-dashboard && nvm use && npm run lint && npm run test -- --run && npm run build` reproduces CI locally.
 
 ### 2.3 Existing constraints that must remain stable
 
@@ -114,8 +114,8 @@ The debt program should follow these rules:
 | `TD-06` | `P2` | OHLCV, cache, indicators, and chart enrichment are mixed into the HTTP layer | [`web-dashboard/server.py`](../web-dashboard/server.py), [`engine/data_loader.py`](../engine/data_loader.py) | dedicated analytics/query services with no FastAPI dependency | Phase 3 |
 | `TD-07` | `P2` | Persistence schema is tightly coupled to response schema | [`db/repositories/backtest_repository.py`](../db/repositories/backtest_repository.py), [`web-dashboard/services/result_mapper.py`](../web-dashboard/services/result_mapper.py) | schema-versioned persistence and explicit storage-to-response mapping | Phase 4 |
 | `TD-08` | `P2` | Frontend providers own too much side-effect logic | [`web-dashboard/src/app/providers/config/ConfigProvider.tsx`](../web-dashboard/src/app/providers/config/ConfigProvider.tsx), [`web-dashboard/src/app/providers/BacktestProvider.tsx`](../web-dashboard/src/app/providers/BacktestProvider.tsx) | smaller hooks/modules and narrower provider contracts | Phase 5 |
-| `TD-09` | `P2` | Strategy discovery hides import failures | [`web-dashboard/services/strategy_runtime.py`](../web-dashboard/services/strategy_runtime.py) silently skips import errors | structured diagnostics with non-crashing failure visibility | Phase 1 |
-| `TD-10` | `P3` | Toolchain and verification are not pinned tightly enough | local Node drift vs CI; Python command ambiguity | reproducible local verification path aligned with CI | Phase 1 and Phase 5 |
+| `TD-09` | `P2` | Strategy discovery hides import failures | [`web-dashboard/services/strategy_runtime.py`](../web-dashboard/services/strategy_runtime.py) silently skips import errors | structured diagnostics with non-crashing failure visibility | Phase 1 — **resolved 2026-04-19** |
+| `TD-10` | `P3` | Toolchain and verification are not pinned tightly enough | local Node drift vs CI; Python command ambiguity | reproducible local verification path aligned with CI | Phase 1 — **resolved 2026-04-19** (Phase 5 may revisit further tightening) |
 | `TD-11` | `P3` | Docs had historical reviews but no current execution register | historical reports existed, but no current roadmap | this file becomes the maintained source for debt status and order of work | Phase 1 |
 | `TD-12` | `P2` | `safe_float` is duplicated across engine modules | `engine/utils.py:4` and `engine/trade_metrics.py:6` define identical functions | one canonical `safe_float` used everywhere | Phase 4 |
 | `TD-13` | `P2` | `_safe_max_drawdown` is copy-pasted between engines | identical method at `bt_backtest_engine.py:534` and `bt_live_engine.py:218` | promote to `BaseEngine` | Phase 4 |
@@ -294,6 +294,8 @@ Do not start Phase 3 before Phase 2 is complete. Without a runtime registry seam
 ## 7. Five-phase implementation plan
 
 ## Phase 1. Guardrails and baseline stabilization
+
+**Status: completed 2026-04-19.** See [`docs/plans/2026-04-19-phase-1-guardrails.md`](plans/2026-04-19-phase-1-guardrails.md) for the execution record; `TD-09` and `TD-10` are resolved, `TD-11` is being actively maintained.
 
 ### Objective
 
@@ -871,8 +873,8 @@ Per-item status since the previous snapshot. "Open" means the evidence still app
 | `TD-06` | Open | `_build_chart_data_for_trades` and OHLCV cache helpers remain in `server.py` (`:1839-2260`) |
 | `TD-07` | Open | `db/repositories/backtest_repository.py` stores response-shaped documents; no `schema_version` field |
 | `TD-08` | Open | `ConfigProvider.tsx` grew marginally (541 → 545); `BacktestProvider.tsx` unchanged |
-| `TD-09` | Open | `web-dashboard/services/strategy_runtime.py:95-98` still silently `continue`s on import failure with no structured diagnostic |
-| `TD-10` | Open | No `.nvmrc`; `web-dashboard/package.json` has no `engines` field; CI pins Node 18 but local is unconstrained |
+| `TD-09` | Resolved (2026-04-19) | `web-dashboard/services/strategy_runtime.py` now emits a structured `logger.warning` on failed imports and stays resilient; covered by `tests/test_strategy_runtime_service.py::test_discover_strategy_definitions_logs_broken_module_and_stays_resilient` |
+| `TD-10` | Resolved (2026-04-19) | `.nvmrc` pins Node major to `18`; `web-dashboard/package.json` declares `"engines": { "node": ">=18" }`; `README.md` and `agent_docs/running_tests.md` document the canonical ruff + pytest + frontend check sequence |
 | `TD-11` | Active | This document; being maintained as intended |
 | `TD-12` | Open | `engine/trade_metrics.py:6-10` still defines a private `_safe_float` identical to `engine/utils.py:4-8` |
 | `TD-13` | Open | `_safe_max_drawdown` still duplicated at `engine/bt_backtest_engine.py:534` and `engine/bt_live_engine.py:218` |
@@ -889,7 +891,13 @@ Per-item status since the previous snapshot. "Open" means the evidence still app
 | `TD-24` | New | `_SignalCounter` helper duplicated in `server.py` in two task functions |
 | `TD-25` | New | `run_backtest_task` / `run_live_trading_task` are oversized orchestration hubs; primary evidence that `TD-01` is growing |
 
-No phase-level exit criteria have been met since 2026-03-26. Phase 1 guardrail work (structured strategy discovery diagnostics, Node pin, characterization tests) is still the recommended first move before any restructuring is attempted.
+**Phase 1 exit criteria met (2026-04-19):**
+- Strategy discovery import failures are now visible in logs without crashing the dashboard (`TD-09`).
+- Local verification toolchain is pinned and documented (`TD-10`): Node via `.nvmrc` + `engines`, Python via `./.venv/bin/python`, ruff invocation canonicalized in `agent_docs/running_tests.md`.
+- Characterization tests added for config-normalization parity and `/api/runtime/state` envelope shape in `tests/test_runtime_contracts.py`, plus the strategy-discovery-under-import-failure test in `tests/test_strategy_runtime_service.py`.
+- Backend suite at 295 passing / 1 skipped; ruff clean across the repo.
+
+Phase 2 (canonical runtime seams for config and state) is the next recommended work. See section 7 Phase 2 for scope.
 
 ## 12. What should not be rewritten
 

@@ -1,3 +1,4 @@
+import logging
 import os
 import sys
 from pathlib import Path
@@ -123,5 +124,58 @@ def test_discover_strategy_definitions_picks_new_strategy_classes_from_modules()
         assert breakout_definition["class_name"] == "TemporaryBreakoutStrategy"
         assert "temporary_breakout" in breakout_definition["aliases"]
     finally:
+        module_path.unlink(missing_ok=True)
+        sys.modules.pop(module_name, None)
+
+
+def test_discover_strategy_definitions_logs_broken_module_and_stays_resilient():
+    """Broken strategy modules are skipped with a structured warning log."""
+
+    strategies_dir = Path(PROJECT_ROOT) / "strategies"
+    module_path = strategies_dir / "broken_probe_strategy.py"
+    module_name = "strategies.broken_probe_strategy"
+
+    module_path.write_text(
+        "\n".join(
+            [
+                "raise RuntimeError('intentional probe failure')",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    target_logger = logging.getLogger("backtrade.services.strategy_runtime")
+    captured: list[logging.LogRecord] = []
+
+    class _ListHandler(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            captured.append(record)
+
+    handler = _ListHandler(level=logging.WARNING)
+    target_logger.addHandler(handler)
+    previous_level = target_logger.level
+    target_logger.setLevel(logging.WARNING)
+
+    try:
+        sys.modules.pop(module_name, None)
+        definitions = discover_strategy_definitions()
+        names = [definition["name"] for definition in definitions]
+
+        # Discovery must not crash — existing strategies still discovered.
+        assert "bt_price_action" in names
+        # Broken module must not surface as a strategy.
+        assert all("broken_probe" not in name for name in names)
+
+        # A warning must be emitted naming the broken module and exception.
+        warnings = [record for record in captured if record.levelno >= logging.WARNING]
+        assert warnings, "expected a WARNING log for the broken strategy module"
+        combined = " | ".join(record.getMessage() for record in warnings)
+        assert "broken_probe_strategy" in combined
+        assert "RuntimeError" in combined
+        assert "intentional probe failure" in combined
+    finally:
+        target_logger.removeHandler(handler)
+        target_logger.setLevel(previous_level)
         module_path.unlink(missing_ok=True)
         sys.modules.pop(module_name, None)

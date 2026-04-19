@@ -4,8 +4,12 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Type
 
+from engine.logger import get_logger
 from strategies.base_strategy import BaseStrategy
 from strategies.bt_price_action import PriceActionStrategy
+
+
+logger = get_logger(__name__)
 
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -94,7 +98,13 @@ def discover_strategy_definitions(
         module_name = f"{package_name}.{module_stem}"
         try:
             module = importlib.import_module(module_name)
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                "Strategy module %s failed to import: %s: %s",
+                module_name,
+                type(exc).__name__,
+                exc,
+            )
             continue
 
         for _, strategy_class in inspect.getmembers(module, inspect.isclass):
