@@ -14,7 +14,8 @@
       "Bash(./.venv/bin/ruff check *)",
       "Bash(./.venv/bin/python -m ruff check web-dashboard/services/strategy_runtime.py tests/test_runtime_contracts.py tests/test_strategy_runtime_service.py)",
       "Bash(ruff check *)",
-      "Bash(./.venv/bin/pip install *)"
+      "Bash(./.venv/bin/pip install *)",
+      "Bash(chmod +x /Users/rostislav/Projects/smc-bot/docs/koval-init/bootstrap.sh)"
     ]
   }
 }

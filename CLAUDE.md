@@ -4,6 +4,23 @@
 
 Crypto backtesting and paper live trading research tool. Not a financial product.
 
+## Strategic goal: Koval
+
+**smc-bot is the development base for [Koval](git@gitlab.com:koval-group/koval-ai.git)** — a universal open-source algo-trading platform for traders without programming knowledge.
+
+Koval is a clean-fork (Approach B): new repo, clean architecture, porting only the good parts from smc-bot.
+Design spec: [`docs/superpowers/specs/2026-05-01-koval-design.md`](docs/superpowers/specs/2026-05-01-koval-design.md)
+
+Key decisions:
+- Engine: Backtrader (behind BTStrategyAdapter abstraction layer)
+- License: MIT core + GPL-3.0 Backtrader adapter
+- No-code: block builder UI for strategy creation + parameter sliders for existing strategies
+- Exchanges: Binance (ported) + WhiteBIT (new, Ukrainian market)
+- Trading modes: backtest + paper + live sandbox (real account connection is future scope)
+- Positioning: Android-like open platform (choose blocks, exchange, data source)
+
+Work on smc-bot continues as the active dev environment until Koval reaches feature parity.
+
 ## Purpose
 
 Backtrader execution engine + FastAPI API + React/TypeScript dashboard + MongoDB persistence.
