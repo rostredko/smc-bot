@@ -83,9 +83,23 @@ def test_list_dashboard_strategies_returns_only_public_runtime_strategies():
     strategies = list_dashboard_strategies()
     names = [strategy["name"] for strategy in strategies]
 
-    assert names == ["bt_price_action", "fast_test_strategy", "fvg_sweep_choch_strategy"]
+    assert names == [
+        "bt_price_action",
+        "bt_traders_reality",
+        "fast_test_strategy",
+        "fvg_sweep_choch_strategy",
+    ]
     assert "price_action_strategy" not in names
     assert "market_structure" not in names
+
+
+def test_resolve_bt_traders_reality_returns_correct_class():
+    from strategies.bt_traders_reality import TradersRealityStrategy
+
+    cls = resolve_strategy_class("bt_traders_reality")
+    assert cls is TradersRealityStrategy
+    cls_alias = resolve_strategy_class("traders_reality_strategy")
+    assert cls_alias is TradersRealityStrategy
 
 
 def test_discover_strategy_definitions_picks_new_strategy_classes_from_modules():

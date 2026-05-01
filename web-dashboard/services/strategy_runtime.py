@@ -17,9 +17,11 @@ _STRATEGIES_DIR = _PROJECT_ROOT / "strategies"
 _EXCLUDED_MODULE_STEMS = frozenset({"__init__", "base_strategy"})
 _LEGACY_CANONICAL_NAMES = {
     "bt_price_action": "bt_price_action",
+    "bt_traders_reality": "bt_traders_reality",
 }
 _LEGACY_ALIASES = {
     "bt_price_action": ("price_action_strategy",),
+    "bt_traders_reality": ("traders_reality_strategy",),
 }
 _CAMEL_TO_SNAKE_RE_1 = re.compile(r"(.)([A-Z][a-z]+)")
 _CAMEL_TO_SNAKE_RE_2 = re.compile(r"([a-z0-9])([A-Z])")

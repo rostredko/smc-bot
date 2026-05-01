@@ -528,7 +528,44 @@ def get_strategy_config_schema(strategy_name: str):
     }
     
     default_schemas["price_action_strategy"] = default_schemas["bt_price_action"]
-    
+
+    default_schemas["bt_traders_reality"] = {
+        "ema_fast": {"type": "number", "default": 5, "section": "EMA"},
+        "ema_medium": {"type": "number", "default": 13, "section": "EMA"},
+        "ema_slow": {"type": "number", "default": 50, "section": "EMA"},
+        "ema_trend": {"type": "number", "default": 200, "section": "EMA"},
+
+        "pvsra_avg_period": {"type": "number", "default": 10, "section": "PVSRA"},
+        "pvsra_rv_mult": {"type": "number", "default": 2.0, "section": "PVSRA",
+                          "label": "Ring Volume Multiplier (>=2x avg)"},
+        "pvsra_bv_mult": {"type": "number", "default": 1.5, "section": "PVSRA",
+                          "label": "Big Volume Multiplier (>=1.5x avg)"},
+
+        "adr_period": {"type": "number", "default": 14, "section": "ADR"},
+        "adr_exhaustion_threshold": {"type": "number", "default": 0.85, "section": "ADR",
+                                     "label": "ADR Exhaustion Threshold"},
+
+        "signal_long_min_score": {"type": "number", "default": 2.0, "section": "Signal"},
+        "signal_short_max_score": {"type": "number", "default": -2.0, "section": "Signal"},
+
+        "use_htf_ema_filter": {"type": "boolean", "default": True, "section": "Filters",
+                               "label": "HTF EMA Trend Filter"},
+
+        "use_weekly_sl": {"type": "boolean", "default": True, "section": "Levels",
+                          "label": "Use Weekly M0/M5 for SL"},
+        "use_pivot_tp": {"type": "boolean", "default": True, "section": "Levels",
+                         "label": "Use Daily Pivot R1/S1 for TP"},
+
+        "atr_period": {"type": "number", "default": 14, "section": "Stop Loss"},
+        "sl_buffer_atr": {"type": "number", "default": 1.5, "section": "Stop Loss",
+                          "label": "ATR Multiplier (fallback SL)"},
+        "sl_weekly_buffer_atr": {"type": "number", "default": 0.1, "section": "Stop Loss",
+                                 "label": "Weekly Level Buffer (ATR mult)"},
+
+        "risk_reward_ratio": {"type": "number", "default": 2.0, "section": "Risk"},
+    }
+    default_schemas["traders_reality_strategy"] = default_schemas["bt_traders_reality"]
+
     schema = default_schemas.get(strategy_name, {})
     strategy_schema_cache[strategy_name] = schema
     return schema
